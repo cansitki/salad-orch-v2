@@ -1,0 +1,81 @@
+from __future__ import annotations
+
+import json
+import pathlib
+import sys
+import unittest
+from unittest.mock import patch
+
+
+ROOT = pathlib.Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "scripts"))
+
+import config_loader
+
+
+class ConfigLoaderTest(unittest.TestCase):
+    def test_extra_orgs_append_to_defaults(self) -> None:
+        extra = [
+            {
+                "label": "kray4",
+                "slug": "kray4",
+                "api_key_env": "SALAD_API_KEY_KRAY4",
+                "slot_prefix": "prl-kray4-roi",
+                "slots": 10,
+            }
+        ]
+        with patch.object(config_loader, "load_env_file", lambda: None), patch.dict(
+            config_loader.os.environ,
+            {"SALAD_FLEET_EXTRA_ORGS_JSON": json.dumps(extra)},
+            clear=True,
+        ):
+            config = config_loader.load_config()
+        self.assertEqual(config.target_slot_count(), 50)
+        self.assertIn("kray4", [org.label for org in config.enabled_orgs()])
+
+    def test_validate_config_catches_duplicate_slot_prefix(self) -> None:
+        orgs = (
+            config_loader.OrgConfig(
+                label="a",
+                slug="a",
+                api_key_env="SALAD_API_KEY_A",
+                slot_prefix="prl-dup-roi",
+            ),
+            config_loader.OrgConfig(
+                label="b",
+                slug="b",
+                api_key_env="SALAD_API_KEY_B",
+                slot_prefix="prl-dup-roi",
+            ),
+        )
+        config = config_loader.FleetConfig(organizations=orgs)
+        issues = config_loader.validate_config(config)
+        self.assertTrue(any(issue["field"] == "slot_prefix" and issue["level"] == "error" for issue in issues))
+
+    def test_validate_config_can_require_enabled_org_secrets(self) -> None:
+        orgs = (
+            config_loader.OrgConfig(
+                label="a",
+                slug="a",
+                api_key_env="SALAD_API_KEY_A",
+                slot_prefix="prl-a-roi",
+                enabled=True,
+            ),
+            config_loader.OrgConfig(
+                label="b",
+                slug="b",
+                api_key_env="SALAD_API_KEY_B",
+                slot_prefix="prl-b-roi",
+                enabled=False,
+            ),
+        )
+        config = config_loader.FleetConfig(organizations=orgs)
+        with patch.dict(config_loader.os.environ, {}, clear=True):
+            issues = config_loader.validate_config(config, require_secrets=True)
+        messages = [issue["message"] for issue in issues]
+        self.assertIn("a missing env var SALAD_API_KEY_A", messages)
+        self.assertNotIn("b missing env var SALAD_API_KEY_B", messages)
+
+
+if __name__ == "__main__":
+    unittest.main()

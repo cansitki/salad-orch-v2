@@ -183,6 +183,48 @@ def _load_orgs_from_env() -> tuple[OrgConfig, ...]:
     return tuple(_org_from_dict(item) for item in payload)
 
 
+def _extra_orgs_from_env() -> tuple[OrgConfig, ...]:
+    payload = read_json_env("SALAD_FLEET_EXTRA_ORGS_JSON") or read_json_env("PRL_FLEET_EXTRA_ORGS_JSON")
+    if payload is None:
+        return ()
+    if isinstance(payload, dict):
+        payload = payload.get("organizations") or []
+    return tuple(_org_from_dict(item) for item in payload)
+
+
+def validate_config(config: FleetConfig, *, require_secrets: bool = False) -> list[dict[str, str]]:
+    issues: list[dict[str, str]] = []
+    seen_labels: set[str] = set()
+    seen_slugs: set[str] = set()
+    seen_slot_prefixes: set[str] = set()
+    seen_slots: set[str] = set()
+    for org in config.organizations:
+        if not org.label:
+            issues.append({"level": "error", "field": "label", "message": "organization label is empty"})
+        if org.label in seen_labels:
+            issues.append({"level": "error", "field": "label", "message": f"duplicate org label {org.label}"})
+        seen_labels.add(org.label)
+        if org.slug in seen_slugs:
+            issues.append({"level": "error", "field": "slug", "message": f"duplicate org slug {org.slug}"})
+        seen_slugs.add(org.slug)
+        if org.slot_prefix in seen_slot_prefixes:
+            issues.append({"level": "error", "field": "slot_prefix", "message": f"duplicate slot prefix {org.slot_prefix}"})
+        seen_slot_prefixes.add(org.slot_prefix)
+        if org.slots <= 0:
+            issues.append({"level": "error", "field": "slots", "message": f"{org.label} has non-positive slot count"})
+        if org.slots != 10:
+            issues.append({"level": "warning", "field": "slots", "message": f"{org.label} uses {org.slots} slots instead of the default 10"})
+        if not org.api_key_env:
+            issues.append({"level": "error", "field": "api_key_env", "message": f"{org.label} has no API key env var"})
+        elif require_secrets and org.enabled and not os.environ.get(org.api_key_env):
+            issues.append({"level": "error", "field": "api_key_env", "message": f"{org.label} missing env var {org.api_key_env}"})
+        for slot_name in org.slot_names():
+            if slot_name in seen_slots:
+                issues.append({"level": "error", "field": "slot_name", "message": f"duplicate slot name {slot_name}"})
+            seen_slots.add(slot_name)
+    return issues
+
+
 def load_config() -> FleetConfig:
     load_env_file()
     config_payload = read_json_env("SALAD_FLEET_CONFIG_JSON")
@@ -192,6 +234,10 @@ def load_config() -> FleetConfig:
         organizations = tuple(_org_from_dict(item) for item in org_payload)
     else:
         organizations = _load_orgs_from_env()
+
+    extra_orgs = _extra_orgs_from_env()
+    if extra_orgs:
+        organizations = (*organizations, *extra_orgs)
 
     enabled_filter = {item.strip() for item in os.environ.get("PRL_ENABLED_ORGS", "").split(",") if item.strip()}
     if enabled_filter:
@@ -247,6 +293,7 @@ def public_config_dict(config: FleetConfig) -> dict[str, Any]:
             org.label: bool(os.environ.get(org.api_key_env))
             for org in config.organizations
         },
+        "validation": validate_config(config),
     }
 
 
@@ -254,10 +301,12 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Load the public Salad PRL fleet config.")
     parser.add_argument("--json", action="store_true", help="Emit JSON.")
     parser.add_argument("--check-secrets", action="store_true", help="Exit non-zero if an enabled org key is missing.")
+    parser.add_argument("--validate", action="store_true", help="Validate org config and exit non-zero on errors.")
     args = parser.parse_args()
 
     config = load_config()
     payload = public_config_dict(config)
+    issues = validate_config(config, require_secrets=args.check_secrets)
     if args.check_secrets:
         missing = [
             org.api_key_env
@@ -266,13 +315,29 @@ def main() -> None:
         ]
         if missing:
             raise SystemExit(f"missing env vars: {', '.join(sorted(set(missing)))}")
+    if args.validate:
+        errors = [issue for issue in issues if issue["level"] == "error"]
+        if args.json:
+            print(json_dumps({**payload, "validation": issues}))
+        else:
+            for issue in issues:
+                print(f"{issue['level']}: {issue['field']}: {issue['message']}")
+            if not issues:
+                print("config valid")
+        if errors:
+            raise SystemExit(2)
+        return
     if args.json:
-        print(json_dumps(payload))
+        print(json_dumps({**payload, "validation": issues}))
     else:
         for org in config.enabled_orgs():
             print(f"{org.label}: slug={org.slug} slots={org.slots} key_env={org.api_key_env}")
         print(f"target_slots={config.target_slot_count()}")
         print(f"effective_pearl_fee_rate={config.risk.effective_fee_rate():.4f}")
+        if issues:
+            print("validation:")
+            for issue in issues:
+                print(f"  {issue['level']}: {issue['field']}: {issue['message']}")
 
 
 if __name__ == "__main__":

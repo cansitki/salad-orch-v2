@@ -187,7 +187,22 @@ python3 -m unittest discover -s tests -v
 ```
 
 To add a new organization, add one JSON object with `slots: 10` and an API key
-environment variable name. Do not put the API key value in git.
+environment variable name. Use `SALAD_FLEET_EXTRA_ORGS_JSON` to append to the
+default orgs; use `SALAD_FLEET_ORGS_JSON` only when intentionally replacing the
+whole org list. Do not put the API key value in git.
+
+Example append:
+
+```bash
+export SALAD_FLEET_EXTRA_ORGS_JSON='[{"label":"kray4","slug":"kray4","api_key_env":"SALAD_API_KEY_KRAY4","slot_prefix":"prl-kray4-roi","slots":10,"enabled":true}]'
+export SALAD_API_KEY_KRAY4=<private key in local shell or .env>
+python3 scripts/config_loader.py --validate
+python3 scripts/config_loader.py --check-secrets
+```
+
+The validator catches duplicate labels, slugs, slot prefixes, slot names,
+non-positive slot counts, and missing key env vars when `--check-secrets` is
+used.
 
 Supervisor process plan:
 

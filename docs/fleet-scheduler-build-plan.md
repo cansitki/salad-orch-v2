@@ -193,6 +193,13 @@ organizations:
 
 The actual API key value stays in `.env`.
 
+Current onboarding behavior:
+
+- default orgs are preserved unless `SALAD_FLEET_ORGS_JSON` explicitly replaces the whole list
+- `SALAD_FLEET_EXTRA_ORGS_JSON` appends new 10-slot organizations to the default/current list
+- `scripts/config_loader.py --validate` checks duplicate labels, slugs, slot prefixes, slot names, and invalid slot counts
+- `scripts/config_loader.py --check-secrets` verifies required env vars exist without printing values
+
 ### `price_oracle.py`
 
 Samples price from:
@@ -822,6 +829,8 @@ Acceptance:
 
 Current implementation:
 
+- `SALAD_FLEET_EXTRA_ORGS_JSON` appends new organizations without replacing existing orgs
+- `scripts/config_loader.py --validate` provides config onboarding checks
 - `scripts/maintenance.py` prunes historical rows with dry-run default and `--apply` for deletion
 - `scripts/maintenance.py --loop --interval 21600 --apply` can run as a six-hour retention job
 - `scripts/supervisor.py --include-maintenance` includes maintenance in the tmux plan

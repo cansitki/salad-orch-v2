@@ -168,6 +168,16 @@ def observed_profile_key_for_result(target: dict[str, Any], result: dict[str, An
     return result.get("current_profile_key")
 
 
+def cooldown_profile_key_for_result(target: dict[str, Any], result: dict[str, Any]) -> str | None:
+    action = str(result.get("action") or "")
+    if action in {"cooldown_pending", "cooldown_failed_patch"}:
+        return str(target["profile_key"])
+    if action == "patch" and str(result.get("reason") or "").startswith("stale_pending_profile_mismatch:"):
+        current = result.get("current_profile_key")
+        return str(current) if current else None
+    return None
+
+
 def current_profile_key(watch: Any, group: dict[str, Any] | None) -> str | None:
     if not group:
         return None
@@ -424,13 +434,14 @@ def run_once(
                 result = {"ok": False, "applied": False, **plan, "error": type(exc).__name__}
                 ok = False
                 error = f"{type(exc).__name__}: {str(exc)[:180]}"
-        if apply and ok and result.get("action") in {"cooldown_pending", "cooldown_failed_patch"}:
+        cooldown_profile_key = cooldown_profile_key_for_result(target, result)
+        if apply and ok and cooldown_profile_key:
             now = datetime.now(UTC)
             cooldown_rows.append(
                 {
                     "org_label": org_label,
                     "slot_name": str(target["slot_name"]),
-                    "profile_key": str(target["profile_key"]),
+                    "profile_key": cooldown_profile_key,
                     "no_gpu_since_utc": (
                         target.get("observed_profile_since_utc")
                         or target.get("observed_status_since_utc")

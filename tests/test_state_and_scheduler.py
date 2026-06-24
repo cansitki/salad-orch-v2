@@ -410,6 +410,42 @@ class StateAndSchedulerTest(unittest.TestCase):
 
         self.assertEqual(observed, "4090:batch:2048")
 
+    def test_org_worker_cooldowns_stale_pending_source_profile_after_patch(self) -> None:
+        profile_key = org_worker.cooldown_profile_key_for_result(
+            {"profile_key": "4090:batch:2048"},
+            {
+                "action": "patch",
+                "reason": "stale_pending_profile_mismatch:4080:batch:2048:age_300.0",
+                "current_profile_key": "4080:batch:2048",
+            },
+        )
+
+        self.assertEqual(profile_key, "4080:batch:2048")
+
+    def test_org_worker_cooldowns_pending_target_profile(self) -> None:
+        profile_key = org_worker.cooldown_profile_key_for_result(
+            {"profile_key": "4090:batch:2048"},
+            {
+                "action": "cooldown_pending",
+                "reason": "stale_pending_same_profile:4090:batch:2048:age_300.0",
+                "current_profile_key": "4090:batch:2048",
+            },
+        )
+
+        self.assertEqual(profile_key, "4090:batch:2048")
+
+    def test_org_worker_does_not_cooldown_normal_patch(self) -> None:
+        profile_key = org_worker.cooldown_profile_key_for_result(
+            {"profile_key": "4090:batch:2048"},
+            {
+                "action": "patch",
+                "reason": "missing_or_empty",
+                "current_profile_key": "4080:batch:2048",
+            },
+        )
+
+        self.assertIsNone(profile_key)
+
     def test_org_worker_failed_patch_becomes_profile_cooldown_action(self) -> None:
         class Watch:
             class Candidate:

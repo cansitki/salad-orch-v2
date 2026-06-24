@@ -6,6 +6,7 @@ import pathlib
 import shlex
 import subprocess
 import time
+from datetime import UTC, datetime
 from typing import Any
 
 import fleet_scheduler
@@ -18,27 +19,45 @@ from fleet_common import REPO_ROOT, json_dumps
 SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
 
 
-def process_plan(*, apply_workers: bool = False) -> list[dict[str, Any]]:
+def _with_db(cmd: list[str], db_path: str | None) -> list[str]:
+    return [*cmd, "--db", db_path] if db_path else cmd
+
+
+def process_plan(*, apply_workers: bool = False, db_path: str | None = None) -> list[dict[str, Any]]:
     config = load_config()
     plan = [
         {
             "name": "salad-price-oracle",
-            "cmd": ["python3", str(SCRIPT_DIR / "price_oracle.py"), "--loop", "--interval", "60"],
+            "heartbeat": "price_oracle",
+            "cmd": _with_db(["python3", str(SCRIPT_DIR / "price_oracle.py"), "--loop", "--interval", "60"], db_path),
+        },
+        {
+            "name": "salad-availability-probe",
+            "heartbeat": "availability_probe",
+            "cmd": _with_db(["python3", str(SCRIPT_DIR / "availability_probe.py"), "--loop", "--interval", "300"], db_path),
         },
         {
             "name": "salad-fleet-scheduler",
-            "cmd": ["python3", str(SCRIPT_DIR / "fleet_scheduler.py"), "--loop", "--interval", "60"],
+            "heartbeat": "fleet_scheduler",
+            "cmd": _with_db(["python3", str(SCRIPT_DIR / "fleet_scheduler.py"), "--loop", "--interval", "60"], db_path),
         },
         {
             "name": "salad-guard-shadow",
-            "cmd": ["python3", str(SCRIPT_DIR / "guard.py"), "--loop", "--interval", "30"],
+            "heartbeat": "guard",
+            "cmd": _with_db(["python3", str(SCRIPT_DIR / "guard.py"), "--loop", "--interval", "30"], db_path),
         },
     ]
     for org in config.enabled_orgs():
         cmd = ["python3", str(SCRIPT_DIR / "org_worker.py"), "--org", org.label, "--loop", "--interval", "30"]
         if apply_workers:
             cmd.append("--apply")
-        plan.append({"name": f"salad-org-worker-{org.label}", "cmd": cmd})
+        plan.append(
+            {
+                "name": f"salad-org-worker-{org.label}",
+                "heartbeat": f"org_worker:{org.label}",
+                "cmd": _with_db(cmd, db_path),
+            }
+        )
     return plan
 
 
@@ -47,13 +66,80 @@ def tmux_command(session: str, cmd: list[str]) -> list[str]:
     return ["tmux", "new-session", "-d", "-s", session, joined]
 
 
-def start_tmux_sessions(*, apply_workers: bool = False) -> list[dict[str, Any]]:
+def start_tmux_sessions(*, apply_workers: bool = False, db_path: str | None = None) -> list[dict[str, Any]]:
     results = []
-    for item in process_plan(apply_workers=apply_workers):
+    for item in process_plan(apply_workers=apply_workers, db_path=db_path):
         subprocess.run(["tmux", "has-session", "-t", item["name"]], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         subprocess.run(["tmux", "kill-session", "-t", item["name"]], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         result = subprocess.run(tmux_command(item["name"], item["cmd"]), check=False, capture_output=True, text=True)
         results.append({"name": item["name"], "returncode": result.returncode, "stderr": result.stderr.strip()})
+    return results
+
+
+def tmux_session_exists(session: str) -> bool:
+    result = subprocess.run(["tmux", "has-session", "-t", session], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return result.returncode == 0
+
+
+def heartbeat_age_seconds(row: Any) -> float | None:
+    if row is None:
+        return None
+    try:
+        at = datetime.fromisoformat(str(row["at_utc"]).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if at.tzinfo is None:
+        at = at.replace(tzinfo=UTC)
+    return max(0.0, (datetime.now(UTC) - at).total_seconds())
+
+
+def restart_tmux_session(item: dict[str, Any]) -> dict[str, Any]:
+    subprocess.run(["tmux", "kill-session", "-t", item["name"]], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    result = subprocess.run(tmux_command(item["name"], item["cmd"]), check=False, capture_output=True, text=True)
+    return {"name": item["name"], "action": "restart", "returncode": result.returncode, "stderr": result.stderr.strip()}
+
+
+def ensure_tmux_sessions(
+    *,
+    apply_workers: bool = False,
+    db_path: str | None = None,
+    restart_stale: bool = True,
+) -> list[dict[str, Any]]:
+    plan = process_plan(apply_workers=apply_workers, db_path=db_path)
+    results: list[dict[str, Any]] = []
+    with state_db.connect(db_path) as conn:
+        state_db.init_db(conn)
+        for item in plan:
+            exists = tmux_session_exists(str(item["name"]))
+            row = conn.execute("SELECT * FROM heartbeats WHERE process_name = ?", (item["heartbeat"],)).fetchone()
+            age = heartbeat_age_seconds(row)
+            stale_after = int(row["stale_after_seconds"]) if row is not None else None
+            stale = bool(age is not None and stale_after is not None and age > stale_after)
+            if not exists:
+                result = restart_tmux_session(item)
+                result["reason"] = "missing_tmux_session"
+            elif restart_stale and stale:
+                result = restart_tmux_session(item)
+                result["reason"] = f"stale_heartbeat:{age:.1f}s>{stale_after}s"
+            else:
+                result = {
+                    "name": item["name"],
+                    "action": "ok",
+                    "exists": exists,
+                    "heartbeat": item["heartbeat"],
+                    "age_seconds": round(age, 1) if age is not None else None,
+                    "stale_after_seconds": stale_after,
+                }
+            state_db.record_event(
+                conn,
+                "supervisor_ensure_process",
+                source="supervisor",
+                message=f"supervisor ensure {item['name']}",
+                payload=result,
+            )
+            results.append(result)
+        state_db.write_heartbeat(conn, "supervisor", payload={"ensured": len(results)})
+        conn.commit()
     return results
 
 
@@ -81,17 +167,27 @@ def main() -> None:
     parser.add_argument("--interval", type=int, default=60)
     parser.add_argument("--print-plan", action="store_true")
     parser.add_argument("--start-tmux", action="store_true")
+    parser.add_argument("--ensure", action="store_true", help="Start missing tmux sessions and restart stale heartbeats.")
+    parser.add_argument("--no-restart-stale", action="store_true", help="Only start missing sessions during --ensure.")
     parser.add_argument("--apply-workers", action="store_true", help="Include --apply for org workers when starting tmux.")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
 
     if args.print_plan:
-        payload = process_plan(apply_workers=args.apply_workers)
+        payload = process_plan(apply_workers=args.apply_workers, db_path=args.db)
         print(json_dumps(payload) if args.json else "\n".join(f"{item['name']}: {' '.join(item['cmd'])}" for item in payload))
         return
     if args.start_tmux:
-        payload = start_tmux_sessions(apply_workers=args.apply_workers)
+        payload = start_tmux_sessions(apply_workers=args.apply_workers, db_path=args.db)
         print(json_dumps(payload) if args.json else "\n".join(f"{item['name']}: rc={item['returncode']}" for item in payload))
+        return
+    if args.ensure:
+        payload = ensure_tmux_sessions(
+            apply_workers=args.apply_workers,
+            db_path=args.db,
+            restart_stale=not args.no_restart_stale,
+        )
+        print(json_dumps(payload) if args.json else "\n".join(f"{item['name']}: {item['action']}" for item in payload))
         return
     if args.loop:
         while True:

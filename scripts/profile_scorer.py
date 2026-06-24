@@ -45,6 +45,7 @@ def score_profiles(
         db_mode, db_price, db_fee = _mode_from_db(conn, config.risk.fleet_mode)
         sample = state_db.latest_price_sample(conn)
         attempt_stats = state_db.attempt_stats(conn)
+        availability = state_db.latest_profile_availability(conn)
 
         selected_mode = mode or db_mode
         decision_price = decision_price_usd if decision_price_usd is not None else db_price
@@ -75,6 +76,14 @@ def score_profiles(
             failure = float(stats.get("failure", 0))
             no_hash = float(stats.get("no_hash", 0))
             capacity_failure = float(stats.get("capacity_failure", 0))
+            availability_rows = [
+                org_rows[profile.profile_key]
+                for org_rows in availability.values()
+                if profile.profile_key in org_rows
+            ]
+            availability_known = bool(availability_rows)
+            availability_total = sum(int(row.get("available_count") or 0) for row in availability_rows if row.get("ok"))
+            availability_weight = min(30.0, availability_total * 3.0) if availability_known else 0.0
             total = success + failure
             success_rate = success / total if total else 0.5
             tier = profit_model.risk_tier(
@@ -89,9 +98,12 @@ def score_profiles(
             score = estimate.profit_day * 100
             score += success_rate * 20
             score += profile.expected_th * 0.03
+            score += availability_weight
             score -= failure * 2.0
             score -= no_hash * 8.0
             score -= capacity_failure * 5.0
+            if availability_known and availability_total <= 0:
+                score -= 100.0
 
             priority_allowed = profile.priority in allowed
             if not priority_allowed:
@@ -108,6 +120,9 @@ def score_profiles(
                 "failure": failure,
                 "no_hash": no_hash,
                 "capacity_failure": capacity_failure,
+                "availability_known": availability_known,
+                "availability_total": availability_total,
+                "availability_weight": availability_weight,
                 "priority_allowed": priority_allowed,
                 "min_profit_day": min_profit,
                 "allowed_priorities": list(allowed),

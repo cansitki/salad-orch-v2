@@ -84,6 +84,9 @@ Use one central scheduler with per-organization workers.
 price_oracle
   -> writes price history and risk mode
 
+availability_probe
+  -> writes per-org/profile Salad availability and no-GPU cooldown state
+
 profit_model
   -> computes expected profit per GPU profile
 
@@ -118,6 +121,7 @@ Expected long-running processes:
 | Process | Count | Responsibility |
 | --- | ---: | --- |
 | `price_oracle.py` | 1 | Track PRL price, trailing windows, and risk mode. |
+| `availability_probe.py` | 1 | Track Salad GPU availability and no-GPU cooldowns. |
 | `fleet_scheduler.py` | 1 | Assign target GPU profiles across all slots. |
 | `org_worker.py` | 1 per org | Execute Salad create/start/patch/reallocate actions. |
 | `guard.py` | 1 | Enforce no-hash, negative, and underperform rules. |
@@ -589,6 +593,9 @@ Safe default behavior:
 - default base fill allows `batch` only
 - `low` is available for boost/optimize modes only if profitable under the active fee and decision price
 - profile assignment is diversified across the top eligible profiles instead of sending every slot to one GPU
+- recent availability data caps per-org/profile assignments when present
+- active no-GPU cooldowns prevent retrying a profile until the cooldown expires
+- protected running slots keep their observed profile in `slot_targets`
 
 ### Phase 5: Per-Org Worker Refactor
 
@@ -616,6 +623,7 @@ Safe default behavior:
 - running slots are protected unless `--allow-live-retarget` is passed
 - creating/allocating slots are protected unless `--allow-pending-retarget` is passed
 - this lets the new worker shadow existing runtime without churn
+- every worker tick writes observed slot status/profile/protection state into `slots`
 
 ### Phase 6: Global Guard
 
@@ -664,6 +672,13 @@ Implemented files:
 
 - `scripts/supervisor.py`
 - `scripts/reporter.py`
+
+Current behavior:
+
+- `scripts/supervisor.py --print-plan` includes price oracle, availability probe, scheduler, guard, and one worker per enabled org
+- `scripts/supervisor.py --ensure` starts missing tmux sessions and restarts sessions with stale heartbeats
+- `scripts/reporter.py --refresh` records fresh guard snapshots at `0.64` and `0.70`
+- `scripts/reporter.py --refresh --refresh-timeout N` fails fast and reports stale DB data with `refresh_error` if live APIs hang
 
 ### Phase 8: Shadow Mode
 

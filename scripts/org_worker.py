@@ -88,6 +88,21 @@ def active_counts(group: dict[str, Any] | None) -> dict[str, int]:
     }
 
 
+def observed_status(group: dict[str, Any] | None, counts: dict[str, int]) -> str:
+    if group is None:
+        return "missing"
+    if counts["running"] > 0:
+        return "running"
+    if counts["creating"] > 0:
+        return "creating"
+    if counts["allocating"] > 0:
+        return "allocating"
+    if counts["stopping"] > 0:
+        return "stopping"
+    status = str(((group or {}).get("current_state") or {}).get("status") or "").lower()
+    return status or "stopped"
+
+
 def planned_action(
     watch: Any,
     slot_name: str,
@@ -102,6 +117,7 @@ def planned_action(
         group, instances = None, []
     current = current_profile_key(watch, group)
     counts = active_counts(group)
+    status = observed_status(group, counts)
     if group is None:
         action = "create"
         reason = "missing_container_group"
@@ -127,6 +143,8 @@ def planned_action(
         "reason": reason,
         "target_profile_key": target["profile_key"],
         "current_profile_key": current,
+        "observed_status": status,
+        "protected": counts["running"] > 0,
         "counts": counts,
         "instance_count": len(instances),
     }
@@ -219,6 +237,17 @@ def run_once(
                     "duration_ms": int((time.monotonic() - started) * 1000),
                     "error": error,
                     "payload": result,
+                },
+            )
+            state_db.update_slot_observation(
+                conn,
+                {
+                    "org_label": org_label,
+                    "slot_name": str(target["slot_name"]),
+                    "observed_profile_key": result.get("current_profile_key"),
+                    "observed_status": result.get("observed_status"),
+                    "live_hashrate_th": 0.0,
+                    "protected": bool(result.get("protected")),
                 },
             )
             results.append(result)

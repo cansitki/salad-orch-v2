@@ -71,6 +71,30 @@ CREATE TABLE IF NOT EXISTS profile_prices (
   PRIMARY KEY (org_label, profile_key)
 );
 
+CREATE TABLE IF NOT EXISTS profile_availability (
+  org_label TEXT NOT NULL,
+  profile_key TEXT NOT NULL,
+  available_count INTEGER,
+  ok INTEGER NOT NULL,
+  error TEXT,
+  checked_at_utc TEXT NOT NULL,
+  PRIMARY KEY (org_label, profile_key)
+);
+CREATE INDEX IF NOT EXISTS idx_profile_availability_checked ON profile_availability(checked_at_utc);
+
+CREATE TABLE IF NOT EXISTS search_cooldowns (
+  org_label TEXT NOT NULL,
+  slot_name TEXT NOT NULL,
+  profile_key TEXT NOT NULL,
+  no_gpu_since_utc TEXT,
+  sleep_until_utc TEXT,
+  attempts INTEGER NOT NULL DEFAULT 0,
+  reason TEXT,
+  updated_at_utc TEXT NOT NULL,
+  PRIMARY KEY (org_label, slot_name, profile_key)
+);
+CREATE INDEX IF NOT EXISTS idx_search_cooldowns_sleep ON search_cooldowns(sleep_until_utc);
+
 CREATE TABLE IF NOT EXISTS price_history (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   sampled_at_utc TEXT NOT NULL,
@@ -358,6 +382,110 @@ def upsert_gpu_profiles(conn: sqlite3.Connection, profiles: list[Any]) -> None:
         )
 
 
+def upsert_profile_availability(conn: sqlite3.Connection, row: dict[str, Any]) -> None:
+    conn.execute(
+        """
+        INSERT INTO profile_availability(
+          org_label, profile_key, available_count, ok, error, checked_at_utc
+        )
+        VALUES(?, ?, ?, ?, ?, ?)
+        ON CONFLICT(org_label, profile_key) DO UPDATE SET
+          available_count=excluded.available_count,
+          ok=excluded.ok,
+          error=excluded.error,
+          checked_at_utc=excluded.checked_at_utc
+        """,
+        (
+            row["org_label"],
+            row["profile_key"],
+            row.get("available_count"),
+            1 if row.get("ok") else 0,
+            row.get("error"),
+            row.get("checked_at_utc") or utc_now(),
+        ),
+    )
+
+
+def latest_profile_availability(conn: sqlite3.Connection, max_age_seconds: int = 300) -> dict[str, dict[str, dict[str, Any]]]:
+    rows = conn.execute(
+        """
+        SELECT org_label, profile_key, available_count, ok, error, checked_at_utc
+        FROM profile_availability
+        WHERE julianday(checked_at_utc) >= julianday('now', ?)
+        """,
+        (f"-{max_age_seconds} seconds",),
+    ).fetchall()
+    by_org: dict[str, dict[str, dict[str, Any]]] = {}
+    for row in rows:
+        org = str(row["org_label"])
+        by_org.setdefault(org, {})[str(row["profile_key"])] = dict(row)
+    return by_org
+
+
+def record_search_state(conn: sqlite3.Connection, row: dict[str, Any]) -> None:
+    conn.execute(
+        """
+        INSERT INTO search_cooldowns(
+          org_label, slot_name, profile_key, no_gpu_since_utc,
+          sleep_until_utc, attempts, reason, updated_at_utc
+        )
+        VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(org_label, slot_name, profile_key) DO UPDATE SET
+          no_gpu_since_utc=excluded.no_gpu_since_utc,
+          sleep_until_utc=excluded.sleep_until_utc,
+          attempts=excluded.attempts,
+          reason=excluded.reason,
+          updated_at_utc=excluded.updated_at_utc
+        """,
+        (
+            row["org_label"],
+            row["slot_name"],
+            row["profile_key"],
+            row.get("no_gpu_since_utc"),
+            row.get("sleep_until_utc"),
+            int(row.get("attempts") or 0),
+            row.get("reason"),
+            row.get("updated_at_utc") or utc_now(),
+        ),
+    )
+
+
+def active_search_cooldowns(conn: sqlite3.Connection) -> set[tuple[str, str, str]]:
+    rows = conn.execute(
+        """
+        SELECT org_label, slot_name, profile_key
+        FROM search_cooldowns
+        WHERE sleep_until_utc IS NOT NULL
+          AND julianday(sleep_until_utc) > julianday('now')
+        """
+    ).fetchall()
+    return {(str(row["org_label"]), str(row["slot_name"]), str(row["profile_key"])) for row in rows}
+
+
+def update_slot_observation(conn: sqlite3.Connection, row: dict[str, Any]) -> None:
+    now = row.get("updated_at_utc") or utc_now()
+    conn.execute(
+        """
+        UPDATE slots
+        SET observed_profile_key = ?,
+            observed_status = ?,
+            live_hashrate_th = ?,
+            protected = ?,
+            updated_at_utc = ?
+        WHERE org_label = ? AND slot_name = ?
+        """,
+        (
+            row.get("observed_profile_key"),
+            row.get("observed_status"),
+            float(row.get("live_hashrate_th") or 0),
+            1 if row.get("protected") else 0,
+            now,
+            row["org_label"],
+            row["slot_name"],
+        ),
+    )
+
+
 def insert_price_sample(conn: sqlite3.Connection, sample: dict[str, Any]) -> int:
     cursor = conn.execute(
         """
@@ -594,6 +722,8 @@ def status_payload(conn: sqlite3.Connection) -> dict[str, Any]:
         "organizations",
         "slots",
         "gpu_profiles",
+        "profile_availability",
+        "search_cooldowns",
         "price_history",
         "slot_targets",
         "attempts",
@@ -608,12 +738,24 @@ def status_payload(conn: sqlite3.Connection) -> dict[str, Any]:
         dict(row)
         for row in conn.execute("SELECT process_name, status, at_utc, stale_after_seconds FROM heartbeats ORDER BY process_name")
     ]
+    slot_status = [
+        dict(row)
+        for row in conn.execute(
+            """
+            SELECT observed_status, COUNT(*) AS count
+            FROM slots
+            GROUP BY observed_status
+            ORDER BY observed_status
+            """
+        )
+    ]
     return {
         "db": str(conn.execute("PRAGMA database_list").fetchone()["file"]),
         "tables": tables,
         "latest_risk_mode": dict(risk) if risk else None,
         "latest_price_sample": dict(price) if price else None,
         "heartbeats": heartbeats,
+        "slot_status": slot_status,
     }
 
 

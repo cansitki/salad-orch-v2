@@ -98,6 +98,7 @@ The runnable code lives in `scripts/`.
 | `scripts/state_db.py` | SQLite state DB, schema, heartbeats, events, targets, scores. |
 | `scripts/config_loader.py` | Multi-org config loader. Defaults to 4 orgs * 10 slots, supports JSON org config. |
 | `scripts/price_oracle.py` | Samples PearlFortune/SafeTrade price and writes trailing risk mode. |
+| `scripts/availability_probe.py` | Samples Salad GPU availability per org/profile and records no-GPU cooldowns. |
 | `scripts/profit_model.py` | Deterministic expected profit and break-even model with configurable Pearl fee. |
 | `scripts/profile_scorer.py` | Scores GPU profiles using expected profit and recent attempt history. |
 | `scripts/fleet_scheduler.py` | Central dry-run-safe target assignment across all org slots. |
@@ -159,6 +160,12 @@ PRL_PEARL_FEE_RATE=0.01 python3 scripts/fleet_scheduler.py --price 0.64 --fee 0.
 python3 scripts/reporter.py
 ```
 
+Probe live Salad availability for the highest-profit batch profile only:
+
+```bash
+python3 scripts/availability_probe.py --profile-limit 1
+```
+
 Dry-run one organization worker:
 
 ```bash
@@ -178,6 +185,25 @@ python3 -m unittest discover -s tests -v
 
 To add a new organization, add one JSON object with `slots: 10` and an API key
 environment variable name. Do not put the API key value in git.
+
+Supervisor process plan:
+
+```bash
+python3 scripts/supervisor.py --print-plan
+python3 scripts/supervisor.py --ensure
+```
+
+`--ensure` starts missing tmux sessions and restarts sessions only when their
+heartbeat is stale. Use `--no-restart-stale` for a start-missing-only pass.
+
+Fresh operator report with live snapshots:
+
+```bash
+python3 scripts/reporter.py --refresh --refresh-timeout 45
+```
+
+If live Salad/PearlFortune lookups are slow, the reporter returns the latest DB
+state with `refresh_error=...` instead of blocking indefinitely.
 
 Start fill mode:
 

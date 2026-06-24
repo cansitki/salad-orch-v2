@@ -32,17 +32,82 @@ def build_targets(
     mode: str,
     decision_price_usd: float,
     width: int = 10,
+    slot_rows: dict[tuple[str, str], dict[str, Any]] | None = None,
+    availability: dict[str, dict[str, dict[str, Any]]] | None = None,
+    cooldowns: set[tuple[str, str, str]] | None = None,
 ) -> list[dict[str, Any]]:
     profiles = _top_eligible_profiles(scores, width=width)
     if not profiles:
         return []
+    slot_rows = slot_rows or {}
+    availability = availability or {}
+    cooldowns = cooldowns or set()
+    scores_by_key = {str(score["profile_key"]): score for score in scores}
+    assigned_by_org_profile: dict[tuple[str, str], int] = {}
     targets: list[dict[str, Any]] = []
     assigned_at = utc_now()
-    enabled_orgs = config.enabled_orgs()
+    enabled_orgs = sorted(
+        config.enabled_orgs(),
+        key=lambda org: sum(
+            1
+            for slot_name in org.slot_names()
+            if (slot_rows.get((org.label, slot_name), {}).get("observed_status") or "")
+            in {"running", "creating", "allocating"}
+        ),
+    )
+
+    def has_capacity(org_label: str, slot_name: str, profile_key: str) -> bool:
+        if (org_label, slot_name, profile_key) in cooldowns:
+            return False
+        if (org_label, "*", profile_key) in cooldowns:
+            return False
+        org_availability = availability.get(org_label, {})
+        if profile_key not in org_availability:
+            return True
+        row = org_availability[profile_key]
+        if not row.get("ok"):
+            return True
+        available_count = int(row.get("available_count") or 0)
+        used = assigned_by_org_profile.get((org_label, profile_key), 0)
+        return used < available_count
+
+    def slot_sort_key(org_label: str, slot_name: str) -> tuple[int, str]:
+        row = slot_rows.get((org_label, slot_name), {})
+        status = str(row.get("observed_status") or "unknown")
+        protected = int(row.get("protected") or 0) > 0
+        if protected:
+            return (3, slot_name)
+        if status in {"missing", "stopped", "unknown", ""}:
+            return (0, slot_name)
+        if status in {"creating", "allocating"}:
+            return (1, slot_name)
+        return (2, slot_name)
+
     for org_index, org in enumerate(enabled_orgs):
-        for slot_index, slot_name in enumerate(org.slot_names(), start=1):
-            profile_index = (slot_index - 1 + org_index * 3) % len(profiles)
-            profile = profiles[profile_index]
+        ordered_slots = sorted(org.slot_names(), key=lambda slot_name: slot_sort_key(org.label, slot_name))
+        for slot_index, slot_name in enumerate(ordered_slots, start=1):
+            slot_row = slot_rows.get((org.label, slot_name), {})
+            observed_profile = slot_row.get("observed_profile_key")
+            protected = int(slot_row.get("protected") or 0) > 0
+            if protected and observed_profile and observed_profile in scores_by_key:
+                profile = scores_by_key[str(observed_profile)]
+                profile_index = 0
+                reason = f"{mode}:protected_observed_profile"
+            else:
+                selected: tuple[int, dict[str, Any]] | None = None
+                for offset in range(len(profiles)):
+                    profile_index = (slot_index - 1 + org_index * 3 + offset) % len(profiles)
+                    candidate = profiles[profile_index]
+                    if has_capacity(org.label, slot_name, str(candidate["profile_key"])):
+                        selected = (profile_index, candidate)
+                        break
+                if selected is None:
+                    continue
+                profile_index, profile = selected
+                reason = f"{mode}:diversified_rank_{profile_index + 1}_of_{len(profiles)}"
+            assigned_by_org_profile[(org.label, str(profile["profile_key"]))] = (
+                assigned_by_org_profile.get((org.label, str(profile["profile_key"])), 0) + 1
+            )
             targets.append(
                 {
                     "org_label": org.label,
@@ -55,8 +120,8 @@ def build_targets(
                     "mode": mode,
                     "decision_price_usd": decision_price_usd,
                     "expected_profit_day": float(profile["expected_profit_day"]),
-                    "protected": False,
-                    "reason": f"{mode}:diversified_rank_{profile_index + 1}_of_{len(profiles)}",
+                    "protected": protected,
+                    "reason": reason,
                     "assigned_at_utc": assigned_at,
                 }
             )
@@ -78,6 +143,12 @@ def schedule_once(
         state_db.init_db(conn)
         state_db.sync_config(conn, config)
         risk = state_db.latest_risk_mode(conn)
+        slot_rows = {
+            (str(row["org_label"]), str(row["slot_name"])): dict(row)
+            for row in conn.execute("SELECT * FROM slots").fetchall()
+        }
+        availability = state_db.latest_profile_availability(conn)
+        cooldowns = state_db.active_search_cooldowns(conn)
         db_mode = str(risk["mode"]) if risk else None
         db_price = float(risk["decision_price_usd"]) if risk else config.risk.decision_price_for_mode()
         selected_mode = _scheduler_mode(config, mode or db_mode)
@@ -98,6 +169,9 @@ def schedule_once(
         mode=selected_mode,
         decision_price_usd=decision_price,
         width=width,
+        slot_rows=slot_rows,
+        availability=availability,
+        cooldowns=cooldowns,
     )
 
     with state_db.connect(db_path) as conn:

@@ -12,6 +12,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 import fleet_scheduler
 import org_worker
+import profile_scorer
 import state_db
 from config_loader import load_config
 
@@ -89,6 +90,69 @@ class StateAndSchedulerTest(unittest.TestCase):
         self.assertEqual(row["observed_status_since_utc"], "2026-06-24T12:00:00+00:00")
         self.assertEqual(changed["observed_profile_since_utc"], "2026-06-24T12:02:00+00:00")
         self.assertEqual(changed["observed_status_since_utc"], "2026-06-24T12:02:00+00:00")
+
+    def test_profile_scorer_uses_runtime_profit_snapshot_history(self) -> None:
+        now = datetime.now(UTC)
+        earlier = now - timedelta(minutes=2)
+        with state_db.connect(self.db_path) as conn:
+            state_db.init_db(conn)
+            state_db.sync_config(conn, load_config())
+            state_db.record_profit_snapshot(
+                conn,
+                {
+                    "at_utc": now.isoformat(timespec="seconds"),
+                    "scope": "slot",
+                    "org_label": "kray",
+                    "slot_name": "prl-kray-roi-01",
+                    "decision_price_usd": 0.64,
+                    "th": 0,
+                    "cost_day": 1.44,
+                    "revenue_day": 0,
+                    "profit_day": -1.44,
+                    "payload": {"gpu": "3080", "priority": "batch", "worker": "NO_POOL_HASHRATE"},
+                },
+            )
+            state_db.record_attempt(
+                conn,
+                {
+                    "at_utc": earlier.isoformat(timespec="seconds"),
+                    "org_label": "kray",
+                    "slot_name": "prl-kray-roi-02",
+                    "action": "patch",
+                    "profile_key": "3090:batch:2048",
+                    "ok": True,
+                },
+            )
+            state_db.record_profit_snapshot(
+                conn,
+                {
+                    "at_utc": now.isoformat(timespec="seconds"),
+                    "scope": "slot",
+                    "org_label": "kray",
+                    "slot_name": "prl-kray-roi-02",
+                    "decision_price_usd": 0.64,
+                    "th": 100,
+                    "cost_day": 2.16,
+                    "revenue_day": 3,
+                    "profit_day": 0.84,
+                    "payload": {"gpu": "3090", "priority": "batch", "worker": "kray-prl-test"},
+                },
+            )
+            conn.commit()
+
+        rows = profile_scorer.score_profiles(
+            db_path=self.db_path,
+            mode="base_fill",
+            decision_price_usd=0.64,
+            pearl_fee_rate=0.01,
+            write=False,
+        )
+        by_profile = {row["profile_key"]: row for row in rows}
+        self.assertEqual(by_profile["3080:batch:2048"]["reason"]["no_hash"], 1.0)
+        self.assertEqual(by_profile["3080:batch:2048"]["reason"]["negative"], 1.0)
+        self.assertEqual(by_profile["3080:batch:2048"]["reason"]["no_hash_sample_rate"], 1.0)
+        self.assertEqual(by_profile["3090:batch:2048"]["reason"]["live_hash_samples"], 1.0)
+        self.assertEqual(by_profile["3090:batch:2048"]["reason"]["avg_time_to_hash_seconds"], 120.0)
 
     def test_org_worker_waits_before_retargeting_fresh_pending_mismatch(self) -> None:
         class Watch:

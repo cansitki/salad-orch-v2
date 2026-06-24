@@ -40,6 +40,13 @@ class ProfitModelTest(unittest.TestCase):
         self.assertGreater(one_percent, five_percent)
         self.assertGreater(one_percent, 0.05)
 
+    def test_observed_profile_key_maps_unique_gpu_priority(self) -> None:
+        self.assertEqual(
+            profit_model.observed_profile_key("3080", "batch"),
+            "3080:batch:2048",
+        )
+        self.assertIsNone(profit_model.observed_profile_key("requested", "batch"))
+
     def test_cli_help_renders_percent_help_text(self) -> None:
         result = subprocess.run(
             [sys.executable, str(ROOT / "scripts" / "profit_model.py"), "--help"],

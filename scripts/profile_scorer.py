@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import argparse
+import json
 from dataclasses import asdict
+from datetime import UTC, datetime
 from typing import Any
 
 import profit_model
@@ -26,6 +28,137 @@ def _mode_from_db(conn, fallback: str) -> tuple[str, float, float]:
     return str(risk["mode"]), float(risk["decision_price_usd"]), float(risk["pearl_fee_rate"])
 
 
+def _parse_payload(row: Any) -> dict[str, Any]:
+    try:
+        return json.loads(row["payload_json"] or "{}")
+    except (TypeError, json.JSONDecodeError):
+        return {}
+
+
+def _parse_utc(value: Any) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed
+
+
+def _seconds_between(start: Any, end: Any) -> float | None:
+    start_dt = _parse_utc(start)
+    end_dt = _parse_utc(end)
+    if start_dt is None or end_dt is None or end_dt < start_dt:
+        return None
+    return (end_dt - start_dt).total_seconds()
+
+
+def _snapshot_profile_key(row: Any, payload: dict[str, Any]) -> str | None:
+    if row["profile_key"]:
+        return str(row["profile_key"])
+    return profit_model.observed_profile_key(payload.get("gpu"), payload.get("priority"))
+
+
+def profile_runtime_stats(conn) -> dict[str, dict[str, float]]:
+    stats: dict[str, dict[str, float]] = {}
+    rows = conn.execute(
+        """
+        SELECT *
+        FROM profit_snapshots
+        WHERE scope = 'slot'
+          AND at_utc >= datetime('now', '-24 hours')
+        ORDER BY at_utc ASC, id ASC
+        """
+    ).fetchall()
+    live_snapshots: list[dict[str, Any]] = []
+    for row in rows:
+        payload = _parse_payload(row)
+        profile_key = _snapshot_profile_key(row, payload)
+        if not profile_key:
+            continue
+        item = stats.setdefault(
+            profile_key,
+            {
+                "profit_samples": 0,
+                "live_hash_samples": 0,
+                "no_hash_samples": 0,
+                "negative_samples": 0,
+                "th_total": 0.0,
+                "profit_total": 0.0,
+                "time_to_hash_samples": 0,
+                "time_to_hash_total_seconds": 0.0,
+            },
+        )
+        th = float(row["th"] or 0)
+        profit_day = float(row["profit_day"] or 0)
+        item["profit_samples"] += 1
+        item["th_total"] += th
+        item["profit_total"] += profit_day
+        if th > 0:
+            item["live_hash_samples"] += 1
+            live_snapshots.append(
+                {
+                    "org_label": row["org_label"],
+                    "slot_name": row["slot_name"],
+                    "profile_key": profile_key,
+                    "at_utc": row["at_utc"],
+                }
+            )
+        else:
+            item["no_hash_samples"] += 1
+        if profit_day < 0:
+            item["negative_samples"] += 1
+
+    attempts = conn.execute(
+        """
+        SELECT at_utc, org_label, slot_name, profile_key, action
+        FROM attempts
+        WHERE profile_key IS NOT NULL
+          AND ok = 1
+          AND at_utc >= datetime('now', '-24 hours')
+          AND action NOT LIKE 'dry_run_%'
+          AND action IN ('create', 'patch', 'start', 'guard_retarget')
+        ORDER BY at_utc ASC
+        """
+    ).fetchall()
+    for attempt in attempts:
+        attempt_profile = str(attempt["profile_key"])
+        first_live = next(
+            (
+                snapshot
+                for snapshot in live_snapshots
+                if snapshot["org_label"] == attempt["org_label"]
+                and snapshot["slot_name"] == attempt["slot_name"]
+                and snapshot["profile_key"] == attempt_profile
+                and _seconds_between(attempt["at_utc"], snapshot["at_utc"]) is not None
+            ),
+            None,
+        )
+        if not first_live:
+            continue
+        seconds = _seconds_between(attempt["at_utc"], first_live["at_utc"])
+        if seconds is None:
+            continue
+        item = stats.setdefault(
+            attempt_profile,
+            {
+                "profit_samples": 0,
+                "live_hash_samples": 0,
+                "no_hash_samples": 0,
+                "negative_samples": 0,
+                "th_total": 0.0,
+                "profit_total": 0.0,
+                "time_to_hash_samples": 0,
+                "time_to_hash_total_seconds": 0.0,
+            },
+        )
+        item["time_to_hash_samples"] += 1
+        item["time_to_hash_total_seconds"] += seconds
+    return stats
+
+
 def score_profiles(
     *,
     db_path: str | None = None,
@@ -45,6 +178,7 @@ def score_profiles(
         db_mode, db_price, db_fee = _mode_from_db(conn, config.risk.fleet_mode)
         sample = state_db.latest_price_sample(conn)
         attempt_stats = state_db.attempt_stats(conn)
+        runtime_stats = profile_runtime_stats(conn)
         availability = state_db.latest_profile_availability(conn)
 
         selected_mode = mode or db_mode
@@ -74,8 +208,26 @@ def score_profiles(
             stats = attempt_stats.get(profile.profile_key, {})
             success = float(stats.get("success", 0))
             failure = float(stats.get("failure", 0))
-            no_hash = float(stats.get("no_hash", 0))
+            runtime = runtime_stats.get(profile.profile_key, {})
+            attempt_no_hash = float(stats.get("no_hash", 0))
+            runtime_no_hash = float(runtime.get("no_hash_samples", 0))
+            no_hash = attempt_no_hash + runtime_no_hash
+            negative = float(runtime.get("negative_samples", 0))
             capacity_failure = float(stats.get("capacity_failure", 0))
+            profit_samples = float(runtime.get("profit_samples", 0))
+            live_hash_samples = float(runtime.get("live_hash_samples", 0))
+            avg_observed_th = (
+                float(runtime.get("th_total", 0)) / profit_samples if profit_samples else 0.0
+            )
+            live_hash_sample_rate = live_hash_samples / profit_samples if profit_samples else None
+            no_hash_sample_rate = float(runtime.get("no_hash_samples", 0)) / profit_samples if profit_samples else 0.0
+            negative_sample_rate = negative / profit_samples if profit_samples else 0.0
+            time_to_hash_samples = float(runtime.get("time_to_hash_samples", 0))
+            avg_time_to_hash_seconds = (
+                float(runtime.get("time_to_hash_total_seconds", 0)) / time_to_hash_samples
+                if time_to_hash_samples
+                else None
+            )
             availability_rows = [
                 org_rows[profile.profile_key]
                 for org_rows in availability.values()
@@ -99,8 +251,14 @@ def score_profiles(
             score += success_rate * 20
             score += profile.expected_th * 0.03
             score += availability_weight
+            if live_hash_sample_rate is not None:
+                score += live_hash_sample_rate * 15
+            if avg_time_to_hash_seconds is not None:
+                score += max(0.0, 12.0 - (avg_time_to_hash_seconds / 60.0))
             score -= failure * 2.0
-            score -= no_hash * 8.0
+            score -= attempt_no_hash * 8.0
+            score -= no_hash_sample_rate * 40.0
+            score -= negative_sample_rate * 45.0
             score -= capacity_failure * 5.0
             if availability_known and availability_total <= 0:
                 score -= 100.0
@@ -119,7 +277,20 @@ def score_profiles(
                 "success": success,
                 "failure": failure,
                 "no_hash": no_hash,
+                "attempt_no_hash": attempt_no_hash,
+                "runtime_no_hash": runtime_no_hash,
+                "negative": negative,
                 "capacity_failure": capacity_failure,
+                "profit_samples": profit_samples,
+                "live_hash_samples": live_hash_samples,
+                "avg_observed_th": round(avg_observed_th, 4),
+                "live_hash_sample_rate": round(live_hash_sample_rate, 4) if live_hash_sample_rate is not None else None,
+                "no_hash_sample_rate": round(no_hash_sample_rate, 4),
+                "negative_sample_rate": round(negative_sample_rate, 4),
+                "time_to_hash_samples": time_to_hash_samples,
+                "avg_time_to_hash_seconds": (
+                    round(avg_time_to_hash_seconds, 1) if avg_time_to_hash_seconds is not None else None
+                ),
                 "availability_known": availability_known,
                 "availability_total": availability_total,
                 "availability_weight": availability_weight,

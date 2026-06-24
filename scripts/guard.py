@@ -76,6 +76,13 @@ def issue_current_profile_key(conn, row: dict[str, Any]) -> str | None:
     return str(profile["profile_key"]) if profile else None
 
 
+def snapshot_profile_key(conn, row: dict[str, Any]) -> str | None:
+    from_payload = profit_model.observed_profile_key(row.get("gpu"), row.get("priority"))
+    if from_payload:
+        return from_payload
+    return issue_current_profile_key(conn, row)
+
+
 def replacement_target(
     conn,
     *,
@@ -373,6 +380,7 @@ def run_once(*, db_path: str | None = None, price: float | None = None, apply: b
             },
         )
         for row in payload.get("slots") or []:
+            profile_key = snapshot_profile_key(conn, row)
             state_db.record_profit_snapshot(
                 conn,
                 {
@@ -380,6 +388,7 @@ def run_once(*, db_path: str | None = None, price: float | None = None, apply: b
                     "scope": "slot",
                     "org_label": row.get("org"),
                     "slot_name": row.get("slot"),
+                    "profile_key": profile_key,
                     "decision_price_usd": decision_price,
                     "live_price_usd": payload.get("live_market_prl_price"),
                     "th": row.get("th"),

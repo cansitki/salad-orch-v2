@@ -110,7 +110,7 @@ The runnable code lives in `scripts/`.
 | `scripts/price_oracle.py` | Samples PearlFortune/SafeTrade price and writes trailing risk mode. |
 | `scripts/availability_probe.py` | Samples Salad GPU availability per org/profile and records no-GPU cooldowns. |
 | `scripts/profit_model.py` | Deterministic expected profit and break-even model with configurable Pearl fee. |
-| `scripts/profile_scorer.py` | Scores GPU profiles using expected profit and recent attempt history. |
+| `scripts/profile_scorer.py` | Scores GPU profiles using expected profit, availability, attempts, and live no-hash/negative/time-to-hash history. |
 | `scripts/fleet_scheduler.py` | Central dry-run-safe target assignment across all org slots. |
 | `scripts/org_worker.py` | Per-org worker that consumes scheduler targets; live actions require `--apply`. |
 | `scripts/guard.py` | Guard v2. Analyzes by default; `--apply` retargets/stops no-hash or negative slots after grace. |

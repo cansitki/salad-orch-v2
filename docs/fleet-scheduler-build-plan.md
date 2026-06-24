@@ -703,6 +703,13 @@ Implemented file:
 
 - `scripts/profile_scorer.py`
 
+Current behavior:
+
+- stores `profile_scores.reason_json` with expected profit, success/failure counts, availability, live hash sample rate, no-hash sample rate, negative sample rate, average observed TH, and average time-to-hash when available
+- derives profile keys from historical slot profit snapshots that only stored GPU/priority payloads, so older snapshots still contribute to scoring
+- future guard slot snapshots persist `profile_key` directly for cleaner profile history
+- penalizes profiles with repeated capacity failures and rate-based no-hash/negative history; rewards profiles with live hash samples and faster time-to-hash
+
 ### Phase 4: Central Scheduler
 
 Deliver:

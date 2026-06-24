@@ -105,6 +105,19 @@ def load_profiles() -> list[Profile]:
     return sorted(profiles.values(), key=lambda item: (item.priority != "batch", item.gpu_key, item.memory_mb))
 
 
+def observed_profile_key(gpu_key: Any, priority: Any) -> str | None:
+    normalized_gpu = str(gpu_key or "").lower().strip()
+    normalized_priority = str(priority or "").lower().strip()
+    if not normalized_gpu or not normalized_priority or normalized_gpu == "requested":
+        return None
+    matches = [
+        profile.profile_key
+        for profile in load_profiles()
+        if profile.gpu_key == normalized_gpu and profile.priority == normalized_priority
+    ]
+    return matches[0] if len(matches) == 1 else None
+
+
 def expected_profit(
     profile: Profile,
     *,

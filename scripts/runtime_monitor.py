@@ -151,6 +151,10 @@ def _summarize_rollout(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _has_guard_issues(summary: dict[str, Any]) -> bool:
+    return int(summary.get("no_hash") or 0) > 0 or int(summary.get("negative") or 0) > 0
+
+
 def _run_shadow(
     runner: RolloutRunner,
     *,
@@ -244,6 +248,8 @@ def run_monitor_tick(
     apply_guard: bool = False,
     apply_one_org: bool = False,
     apply_all_orgs_pending: bool = False,
+    guard_on_issues: bool = False,
+    guard_due: bool = False,
     org: str | None = None,
     allow_pending_retarget: bool = False,
     pending_retarget_after_seconds: int = 45,
@@ -258,6 +264,8 @@ def run_monitor_tick(
         raise SystemExit("live actions require --confirm-live-actions")
     if live_action_count > 1:
         raise SystemExit("choose only one live action per monitor tick")
+    if guard_on_issues and not apply_all_orgs_pending:
+        raise SystemExit("guard_on_issues requires apply_all_orgs_pending")
     if apply_one_org and not org:
         raise SystemExit("--org is required with --apply-one-org")
 
@@ -285,6 +293,8 @@ def run_monitor_tick(
 
     if shadow_summary["ok"]:
         if apply_guard:
+            action = "guard-apply"
+        elif guard_on_issues and guard_due and apply_all_orgs_pending and _has_guard_issues(shadow_summary):
             action = "guard-apply"
         elif apply_all_orgs_pending:
             action = "all-orgs-pending"
@@ -382,6 +392,12 @@ def main() -> None:
         action="store_true",
         help="Run all-org worker apply after a passing shadow gate, limited to stale creating/allocating retargets.",
     )
+    parser.add_argument(
+        "--guard-on-issues-every",
+        type=int,
+        default=0,
+        help="With --apply-all-orgs-pending, run guard-apply instead every N ticks when shadow reports no-hash/negative slots.",
+    )
     parser.add_argument("--org", default=None, help="Organization label for --apply-one-org.")
     parser.add_argument("--allow-pending-retarget", action="store_true", help="Allow one-org apply to patch stale creating/allocating slots.")
     parser.add_argument("--pending-retarget-after-seconds", type=int, default=45)
@@ -402,6 +418,7 @@ def main() -> None:
 
     ticks = 0
     while True:
+        guard_on_issues = args.guard_on_issues_every > 0
         payload = run_monitor_tick(
             db_path=args.db,
             price=args.price,
@@ -412,6 +429,8 @@ def main() -> None:
             apply_guard=args.apply_guard,
             apply_one_org=args.apply_one_org,
             apply_all_orgs_pending=args.apply_all_orgs_pending,
+            guard_on_issues=guard_on_issues,
+            guard_due=bool(guard_on_issues and ticks % args.guard_on_issues_every == 0),
             org=args.org,
             allow_pending_retarget=args.allow_pending_retarget,
             pending_retarget_after_seconds=args.pending_retarget_after_seconds,

@@ -33,6 +33,17 @@ def rollout_payload(*, stage: str, ok: bool = True) -> dict:
     }
 
 
+def rollout_payload_without_issues(*, stage: str, ok: bool = True) -> dict:
+    payload = rollout_payload(stage=stage, ok=ok)
+    payload["report"] = {
+        "live_hashing_gpus": 10,
+        "no_hash": 0,
+        "negative": 0,
+        "stuck": 0,
+    }
+    return payload
+
+
 class RuntimeMonitorTest(unittest.TestCase):
     def test_read_only_tick_runs_shadow_only(self) -> None:
         calls = []
@@ -153,6 +164,74 @@ class RuntimeMonitorTest(unittest.TestCase):
         self.assertNotIn("allow_live_retarget", calls[1])
         self.assertEqual(calls[1]["pending_retarget_after_seconds"], 75)
         self.assertTrue(calls[1]["require_secrets"])
+
+    def test_guard_on_issues_runs_guard_instead_of_fill_when_due(self) -> None:
+        calls = []
+
+        def runner(**kwargs):
+            calls.append(kwargs)
+            return rollout_payload(stage=kwargs["stage"])
+
+        payload = runtime_monitor.run_monitor_tick(
+            apply_all_orgs_pending=True,
+            guard_on_issues=True,
+            guard_due=True,
+            confirm_live_actions=True,
+            runner=runner,
+        )
+
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["action"], "guard-apply")
+        self.assertEqual([call["stage"] for call in calls], ["shadow", "guard-apply"])
+        self.assertTrue(calls[0]["skip_guard"])
+        self.assertTrue(calls[1]["apply_guard"])
+
+    def test_guard_on_issues_uses_fill_when_not_due(self) -> None:
+        calls = []
+
+        def runner(**kwargs):
+            calls.append(kwargs)
+            return rollout_payload(stage=kwargs["stage"])
+
+        payload = runtime_monitor.run_monitor_tick(
+            apply_all_orgs_pending=True,
+            guard_on_issues=True,
+            guard_due=False,
+            confirm_live_actions=True,
+            runner=runner,
+        )
+
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["action"], "all-orgs-pending")
+        self.assertEqual([call["stage"] for call in calls], ["shadow", "all-orgs"])
+
+    def test_guard_on_issues_uses_fill_when_shadow_has_no_issues(self) -> None:
+        calls = []
+
+        def runner(**kwargs):
+            calls.append(kwargs)
+            return rollout_payload_without_issues(stage=kwargs["stage"])
+
+        payload = runtime_monitor.run_monitor_tick(
+            apply_all_orgs_pending=True,
+            guard_on_issues=True,
+            guard_due=True,
+            confirm_live_actions=True,
+            runner=runner,
+        )
+
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["action"], "all-orgs-pending")
+        self.assertEqual([call["stage"] for call in calls], ["shadow", "all-orgs"])
+
+    def test_guard_on_issues_requires_all_orgs_pending_mode(self) -> None:
+        with self.assertRaises(SystemExit):
+            runtime_monitor.run_monitor_tick(
+                guard_on_issues=True,
+                guard_due=True,
+                confirm_live_actions=True,
+                runner=lambda **_: rollout_payload(stage="shadow"),
+            )
 
     def test_worker_parallelism_is_passed_to_shadow_and_action(self) -> None:
         calls = []

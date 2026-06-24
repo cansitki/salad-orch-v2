@@ -1305,6 +1305,67 @@ class StateAndSchedulerTest(unittest.TestCase):
         ]
         self.assertEqual(kray_4090, [])
 
+    def test_scheduler_prefers_reported_availability_outside_top_width_before_probe_fallback(self) -> None:
+        config = config_loader.FleetConfig(
+            organizations=(
+                config_loader.OrgConfig(
+                    label="kray",
+                    slug="kray",
+                    api_key_env="SALAD_API_KEY_TEST",
+                    slot_prefix="prl-kray-roi",
+                    slots=1,
+                ),
+            )
+        )
+        scores = [
+            {
+                "profile_key": "top1:batch:2048",
+                "gpu_key": "top1",
+                "priority": "batch",
+                "memory_mb": 2048,
+                "expected_profit_day": 1.0,
+                "score": 100.0,
+                "eligible": True,
+            },
+            {
+                "profile_key": "top2:batch:2048",
+                "gpu_key": "top2",
+                "priority": "batch",
+                "memory_mb": 2048,
+                "expected_profit_day": 0.9,
+                "score": 90.0,
+                "eligible": True,
+            },
+            {
+                "profile_key": "available:batch:2048",
+                "gpu_key": "available",
+                "priority": "batch",
+                "memory_mb": 2048,
+                "expected_profit_day": 0.2,
+                "score": 10.0,
+                "eligible": True,
+            },
+        ]
+
+        targets = fleet_scheduler.build_targets(
+            config,
+            scores,
+            mode="base_fill",
+            decision_price_usd=0.64,
+            width=2,
+            availability={
+                "kray": {
+                    "top1:batch:2048": {"ok": True, "available_count": 0},
+                    "top2:batch:2048": {"ok": True, "available_count": 0},
+                    "available:batch:2048": {"ok": True, "available_count": 1},
+                }
+            },
+        )
+
+        self.assertEqual(len(targets), 1)
+        self.assertEqual(targets[0]["profile_key"], "available:batch:2048")
+        self.assertNotIn("availability_probe_fallback", targets[0]["reason"])
+
     def test_scheduler_uses_probe_fallback_to_keep_org_filled_when_all_profiles_report_zero(self) -> None:
         config = load_config()
         scores = profile_scorer.score_profiles(

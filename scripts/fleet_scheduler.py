@@ -20,9 +20,14 @@ def _scheduler_mode(config: FleetConfig, db_mode: str | None) -> str:
     return "base_fill"
 
 
-def _top_eligible_profiles(scores: list[dict[str, Any]], *, width: int) -> list[dict[str, Any]]:
+def _eligible_profiles(scores: list[dict[str, Any]]) -> list[dict[str, Any]]:
     eligible = [row for row in scores if row.get("eligible")]
     eligible.sort(key=lambda item: (float(item["score"]), float(item["expected_profit_day"])), reverse=True)
+    return eligible
+
+
+def _top_eligible_profiles(scores: list[dict[str, Any]], *, width: int) -> list[dict[str, Any]]:
+    eligible = _eligible_profiles(scores)
     return eligible[: max(1, min(width, len(eligible)))]
 
 
@@ -50,8 +55,9 @@ def build_targets(
     cooldowns: set[tuple[str, str, str]] | None = None,
     guard_targets: dict[tuple[str, str], dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
-    profiles = _top_eligible_profiles(scores, width=width)
-    if not profiles:
+    eligible_profiles = _eligible_profiles(scores)
+    profiles = eligible_profiles[: max(1, min(width, len(eligible_profiles)))]
+    if not eligible_profiles:
         return []
     slot_rows = slot_rows or {}
     availability = availability or {}
@@ -63,6 +69,10 @@ def build_targets(
     assigned_by_org_profile: dict[tuple[str, str], int] = {}
     targets: list[dict[str, Any]] = []
     assigned_at = utc_now()
+    rank_by_profile_key = {
+        str(profile["profile_key"]): index
+        for index, profile in enumerate(eligible_profiles)
+    }
     enabled_orgs = sorted(
         config.enabled_orgs(),
         key=lambda org: sum(
@@ -72,6 +82,23 @@ def build_targets(
             in {"running", "creating", "allocating"}
         ),
     )
+
+    def reported_capacity_remaining(org_label: str, profile_key: str) -> int | None:
+        org_availability = availability.get(org_label, {})
+        if profile_key not in org_availability:
+            return None
+        row = org_availability[profile_key]
+        if not row.get("ok"):
+            return None
+        available_count = int(row.get("available_count") or 0)
+        used = assigned_by_org_profile.get((org_label, profile_key), 0)
+        return available_count - used
+
+    def reported_available(org_label: str, slot_name: str, profile_key: str) -> bool:
+        if is_in_cooldown(org_label, slot_name, profile_key):
+            return False
+        remaining = reported_capacity_remaining(org_label, profile_key)
+        return remaining is not None and remaining > 0
 
     def has_capacity(
         org_label: str,
@@ -84,15 +111,10 @@ def build_targets(
             return False
         if (org_label, "*", profile_key) in cooldowns:
             return False
-        org_availability = availability.get(org_label, {})
-        if profile_key not in org_availability:
+        remaining = reported_capacity_remaining(org_label, profile_key)
+        if remaining is None:
             return True
-        row = org_availability[profile_key]
-        if not row.get("ok"):
-            return True
-        available_count = int(row.get("available_count") or 0)
-        used = assigned_by_org_profile.get((org_label, profile_key), 0)
-        if used < available_count:
+        if remaining > 0:
             return True
         return allow_availability_probe
 
@@ -120,14 +142,21 @@ def build_targets(
         skip_profile_key: str | None = None,
         min_profit_day: float | None = None,
         allow_availability_probe: bool = False,
+        require_reported_available: bool = False,
+        candidate_profiles: list[dict[str, Any]] | None = None,
     ) -> tuple[int, dict[str, Any]] | None:
-        for offset in range(len(profiles)):
-            profile_index = (slot_index - 1 + org_index * 3 + offset) % len(profiles)
-            candidate = profiles[profile_index]
+        candidates = candidate_profiles or profiles
+        for offset in range(len(candidates)):
+            profile_index = (slot_index - 1 + org_index * 3 + offset) % len(candidates)
+            candidate = candidates[profile_index]
             candidate_key = str(candidate["profile_key"])
             if skip_profile_key and candidate_key == skip_profile_key:
                 continue
             if min_profit_day is not None and float(candidate["expected_profit_day"]) < min_profit_day:
+                continue
+            if require_reported_available:
+                if reported_available(org_label, slot_name, candidate_key):
+                    return profile_index, candidate
                 continue
             if has_capacity(
                 org_label,
@@ -147,6 +176,31 @@ def build_targets(
         skip_profile_key: str | None = None,
         min_profit_day: float | None = None,
     ) -> tuple[int, dict[str, Any], bool] | None:
+        selected = diversified_candidate(
+            org_label,
+            slot_name,
+            slot_index,
+            org_index,
+            skip_profile_key=skip_profile_key,
+            min_profit_day=min_profit_day,
+            require_reported_available=True,
+        )
+        if selected is not None:
+            profile_index, profile = selected
+            return profile_index, profile, False
+        selected = diversified_candidate(
+            org_label,
+            slot_name,
+            slot_index,
+            org_index,
+            skip_profile_key=skip_profile_key,
+            min_profit_day=min_profit_day,
+            require_reported_available=True,
+            candidate_profiles=eligible_profiles,
+        )
+        if selected is not None:
+            profile_index, profile = selected
+            return profile_index, profile, False
         selected = diversified_candidate(
             org_label,
             slot_name,
@@ -299,7 +353,8 @@ def build_targets(
                 if selected is None:
                     continue
                 profile_index, profile, used_probe_fallback = selected
-                reason = f"{mode}:diversified_rank_{profile_index + 1}_of_{len(profiles)}"
+                profile_rank = rank_by_profile_key.get(str(profile["profile_key"]), profile_index)
+                reason = f"{mode}:diversified_rank_{profile_rank + 1}_of_{len(eligible_profiles)}"
                 if used_probe_fallback:
                     reason += ":availability_probe_fallback"
             assigned_by_org_profile[(org.label, str(profile["profile_key"]))] = (

@@ -187,6 +187,8 @@ def build_targets(
                 continue
             observed_profile = slot_row.get("observed_profile_key")
             protected = int(slot_row.get("protected") or 0) > 0
+            live_hashrate_th = float(slot_row.get("live_hashrate_th") or 0)
+            protected_live_hashing = protected and live_hashrate_th > 0
             if protected and observed_profile and observed_profile in scores_by_key:
                 current = scores_by_key[str(observed_profile)]
                 selected = None
@@ -209,6 +211,25 @@ def build_targets(
                         profile = current
                         profile_index = 0
                         reason = f"{mode}:negative_observed_profile_no_replacement"
+                elif not protected_live_hashing:
+                    selected = fill_candidate(
+                        org.label,
+                        slot_name,
+                        slot_index,
+                        org_index,
+                        skip_profile_key=str(observed_profile),
+                    )
+                    if selected is not None:
+                        profile_index, profile, used_probe_fallback = selected
+                        protected = False
+                        reason = f"{mode}:replace_nohash_observed_profile:{observed_profile}"
+                        if used_probe_fallback:
+                            reason += ":availability_probe_fallback"
+                    else:
+                        profile = current
+                        profile_index = 0
+                        protected = False
+                        reason = f"{mode}:nohash_observed_profile_no_replacement"
                 elif mode == "optimize":
                     min_upgrade_profit = (
                         current_profit + float(config.risk.optimize_min_upgrade_delta_day)

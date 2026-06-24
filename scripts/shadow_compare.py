@@ -83,11 +83,13 @@ def build_shadow_compare(db_path: str | None = None) -> dict[str, Any]:
         risk_tier = target.get("risk_tier")
         observed_status = str(target.get("observed_status") or "")
         observed_protected = int(target.get("observed_protected") or 0) > 0
+        observed_live_hashrate_th = float(target.get("live_hashrate_th") or 0)
         target_protected = int(target.get("protected") or 0) > 0
         protected_positive_fill = (
             mode != "optimize"
             and observed_status == "running"
             and observed_protected
+            and observed_live_hashrate_th > 0
             and target_protected
             and expected_profit >= 0
         )

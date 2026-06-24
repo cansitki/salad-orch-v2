@@ -211,28 +211,30 @@ def _print_tick(payload: dict[str, Any]) -> None:
         f"shadow={shadow['ok']} health={shadow['health']} "
         f"targets={shadow['targets']}/{shadow['target_slots']} "
         f"live_hashing={shadow['live_hashing_gpus']} "
-        f"no_hash={shadow['no_hash']} negative={shadow['negative']} stuck={shadow['stuck']}"
+        f"no_hash={shadow['no_hash']} negative={shadow['negative']} stuck={shadow['stuck']}",
+        flush=True,
     )
     if shadow["failed_gates"]:
-        print(f"shadow_failed={','.join(str(item) for item in shadow['failed_gates'])}")
+        print(f"shadow_failed={','.join(str(item) for item in shadow['failed_gates'])}", flush=True)
     if shadow["warning_gates"]:
-        print(f"shadow_warnings={','.join(str(item) for item in shadow['warning_gates'])}")
+        print(f"shadow_warnings={','.join(str(item) for item in shadow['warning_gates'])}", flush=True)
     if shadow.get("error"):
-        print(f"shadow_error={shadow['error']}")
+        print(f"shadow_error={shadow['error']}", flush=True)
     if payload["action_result"]:
         result = payload["action_result"]
         print(
             f"action_result ok={result['ok']} stage={result['stage']} "
-            f"health={result['health']} no_hash={result['no_hash']} negative={result['negative']}"
+            f"health={result['health']} no_hash={result['no_hash']} negative={result['negative']}",
+            flush=True,
         )
         if result["failed_gates"]:
-            print(f"action_failed={','.join(str(item) for item in result['failed_gates'])}")
+            print(f"action_failed={','.join(str(item) for item in result['failed_gates'])}", flush=True)
         if result["warning_gates"]:
-            print(f"action_warnings={','.join(str(item) for item in result['warning_gates'])}")
+            print(f"action_warnings={','.join(str(item) for item in result['warning_gates'])}", flush=True)
         if result.get("error"):
-            print(f"action_error={result['error']}")
+            print(f"action_error={result['error']}", flush=True)
     if payload["skipped_live_action"]:
-        print("live_action_skipped=shadow_gate_failed")
+        print("live_action_skipped=shadow_gate_failed", flush=True)
 
 
 def main() -> None:

@@ -122,7 +122,7 @@ Use a dedicated tmux session:
 REPO_ROOT=$(pwd)
 tmux kill-session -t salad-orch-v2-monitor 2>/dev/null || true
 tmux new-session -d -s salad-orch-v2-monitor \
-  "cd \"$REPO_ROOT\" && PRL_PEARL_FEE_RATE=0.01 python3 scripts/runtime_monitor.py --loop --interval 120 --runner-timeout-seconds 90 --price 0.64 --fee 0.01 --require-secrets"
+  "cd \"$REPO_ROOT\" && PYTHONUNBUFFERED=1 PRL_PEARL_FEE_RATE=0.01 python3 scripts/runtime_monitor.py --loop --interval 120 --runner-timeout-seconds 90 --price 0.64 --fee 0.01 --require-secrets"
 ```
 
 Inspect it:

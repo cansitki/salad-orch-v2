@@ -197,7 +197,27 @@ def _worker_orgs_for_stage(stage: str, org_label: str | None) -> list[str]:
 
 
 def _run_org_worker_task(kwargs: dict[str, Any]) -> dict[str, Any]:
-    return org_worker.run_once(**kwargs)
+    return _rollout_worker_payload(org_worker.run_once(**kwargs))
+
+
+def _rollout_worker_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    results = []
+    for result in payload.get("results") or []:
+        results.append(
+            {
+                "slot_name": result.get("slot_name"),
+                "action": result.get("action"),
+                "ok": result.get("ok", True),
+                "error": result.get("error"),
+            }
+        )
+    return {
+        "org": payload.get("org"),
+        "apply": payload.get("apply"),
+        "targets": payload.get("targets"),
+        "action_counts": payload.get("action_counts") or {},
+        "results": results,
+    }
 
 
 def _run_org_worker_process(kwargs: dict[str, Any], result_queue: Any) -> None:

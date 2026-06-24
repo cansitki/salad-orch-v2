@@ -245,7 +245,8 @@ class RolloutTest(unittest.TestCase):
             )
 
         self.assertEqual([payload["org"] for payload in payloads], ["kry1", "kray"])
-        self.assertEqual(len(payloads[0]["results"][0]["blob"]), 1_000_000)
+        self.assertNotIn("blob", payloads[0]["results"][0])
+        self.assertEqual(payloads[0]["results"][0]["action"], "observe")
 
 
 if __name__ == "__main__":

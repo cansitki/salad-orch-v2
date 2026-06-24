@@ -505,6 +505,7 @@ Responsibilities:
 - require `--confirm-live-actions` before any live apply path
 - allow only one live action per tick so guard apply and worker apply do not collide
 - allow explicit degraded preflight retries with `--allow-degraded-shadow` while keeping the final live action gate strict
+- enforce `--runner-timeout-seconds` around each rollout stage so slow Salad API reads fail the tick instead of hanging the monitor
 
 Default behavior is read-only. Live action modes are:
 
@@ -851,7 +852,7 @@ Current shadow-mode commands:
 PRL_PEARL_FEE_RATE=0.01 python3 scripts/rollout.py --stage shadow --price 0.64 --fee 0.01 --skip-workers --skip-guard
 python3 scripts/shadow_compare.py
 PRL_PEARL_FEE_RATE=0.01 python3 scripts/rollout.py --stage shadow --price 0.64 --fee 0.01 --require-secrets
-PRL_PEARL_FEE_RATE=0.01 python3 scripts/runtime_monitor.py --loop --interval 120 --price 0.64 --fee 0.01 --require-secrets
+PRL_PEARL_FEE_RATE=0.01 python3 scripts/runtime_monitor.py --loop --interval 120 --runner-timeout-seconds 90 --price 0.64 --fee 0.01 --require-secrets
 ```
 
 ### Phase 9: Controlled Rollout
@@ -875,15 +876,15 @@ Recommended live sequence:
 
 ```bash
 PRL_PEARL_FEE_RATE=0.01 python3 scripts/rollout.py --stage one-org --org kry1 --price 0.64 --fee 0.01 --apply-workers --require-secrets
-PRL_PEARL_FEE_RATE=0.01 python3 scripts/runtime_monitor.py --once --price 0.64 --fee 0.01 --require-secrets --apply-one-org --org kry1 --confirm-live-actions
+PRL_PEARL_FEE_RATE=0.01 python3 scripts/runtime_monitor.py --once --runner-timeout-seconds 90 --price 0.64 --fee 0.01 --require-secrets --apply-one-org --org kry1 --confirm-live-actions
 python3 scripts/rollback.py list
 ```
 
 Only after the one-org apply is stable:
 
 ```bash
-PRL_PEARL_FEE_RATE=0.01 python3 scripts/runtime_monitor.py --once --price 0.64 --fee 0.01 --require-secrets --apply-guard --confirm-live-actions
-PRL_PEARL_FEE_RATE=0.01 python3 scripts/runtime_monitor.py --once --price 0.64 --fee 0.01 --require-secrets --apply-guard --confirm-live-actions --allow-degraded-shadow
+PRL_PEARL_FEE_RATE=0.01 python3 scripts/runtime_monitor.py --once --runner-timeout-seconds 90 --price 0.64 --fee 0.01 --require-secrets --apply-guard --confirm-live-actions
+PRL_PEARL_FEE_RATE=0.01 python3 scripts/runtime_monitor.py --once --runner-timeout-seconds 90 --price 0.64 --fee 0.01 --require-secrets --apply-guard --confirm-live-actions --allow-degraded-shadow
 python3 scripts/rollout.py --stage guard-apply --apply-guard --require-secrets
 PRL_PEARL_FEE_RATE=0.01 python3 scripts/rollout.py --stage all-orgs --price 0.64 --fee 0.01 --apply-workers --confirm-all-orgs --require-secrets
 python3 scripts/supervisor.py --print-plan

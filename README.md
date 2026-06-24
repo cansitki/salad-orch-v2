@@ -285,7 +285,7 @@ unless `--apply-workers` or `--apply-guard` is passed.
    Continuous read-only monitor loop:
 
    ```bash
-   PRL_PEARL_FEE_RATE=0.01 python3 scripts/runtime_monitor.py --loop --interval 120 --price 0.64 --fee 0.01 --require-secrets
+   PRL_PEARL_FEE_RATE=0.01 python3 scripts/runtime_monitor.py --loop --interval 120 --runner-timeout-seconds 90 --price 0.64 --fee 0.01 --require-secrets
    ```
 
 3. Apply one org only:
@@ -297,7 +297,7 @@ unless `--apply-workers` or `--apply-guard` is passed.
    Safer monitor-gated one-org apply:
 
    ```bash
-   PRL_PEARL_FEE_RATE=0.01 python3 scripts/runtime_monitor.py --once --price 0.64 --fee 0.01 --require-secrets --apply-one-org --org kry1 --confirm-live-actions
+   PRL_PEARL_FEE_RATE=0.01 python3 scripts/runtime_monitor.py --once --runner-timeout-seconds 90 --price 0.64 --fee 0.01 --require-secrets --apply-one-org --org kry1 --confirm-live-actions
    ```
 
    To rotate stale creating/allocating slots after the configured grace, add
@@ -305,7 +305,7 @@ unless `--apply-workers` or `--apply-guard` is passed.
    `--pending-retarget-after-seconds` elapses:
 
    ```bash
-   PRL_PEARL_FEE_RATE=0.01 python3 scripts/runtime_monitor.py --once --price 0.64 --fee 0.01 --require-secrets --apply-one-org --org kry1 --confirm-live-actions --allow-pending-retarget --pending-retarget-after-seconds 60
+   PRL_PEARL_FEE_RATE=0.01 python3 scripts/runtime_monitor.py --once --runner-timeout-seconds 90 --price 0.64 --fee 0.01 --require-secrets --apply-one-org --org kry1 --confirm-live-actions --allow-pending-retarget --pending-retarget-after-seconds 60
    ```
 
    Live apply stages create a rollback checkpoint automatically before the
@@ -320,7 +320,7 @@ unless `--apply-workers` or `--apply-guard` is passed.
    Safer monitor-gated guard apply:
 
    ```bash
-   PRL_PEARL_FEE_RATE=0.01 python3 scripts/runtime_monitor.py --once --price 0.64 --fee 0.01 --require-secrets --apply-guard --confirm-live-actions
+   PRL_PEARL_FEE_RATE=0.01 python3 scripts/runtime_monitor.py --once --runner-timeout-seconds 90 --price 0.64 --fee 0.01 --require-secrets --apply-guard --confirm-live-actions
    ```
 
    If a previous guard apply failed and left `runtime_failures`, use
@@ -328,7 +328,7 @@ unless `--apply-workers` or `--apply-guard` is passed.
    still remains strict:
 
    ```bash
-   PRL_PEARL_FEE_RATE=0.01 python3 scripts/runtime_monitor.py --once --price 0.64 --fee 0.01 --require-secrets --apply-guard --confirm-live-actions --allow-degraded-shadow
+   PRL_PEARL_FEE_RATE=0.01 python3 scripts/runtime_monitor.py --once --runner-timeout-seconds 90 --price 0.64 --fee 0.01 --require-secrets --apply-guard --confirm-live-actions --allow-degraded-shadow
    ```
 
 5. Start tmux supervision for the full new stack:

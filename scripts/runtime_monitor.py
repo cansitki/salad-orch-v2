@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import signal
 import time
 from typing import Any, Callable
 
@@ -10,6 +11,42 @@ from fleet_common import json_dumps, utc_now
 
 
 RolloutRunner = Callable[..., dict[str, Any]]
+
+
+def _call_with_timeout(callback: Callable[[], dict[str, Any]], timeout_seconds: float) -> dict[str, Any]:
+    if timeout_seconds <= 0:
+        return callback()
+
+    def timeout_handler(_signum: int, _frame: Any) -> None:
+        raise TimeoutError(f"monitor runner exceeded {timeout_seconds:.1f}s")
+
+    previous_handler = signal.getsignal(signal.SIGALRM)
+    signal.signal(signal.SIGALRM, timeout_handler)
+    signal.setitimer(signal.ITIMER_REAL, timeout_seconds)
+    try:
+        return callback()
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous_handler)
+
+
+def _failure_summary(stage: str, exc: BaseException) -> dict[str, Any]:
+    gate = "monitor_timeout" if isinstance(exc, TimeoutError) else "monitor_runner_error"
+    return {
+        "stage": stage,
+        "ok": False,
+        "targets": None,
+        "target_slots": None,
+        "health": "down",
+        "shadow_ok": False,
+        "live_hashing_gpus": None,
+        "no_hash": None,
+        "negative": None,
+        "stuck": None,
+        "failed_gates": [gate],
+        "warning_gates": [],
+        "error": f"{type(exc).__name__}: {str(exc)[:180]}",
+    }
 
 
 def _summarize_rollout(payload: dict[str, Any]) -> dict[str, Any]:
@@ -31,6 +68,7 @@ def _summarize_rollout(payload: dict[str, Any]) -> dict[str, Any]:
         "stuck": report.get("stuck"),
         "failed_gates": [item.get("gate") for item in gates.get("failed") or []],
         "warning_gates": [item.get("gate") for item in gates.get("warnings") or []],
+        "error": payload.get("error"),
     }
 
 
@@ -103,6 +141,7 @@ def run_monitor_tick(
     allow_pending_retarget: bool = False,
     pending_retarget_after_seconds: int = 45,
     confirm_live_actions: bool = False,
+    runner_timeout_seconds: float = 90,
     runner: RolloutRunner = rollout.run_rollout,
 ) -> dict[str, Any]:
     if (apply_guard or apply_one_org) and not confirm_live_actions:
@@ -112,15 +151,21 @@ def run_monitor_tick(
     if apply_one_org and not org:
         raise SystemExit("--org is required with --apply-one-org")
 
-    shadow_payload = _run_shadow(
-        runner,
-        price=price,
-        fee=fee,
-        require_secrets=require_secrets,
-        require_fresh_heartbeats=require_fresh_heartbeats,
-        allow_degraded=allow_degraded_shadow,
-    )
-    shadow_summary = _summarize_rollout(shadow_payload)
+    try:
+        shadow_payload = _call_with_timeout(
+            lambda: _run_shadow(
+                runner,
+                price=price,
+                fee=fee,
+                require_secrets=require_secrets,
+                require_fresh_heartbeats=require_fresh_heartbeats,
+                allow_degraded=allow_degraded_shadow,
+            ),
+            runner_timeout_seconds,
+        )
+        shadow_summary = _summarize_rollout(shadow_payload)
+    except Exception as exc:
+        shadow_summary = _failure_summary("shadow", exc)
     action = "none"
     action_payload = None
     action_summary = None
@@ -131,17 +176,23 @@ def run_monitor_tick(
         elif apply_one_org:
             action = "one-org-apply"
         if action != "none":
-            action_payload = _run_action(
-                runner,
-                action=action,
-                org=org,
-                price=price,
-                fee=fee,
-                require_secrets=require_secrets,
-                allow_pending_retarget=allow_pending_retarget,
-                pending_retarget_after_seconds=pending_retarget_after_seconds,
-            )
-            action_summary = _summarize_rollout(action_payload)
+            try:
+                action_payload = _call_with_timeout(
+                    lambda: _run_action(
+                        runner,
+                        action=action,
+                        org=org,
+                        price=price,
+                        fee=fee,
+                        require_secrets=require_secrets,
+                        allow_pending_retarget=allow_pending_retarget,
+                        pending_retarget_after_seconds=pending_retarget_after_seconds,
+                    ),
+                    runner_timeout_seconds,
+                )
+                action_summary = _summarize_rollout(action_payload)
+            except Exception as exc:
+                action_summary = _failure_summary(action, exc)
 
     return {
         "at_utc": utc_now(),
@@ -166,6 +217,8 @@ def _print_tick(payload: dict[str, Any]) -> None:
         print(f"shadow_failed={','.join(str(item) for item in shadow['failed_gates'])}")
     if shadow["warning_gates"]:
         print(f"shadow_warnings={','.join(str(item) for item in shadow['warning_gates'])}")
+    if shadow.get("error"):
+        print(f"shadow_error={shadow['error']}")
     if payload["action_result"]:
         result = payload["action_result"]
         print(
@@ -176,6 +229,8 @@ def _print_tick(payload: dict[str, Any]) -> None:
             print(f"action_failed={','.join(str(item) for item in result['failed_gates'])}")
         if result["warning_gates"]:
             print(f"action_warnings={','.join(str(item) for item in result['warning_gates'])}")
+        if result.get("error"):
+            print(f"action_error={result['error']}")
     if payload["skipped_live_action"]:
         print("live_action_skipped=shadow_gate_failed")
 
@@ -201,6 +256,7 @@ def main() -> None:
     parser.add_argument("--loop", action="store_true")
     parser.add_argument("--interval", type=int, default=120)
     parser.add_argument("--max-ticks", type=int, default=0)
+    parser.add_argument("--runner-timeout-seconds", type=float, default=90)
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
 
@@ -218,6 +274,7 @@ def main() -> None:
             allow_pending_retarget=args.allow_pending_retarget,
             pending_retarget_after_seconds=args.pending_retarget_after_seconds,
             confirm_live_actions=args.confirm_live_actions,
+            runner_timeout_seconds=args.runner_timeout_seconds,
         )
         if args.json:
             print(json_dumps(payload))

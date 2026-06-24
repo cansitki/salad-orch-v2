@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pathlib
 import sys
+import time
 import unittest
 
 
@@ -137,6 +138,43 @@ class RuntimeMonitorTest(unittest.TestCase):
         self.assertEqual(payload["action"], "none")
         self.assertTrue(payload["skipped_live_action"])
         self.assertEqual(len(calls), 1)
+
+    def test_shadow_timeout_returns_failed_tick(self) -> None:
+        def runner(**_kwargs):
+            time.sleep(0.2)
+            return rollout_payload(stage="shadow")
+
+        payload = runtime_monitor.run_monitor_tick(
+            runner=runner,
+            runner_timeout_seconds=0.01,
+        )
+
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["action"], "none")
+        self.assertIn("monitor_timeout", payload["shadow"]["failed_gates"])
+        self.assertIn("TimeoutError", payload["shadow"]["error"])
+
+    def test_action_timeout_returns_failed_action_result(self) -> None:
+        calls = []
+
+        def runner(**kwargs):
+            calls.append(kwargs)
+            if kwargs["stage"] == "guard-apply":
+                time.sleep(0.2)
+            return rollout_payload(stage=kwargs["stage"])
+
+        payload = runtime_monitor.run_monitor_tick(
+            apply_guard=True,
+            confirm_live_actions=True,
+            runner=runner,
+            runner_timeout_seconds=0.01,
+        )
+
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["action"], "guard-apply")
+        self.assertEqual([call["stage"] for call in calls], ["shadow", "guard-apply"])
+        self.assertIn("monitor_timeout", payload["action_result"]["failed_gates"])
+        self.assertIn("TimeoutError", payload["action_result"]["error"])
 
     def test_only_one_live_action_per_tick(self) -> None:
         with self.assertRaises(SystemExit):

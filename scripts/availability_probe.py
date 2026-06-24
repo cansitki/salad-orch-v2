@@ -14,6 +14,7 @@ import profit_model
 import state_db
 from config_loader import OrgConfig, load_config
 from fleet_common import env_int, json_dumps, utc_now
+from org_worker import install_rate_limited_request
 
 
 SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
@@ -78,6 +79,7 @@ def run_once(
 
     for org in config.enabled_orgs():
         watch = load_watch_module(org)
+        install_rate_limited_request(watch, org, db_path=db_path)
         for profile in profiles:
             checked_at = utc_now()
             candidate = candidate_from_profile(watch, profile)

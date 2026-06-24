@@ -234,6 +234,34 @@ class GuardDecisionTest(unittest.TestCase):
         self.assertEqual(snapshot["profile_key"], "3090:batch:2048")
         self.assertEqual(snapshot["th"], 111.5)
 
+    def test_guard_uses_latest_risk_price_when_price_is_omitted(self) -> None:
+        with state_db.connect(self.db_path) as conn:
+            state_db.init_db(conn)
+            state_db.set_risk_mode(
+                conn,
+                {
+                    "at_utc": "2026-06-24T12:00:00+00:00",
+                    "mode": "boost_fill",
+                    "decision_price_usd": 0.68,
+                    "pearl_fee_rate": 0.01,
+                    "reason": "test boost",
+                },
+            )
+            conn.commit()
+
+        fake_snapshot = {
+            "live_market_prl_price": 0.71,
+            "fresh_workers": 0,
+            "running_no_live_billable_slots": [],
+            "totals": {"th": 0, "cost_day": 0, "revenue_day": 0, "profit_day": 0},
+            "slots": [],
+        }
+
+        with patch("guard.snapshot.build_snapshot", return_value=fake_snapshot) as build_snapshot:
+            guard.run_once(db_path=self.db_path, apply=False)
+
+        build_snapshot.assert_called_once_with(0.68)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -313,7 +313,7 @@ unless `--apply-workers` or `--apply-guard` is passed.
    Continuous fill monitor with live pending retargets:
 
    ```bash
-   PRL_PEARL_FEE_RATE=0.01 python3 scripts/runtime_monitor.py --loop --interval 60 --runner-timeout-seconds 240 --price 0.64 --fee 0.01 --require-secrets --apply-all-orgs-pending --guard-on-issues-every 3 --confirm-live-actions --pending-retarget-after-seconds 60 --worker-parallelism 4 --skip-shadow-workers
+   PRL_PEARL_FEE_RATE=0.01 python3 scripts/runtime_monitor.py --loop --interval 60 --runner-timeout-seconds 240 --fee 0.01 --require-secrets --apply-all-orgs-pending --guard-on-issues-every 3 --confirm-live-actions --pending-retarget-after-seconds 60 --worker-parallelism 4 --skip-shadow-workers
    ```
 
    This mode still runs a shadow gate first, but `--skip-shadow-workers` makes
@@ -329,6 +329,26 @@ unless `--apply-workers` or `--apply-guard` is passed.
    finishes faster. The rollout layer only runs one organization per Salad API
    key in the same worker batch, so orgs sharing one key do not exhaust the
    same per-minute request budget at once.
+   Leave `--price` unset in this mode. The scheduler then uses
+   `price_oracle.py` risk mode: base 0.64 by default, `boost_fill` when the
+   confirmed trailing PRL price supports 0.70+ conditions, and risk-off when the
+   trailing price weakens.
+
+   Run the price oracle beside the monitor:
+
+   ```bash
+   PRL_PEARL_FEE_RATE=0.01 PRL_BOOST_MIN_WINDOW_SECONDS=300 python3 scripts/price_oracle.py --loop --interval 60
+   ```
+
+   Run the availability probe beside the monitor so the scheduler has fresh
+   per-org capacity hints instead of rotating profitable profiles blindly:
+
+   ```bash
+   PRL_PEARL_FEE_RATE=0.01 python3 scripts/availability_probe.py --loop --interval 300 --priorities batch
+   ```
+
+   The probe uses the same API budget limiter as live workers, so it should
+   slow itself down instead of exhausting a shared Salad key.
 
 3. Apply one org only:
 

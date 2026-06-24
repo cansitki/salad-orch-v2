@@ -373,7 +373,12 @@ def enforce_issues(
 
 def run_once(*, db_path: str | None = None, price: float | None = None, apply: bool = False) -> dict[str, Any]:
     config = load_config()
-    decision_price = price or config.risk.decision_price_for_mode()
+    decision_price = price
+    if decision_price is None:
+        with state_db.connect(db_path) as conn:
+            state_db.init_db(conn)
+            risk = state_db.latest_risk_mode(conn)
+            decision_price = float(risk["decision_price_usd"]) if risk else config.risk.decision_price_for_mode()
     try:
         payload = snapshot.build_snapshot(decision_price)
         analysis = analyze_snapshot(payload)

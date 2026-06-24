@@ -10,7 +10,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from config_loader import FleetConfig, load_config
-from fleet_common import STATE_DIR, compact_json, json_dumps, safe_public_payload, utc_now
+from fleet_common import STATE_DIR, compact_json, env_int, json_dumps, safe_public_payload, utc_now
 
 
 DEFAULT_DB = pathlib.Path(__file__).resolve().parent.parent / "state" / "fleet_scheduler.db"
@@ -499,7 +499,12 @@ def upsert_profile_availability(conn: sqlite3.Connection, row: dict[str, Any]) -
     )
 
 
-def latest_profile_availability(conn: sqlite3.Connection, max_age_seconds: int = 300) -> dict[str, dict[str, dict[str, Any]]]:
+def latest_profile_availability(conn: sqlite3.Connection, max_age_seconds: int | None = None) -> dict[str, dict[str, dict[str, Any]]]:
+    if max_age_seconds is None:
+        max_age_seconds = env_int(
+            "PRL_PROFILE_AVAILABILITY_MAX_AGE_SECONDS",
+            env_int("PRL_AVAILABILITY_STALE_AFTER_SECONDS", 1800),
+        )
     rows = conn.execute(
         """
         SELECT org_label, profile_key, available_count, ok, error, checked_at_utc

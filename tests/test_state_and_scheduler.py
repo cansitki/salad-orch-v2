@@ -1206,6 +1206,41 @@ class StateAndSchedulerTest(unittest.TestCase):
         ]
         self.assertEqual(kray_4090, [])
 
+    def test_scheduler_respects_availability_with_long_probe_stale_window(self) -> None:
+        config = load_config()
+        original = os.environ.get("PRL_AVAILABILITY_STALE_AFTER_SECONDS")
+        os.environ["PRL_AVAILABILITY_STALE_AFTER_SECONDS"] = "1800"
+        try:
+            with state_db.connect(self.db_path) as conn:
+                state_db.init_db(conn)
+                state_db.sync_config(conn, config)
+                state_db.upsert_profile_availability(
+                    conn,
+                    {
+                        "org_label": "kray",
+                        "profile_key": "4090:batch:2048",
+                        "available_count": 0,
+                        "ok": True,
+                        "checked_at_utc": (datetime.now(UTC) - timedelta(minutes=10)).isoformat(
+                            timespec="seconds"
+                        ),
+                    },
+                )
+                conn.commit()
+            payload = fleet_scheduler.schedule_once(db_path=self.db_path, price=0.64, fee=0.01, dry_run=False)
+        finally:
+            if original is None:
+                os.environ.pop("PRL_AVAILABILITY_STALE_AFTER_SECONDS", None)
+            else:
+                os.environ["PRL_AVAILABILITY_STALE_AFTER_SECONDS"] = original
+
+        kray_4090 = [
+            target
+            for target in payload["targets"]
+            if target["org_label"] == "kray" and target["profile_key"] == "4090:batch:2048"
+        ]
+        self.assertEqual(kray_4090, [])
+
     def test_scheduler_uses_probe_fallback_to_keep_org_filled_when_all_profiles_report_zero(self) -> None:
         config = load_config()
         scores = profile_scorer.score_profiles(

@@ -367,7 +367,9 @@ unless `--apply-workers` or `--apply-guard` is passed.
    slow itself down instead of exhausting a shared Salad key. The default
    availability heartbeat stale window is 1800 seconds
    (`PRL_AVAILABILITY_STALE_AFTER_SECONDS`) because probing `batch,low` across
-   multiple orgs can take longer than one monitor tick.
+   multiple orgs can take longer than one monitor tick. The scheduler and guard
+   use the same freshness window by default so they do not ignore slow-but-fresh
+   capacity hints during long probe runs.
 
 3. Apply one org only:
 

@@ -590,6 +590,37 @@ class StateAndSchedulerTest(unittest.TestCase):
         ]
         self.assertEqual(kray_4090, [])
 
+    def test_scheduler_uses_probe_fallback_to_keep_org_filled_when_all_profiles_report_zero(self) -> None:
+        config = load_config()
+        scores = profile_scorer.score_profiles(
+            db_path=self.db_path,
+            decision_price_usd=0.64,
+            pearl_fee_rate=0.01,
+            write=False,
+        )
+        with state_db.connect(self.db_path) as conn:
+            state_db.init_db(conn)
+            state_db.sync_config(conn, config)
+            for row in scores:
+                if row.get("eligible"):
+                    state_db.upsert_profile_availability(
+                        conn,
+                        {
+                            "org_label": "kray",
+                            "profile_key": row["profile_key"],
+                            "available_count": 0,
+                            "ok": True,
+                        },
+                    )
+            conn.commit()
+
+        payload = fleet_scheduler.schedule_once(db_path=self.db_path, price=0.64, fee=0.01, dry_run=False)
+        kray_targets = [target for target in payload["targets"] if target["org_label"] == "kray"]
+
+        self.assertEqual(payload["assigned_targets"], 40)
+        self.assertEqual(len(kray_targets), 10)
+        self.assertTrue(all("availability_probe_fallback" in target["reason"] for target in kray_targets))
+
     def test_scheduler_respects_active_wildcard_search_cooldown(self) -> None:
         config = load_config()
         with state_db.connect(self.db_path) as conn:

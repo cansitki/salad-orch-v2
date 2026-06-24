@@ -58,7 +58,13 @@ def build_targets(
         ),
     )
 
-    def has_capacity(org_label: str, slot_name: str, profile_key: str) -> bool:
+    def has_capacity(
+        org_label: str,
+        slot_name: str,
+        profile_key: str,
+        *,
+        allow_availability_probe: bool = False,
+    ) -> bool:
         if (org_label, slot_name, profile_key) in cooldowns:
             return False
         if (org_label, "*", profile_key) in cooldowns:
@@ -71,7 +77,9 @@ def build_targets(
             return True
         available_count = int(row.get("available_count") or 0)
         used = assigned_by_org_profile.get((org_label, profile_key), 0)
-        return used < available_count
+        if used < available_count:
+            return True
+        return allow_availability_probe
 
     def slot_sort_key(org_label: str, slot_name: str) -> tuple[int, str]:
         row = slot_rows.get((org_label, slot_name), {})
@@ -93,6 +101,7 @@ def build_targets(
         *,
         skip_profile_key: str | None = None,
         min_profit_day: float | None = None,
+        allow_availability_probe: bool = False,
     ) -> tuple[int, dict[str, Any]] | None:
         for offset in range(len(profiles)):
             profile_index = (slot_index - 1 + org_index * 3 + offset) % len(profiles)
@@ -102,9 +111,48 @@ def build_targets(
                 continue
             if min_profit_day is not None and float(candidate["expected_profit_day"]) < min_profit_day:
                 continue
-            if has_capacity(org_label, slot_name, candidate_key):
+            if has_capacity(
+                org_label,
+                slot_name,
+                candidate_key,
+                allow_availability_probe=allow_availability_probe,
+            ):
                 return profile_index, candidate
         return None
+
+    def fill_candidate(
+        org_label: str,
+        slot_name: str,
+        slot_index: int,
+        org_index: int,
+        *,
+        skip_profile_key: str | None = None,
+        min_profit_day: float | None = None,
+    ) -> tuple[int, dict[str, Any], bool] | None:
+        selected = diversified_candidate(
+            org_label,
+            slot_name,
+            slot_index,
+            org_index,
+            skip_profile_key=skip_profile_key,
+            min_profit_day=min_profit_day,
+        )
+        if selected is not None:
+            profile_index, profile = selected
+            return profile_index, profile, False
+        selected = diversified_candidate(
+            org_label,
+            slot_name,
+            slot_index,
+            org_index,
+            skip_profile_key=skip_profile_key,
+            min_profit_day=min_profit_day,
+            allow_availability_probe=True,
+        )
+        if selected is None:
+            return None
+        profile_index, profile = selected
+        return profile_index, profile, True
 
     for org_index, org in enumerate(enabled_orgs):
         ordered_slots = sorted(org.slot_names(), key=lambda slot_name: slot_sort_key(org.label, slot_name))
@@ -144,7 +192,7 @@ def build_targets(
                 selected = None
                 current_profit = float(current["expected_profit_day"])
                 if current_profit < 0:
-                    selected = diversified_candidate(
+                    selected = fill_candidate(
                         org.label,
                         slot_name,
                         slot_index,
@@ -152,9 +200,11 @@ def build_targets(
                         skip_profile_key=str(observed_profile),
                     )
                     if selected is not None:
-                        profile_index, profile = selected
+                        profile_index, profile, used_probe_fallback = selected
                         protected = False
                         reason = f"{mode}:replace_negative_observed_profile:{observed_profile}"
+                        if used_probe_fallback:
+                            reason += ":availability_probe_fallback"
                     else:
                         profile = current
                         profile_index = 0
@@ -185,11 +235,13 @@ def build_targets(
                     profile_index = 0
                     reason = f"{mode}:protected_observed_profile"
             else:
-                selected = diversified_candidate(org.label, slot_name, slot_index, org_index)
+                selected = fill_candidate(org.label, slot_name, slot_index, org_index)
                 if selected is None:
                     continue
-                profile_index, profile = selected
+                profile_index, profile, used_probe_fallback = selected
                 reason = f"{mode}:diversified_rank_{profile_index + 1}_of_{len(profiles)}"
+                if used_probe_fallback:
+                    reason += ":availability_probe_fallback"
             assigned_by_org_profile[(org.label, str(profile["profile_key"]))] = (
                 assigned_by_org_profile.get((org.label, str(profile["profile_key"])), 0) + 1
             )

@@ -74,6 +74,19 @@ class MaintenanceTest(unittest.TestCase):
         self.assertIn("--interval", probe["cmd"])
         self.assertIn("60", probe["cmd"])
 
+    def test_supervisor_includes_fleet_audit_process(self) -> None:
+        plan = supervisor.process_plan(db_path=self.db_path)
+        audit = next(item for item in plan if item["name"] == "salad-fleet-audit")
+
+        self.assertEqual(audit["heartbeat"], "fleet_audit")
+        self.assertIn("fleet_audit.py", " ".join(audit["cmd"]))
+        self.assertIn("--interval", audit["cmd"])
+        self.assertIn("300", audit["cmd"])
+        self.assertIn("--balance-interval", audit["cmd"])
+        self.assertIn("3600", audit["cmd"])
+        self.assertIn("--balance-file", audit["cmd"])
+        self.assertIn("state/salad_balances.json", audit["cmd"])
+
     def test_supervisor_tmux_sessions_load_dotenv(self) -> None:
         command = supervisor.tmux_command("salad-test", ["python3", "scripts/price_oracle.py", "--loop"])
 

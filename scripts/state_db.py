@@ -254,6 +254,57 @@ CREATE TABLE IF NOT EXISTS rollout_checkpoints (
   payload_json TEXT NOT NULL DEFAULT '{}'
 );
 CREATE INDEX IF NOT EXISTS idx_rollout_checkpoints_created ON rollout_checkpoints(created_at_utc);
+
+CREATE TABLE IF NOT EXISTS fleet_active_snapshots (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  at_utc TEXT NOT NULL,
+  assigned_targets INTEGER NOT NULL,
+  target_slots INTEGER NOT NULL,
+  live_hashing_gpus INTEGER NOT NULL,
+  live_th REAL NOT NULL,
+  cost_day REAL,
+  profit_day_064 REAL,
+  market_profit_day REAL,
+  status_counts_json TEXT NOT NULL DEFAULT '{}',
+  org_summary_json TEXT NOT NULL DEFAULT '{}',
+  payload_json TEXT NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS idx_fleet_active_snapshots_at ON fleet_active_snapshots(at_utc);
+
+CREATE TABLE IF NOT EXISTS fleet_org_active_snapshots (
+  snapshot_id INTEGER NOT NULL,
+  org_label TEXT NOT NULL,
+  active_slots INTEGER NOT NULL,
+  running_slots INTEGER NOT NULL,
+  creating_slots INTEGER NOT NULL,
+  allocating_slots INTEGER NOT NULL,
+  live_hashing_gpus INTEGER NOT NULL,
+  live_th REAL NOT NULL,
+  cost_day REAL,
+  profit_day REAL,
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  PRIMARY KEY (snapshot_id, org_label)
+);
+CREATE INDEX IF NOT EXISTS idx_fleet_org_active_snapshots_org ON fleet_org_active_snapshots(org_label, snapshot_id);
+
+CREATE TABLE IF NOT EXISTS fleet_org_balance_audits (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  at_utc TEXT NOT NULL,
+  org_label TEXT NOT NULL,
+  balance_usd REAL,
+  balance_source TEXT NOT NULL,
+  balance_ok INTEGER NOT NULL,
+  previous_balance_usd REAL,
+  previous_at_utc TEXT,
+  elapsed_hours REAL,
+  cost_day REAL,
+  expected_cost_usd REAL,
+  balance_delta_usd REAL,
+  variance_usd REAL,
+  status TEXT NOT NULL,
+  payload_json TEXT NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS idx_fleet_org_balance_audits_org_at ON fleet_org_balance_audits(org_label, at_utc);
 """
 
 
@@ -1131,6 +1182,9 @@ def status_payload(conn: sqlite3.Connection) -> dict[str, Any]:
         "api_rate_limits",
         "rollout_checkpoints",
         "events",
+        "fleet_active_snapshots",
+        "fleet_org_active_snapshots",
+        "fleet_org_balance_audits",
     ):
         tables[table] = int(conn.execute(f"SELECT COUNT(*) AS count FROM {table}").fetchone()["count"])
     risk = latest_risk_mode(conn)

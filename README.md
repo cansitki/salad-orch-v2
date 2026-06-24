@@ -120,6 +120,7 @@ The runnable code lives in `scripts/`.
 | `scripts/shadow_compare.py` | Read-only target-vs-observed mismatch and unsafe-target report for shadow mode. |
 | `scripts/rollout.py` | Controlled shadow/one-org/all-org/guard rollout runner with safety gates. |
 | `scripts/runtime_monitor.py` | Safe runtime monitor loop for repeated shadow gates and explicitly confirmed live actions. |
+| `scripts/fleet_audit.py` | Records active GPU snapshots every 5 minutes and hourly org balance-vs-cost audits. |
 | `scripts/rollback.py` | Rollout checkpoint create/list/restore helper for scheduler targets. |
 | `scripts/maintenance.py` | Dry-run-first SQLite retention/compaction helper for long-running fleets. |
 | `.env.example` | Safe template for local secrets and runtime settings. |
@@ -238,6 +239,44 @@ python3 scripts/supervisor.py --ensure
 
 `--ensure` starts missing tmux sessions and restarts sessions only when their
 heartbeat is stale. Use `--no-restart-stale` for a start-missing-only pass.
+The default supervisor plan includes `scripts/fleet_audit.py`, which records
+active GPU counts every 300 seconds and balance audits every 3600 seconds.
+
+Balance audit input is intentionally private. If a portal/browser scraper is
+available, have it refresh this local untracked file:
+
+```json
+{
+  "kray": 100.0,
+  "kry1": 100.0,
+  "kray2": 100.0,
+  "kray3": 100.0
+}
+```
+
+Default path:
+
+```bash
+state/salad_balances.json
+```
+
+If the older local monitor is running, the audit can also read balances directly
+from its SQLite DB:
+
+```bash
+PRL_AUDIT_MONITOR_DB=/home/coder/salad-pearl-monitor/salad_pearl_monitor.db \
+python3 scripts/fleet_audit.py --once --force-balance --balance-file state/salad_balances.json
+```
+
+When that file is missing or invalid, the audit records `unavailable` instead of
+stopping the active GPU watcher unless `PRL_AUDIT_MONITOR_DB` or `--monitor-db`
+points to a usable `salad_org_balances` table. When a new balance is available,
+the hourly audit compares the balance delta with the average recorded GPU cost
+since the previous valid balance and marks each org `baseline`, `ok`, or
+`mismatch`.
+
+Monitor DB balances older than `PRL_BALANCE_SOURCE_MAX_AGE_SECONDS` are treated
+as stale and ignored. Default: `7200` seconds.
 
 Optional DB maintenance process:
 
@@ -692,9 +731,23 @@ The supervisor keeps the tmux sessions alive. It also switches modes:
 - `optimize` only when all target orgs have 10 live hashing workers.
 
 The new `scripts/supervisor.py` keeps the scheduler stack alive: price oracle,
-availability probe, scheduler, guard, and one org worker per enabled
-organization. It loads the private `.env` file before starting each tmux
-session, then uses DB heartbeats to avoid restart loops.
+availability probe, scheduler, guard, active/balance audit, and one org worker
+per enabled organization. It loads the private `.env` file before starting each
+tmux session, then uses DB heartbeats to avoid restart loops.
+
+`scripts/fleet_audit.py` writes:
+
+- `fleet_active_snapshots`: fleet-level active targets, live hashing GPUs, TH,
+  daily cost, and daily profit.
+- `fleet_org_active_snapshots`: per-org active/running/creating/allocating/live
+  hashing counts and cost.
+- `fleet_org_balance_audits`: hourly balance delta versus expected GPU cost.
+
+Quick audit query:
+
+```bash
+sqlite3 -header -column state/fleet_scheduler.db "SELECT org_label,status,balance_source,balance_usd,cost_day,expected_cost_usd,balance_delta_usd,variance_usd FROM fleet_org_balance_audits ORDER BY id DESC LIMIT 8;"
+```
 
 ## Miner Runtime
 

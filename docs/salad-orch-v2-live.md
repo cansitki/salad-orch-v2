@@ -163,6 +163,36 @@ faster than the old sequential all-org scan without sharing watcher environment
 between orgs. The rollout layer only runs one organization per Salad API key in
 the same worker batch, so orgs sharing one key do not exhaust the same
 per-minute request budget at once.
+
+### Active GPU And Balance Audit
+
+Run the audit watcher beside the monitor:
+
+```bash
+tmux new-session -d -s salad-orch-v2-audit \
+  "cd \"$REPO_ROOT\" && PYTHONUNBUFFERED=1 PRL_PEARL_FEE_RATE=0.01 PRL_AUDIT_MONITOR_DB=/home/coder/salad-pearl-monitor/salad_pearl_monitor.db python3 scripts/fleet_audit.py --loop --interval 300 --balance-interval 3600 --balance-file state/salad_balances.json"
+```
+
+It records active GPU snapshots every 5 minutes and balance-vs-cost audits every
+hour. The balance file is private and must be refreshed by a portal/browser
+provider outside git:
+
+```json
+{"kray": 100.0, "kry1": 100.0, "kray2": 100.0, "kray3": 100.0}
+```
+
+When the file is missing, the audit keeps recording active GPUs and writes
+`unavailable` balance rows instead of stopping, unless `PRL_AUDIT_MONITOR_DB` or
+`--monitor-db` points to an existing `salad-pearl-monitor` DB.
+Monitor DB balances older than `PRL_BALANCE_SOURCE_MAX_AGE_SECONDS` are treated
+as stale and ignored; default is 7200 seconds.
+
+Inspect the latest audit rows:
+
+```bash
+sqlite3 -header -column state/fleet_scheduler.db "SELECT id,at_utc,assigned_targets,target_slots,live_hashing_gpus,live_th,cost_day,profit_day_064 FROM fleet_active_snapshots ORDER BY id DESC LIMIT 5;"
+sqlite3 -header -column state/fleet_scheduler.db "SELECT org_label,status,balance_source,balance_usd,cost_day,expected_cost_usd,balance_delta_usd,variance_usd FROM fleet_org_balance_audits ORDER BY id DESC LIMIT 8;"
+```
 Leave `--price` unset in this mode. The scheduler then uses `price_oracle.py`
 risk mode: base 0.64 by default, `boost_fill` when the confirmed trailing PRL
 price supports 0.70+ conditions, and risk-off when the trailing price weakens.

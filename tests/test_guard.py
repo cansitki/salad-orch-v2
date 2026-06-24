@@ -172,6 +172,76 @@ class GuardDecisionTest(unittest.TestCase):
         self.assertEqual(apply_mock.call_count, 1)
         self.assertEqual([decision["action"] for decision in decisions], ["retarget", "skip_duplicate"])
 
+    def test_apply_guard_target_reallocates_pre_patch_and_snapshot_instances(self) -> None:
+        class FakeCandidate:
+            def __init__(self, label, priority, gpu_ids, memory):
+                self.label = label
+                self.priority = priority
+                self.gpu_ids = gpu_ids
+                self.memory = memory
+
+        class FakeWatch:
+            ORG = "kray"
+            PROJECT = "default"
+            Candidate = FakeCandidate
+
+            def __init__(self) -> None:
+                self.patch_calls = []
+                self.reallocate_calls = []
+                self.slot_state_calls = 0
+
+            def slot_state(self, slot_name):
+                self.slot_state_calls += 1
+                if self.slot_state_calls == 1:
+                    return {}, [{"id": "pre-patch-instance"}]
+                return {}, []
+
+            def patch_slot(self, slot_name, candidate, reason, *, start_after=True):
+                self.patch_calls.append(
+                    {
+                        "slot_name": slot_name,
+                        "candidate": candidate.label,
+                        "reason": reason,
+                        "start_after": start_after,
+                    }
+                )
+                return True
+
+            def reallocate(self, slot_name, instance_id, reason):
+                self.reallocate_calls.append((slot_name, instance_id, reason))
+
+        watch = FakeWatch()
+        target = {
+            "org_label": "kray",
+            "slot_name": "prl-kray-roi-01",
+            "profile_key": "5090:batch:2048",
+            "gpu_key": "5090",
+            "priority": "batch",
+            "memory_mb": 2048,
+            "label": "PearlFortune RTX 5090",
+            "decision_price_usd": 0.64,
+            "expected_profit_day": 2.0,
+            "snapshot_instance_id": "snapshot-instance",
+        }
+
+        with (
+            patch("guard.org_worker.load_watch_module", return_value=watch),
+            patch("guard.org_worker.install_rate_limited_request"),
+        ):
+            result = guard.apply_guard_target(target, db_path=self.db_path, reason="guard_negative")
+
+        self.assertEqual(result["reallocated_instances"], ["pre-patch-instance", "snapshot-instance"])
+        self.assertEqual(result["pre_patch_instances"], 1)
+        self.assertEqual(result["post_patch_instances"], 0)
+        self.assertEqual(watch.patch_calls[0]["start_after"], False)
+        self.assertEqual(
+            watch.reallocate_calls,
+            [
+                ("prl-kray-roi-01", "pre-patch-instance", "guard_negative"),
+                ("prl-kray-roi-01", "snapshot-instance", "guard_negative"),
+            ],
+        )
+
     def test_guard_snapshot_updates_slot_hashrate_and_workers(self) -> None:
         fake_snapshot = {
             "live_market_prl_price": 0.64,

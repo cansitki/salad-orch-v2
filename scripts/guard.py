@@ -165,6 +165,24 @@ def guard_failure_component(org_label: str, slot_name: str, issue_type: str) -> 
     return f"guard:{org_label}:{slot_name}:{issue_type}"
 
 
+def instance_ids_from_rows(rows: list[dict[str, Any]]) -> list[str]:
+    ids: list[str] = []
+    seen: set[str] = set()
+    for row in rows:
+        instance_id = str(row.get("id") or "")
+        if not instance_id or instance_id in seen:
+            continue
+        seen.add(instance_id)
+        ids.append(instance_id)
+    return ids
+
+
+def append_unique_instance_id(ids: list[str], instance_id: str | None) -> None:
+    value = str(instance_id or "")
+    if value and value not in ids:
+        ids.append(value)
+
+
 def apply_guard_target(
     target: dict[str, Any],
     *,
@@ -188,15 +206,25 @@ def apply_guard_target(
         watch.request("POST", f"/organizations/{watch.ORG}/projects/{watch.PROJECT}/containers/{slot_name}/stop")
         return {"action": "stop", "slot_name": slot_name, "applied": True}
     candidate = org_worker.candidate_from_target(watch, target)
+    try:
+        _before_group, before_instances = watch.slot_state(slot_name)
+    except KeyError:
+        before_instances = []
     ok = watch.patch_slot(slot_name, candidate, reason, start_after=False)
     if not ok:
         raise RuntimeError("patch_slot returned false")
-    _group, instances = watch.slot_state(slot_name)
+
+    reallocate_ids = instance_ids_from_rows(before_instances)
+    append_unique_instance_id(reallocate_ids, target.get("snapshot_instance_id"))
+    try:
+        _after_group, after_instances = watch.slot_state(slot_name)
+    except KeyError:
+        after_instances = []
+    for instance_id in instance_ids_from_rows(after_instances):
+        append_unique_instance_id(reallocate_ids, instance_id)
+
     reallocated = []
-    for instance in instances:
-        instance_id = str(instance.get("id") or "")
-        if not instance_id:
-            continue
+    for instance_id in reallocate_ids:
         watch.reallocate(slot_name, instance_id, reason)
         reallocated.append(instance_id)
     return {
@@ -205,6 +233,8 @@ def apply_guard_target(
         "profile_key": target["profile_key"],
         "applied": True,
         "reallocated_instances": reallocated,
+        "pre_patch_instances": len(before_instances),
+        "post_patch_instances": len(after_instances),
     }
 
 
@@ -259,6 +289,8 @@ def enforce_issues(
                 decision_price=decision_price,
                 min_profit_day=min_profit,
             )
+            if target is not None:
+                target["snapshot_instance_id"] = snapshot.worker_instance_id(str(row.get("worker") or ""))
             decision = {
                 "org_label": org_label,
                 "slot_name": slot_name,

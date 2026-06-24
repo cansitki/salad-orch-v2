@@ -171,6 +171,29 @@ class ReporterTest(unittest.TestCase):
         self.assertEqual(report["live_th"], 101.5)
         self.assertEqual(report["slot_live_hashing_gpus"], 0)
 
+    def test_deploying_slots_count_as_active_pending(self) -> None:
+        with state_db.connect(self.db_path) as conn:
+            for slot_name, status in (
+                ("prl-kray-roi-01", "deploying"),
+                ("prl-kray-roi-02", "allocating"),
+                ("prl-kray-roi-03", "running"),
+            ):
+                state_db.update_slot_observation(
+                    conn,
+                    {
+                        "org_label": "kray",
+                        "slot_name": slot_name,
+                        "observed_status": status,
+                        "observed_profile_key": "3090:batch:2048",
+                    },
+                )
+            conn.commit()
+
+        report = reporter.build_report(self.db_path)
+
+        self.assertEqual(report["status_counts"]["deploying"], 1)
+        self.assertEqual(report["active_pending_slots"], 3)
+
     def test_profit_scenarios_are_derived_from_latest_fleet_snapshot(self) -> None:
         with state_db.connect(self.db_path) as conn:
             state_db.record_profit_snapshot(

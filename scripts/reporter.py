@@ -264,7 +264,7 @@ def build_report(
     for slot in slot_rows:
         key = str(slot.get("observed_status") or "unknown")
         status_counts[key] = status_counts.get(key, 0) + 1
-    active_pending_statuses = {"running", "creating", "allocating"}
+    active_pending_statuses = {"running", "creating", "allocating", "deploying"}
     active_pending_slots = sum(count for key, count in status_counts.items() if key in active_pending_statuses)
     slot_live_th = sum(float(slot.get("live_hashrate_th") or 0) for slot in slot_rows)
     slot_live_hashing_gpus = sum(1 for slot in slot_rows if float(slot.get("live_hashrate_th") or 0) > 0)

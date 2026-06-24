@@ -34,6 +34,15 @@ def age_seconds(at_utc: str | None) -> float:
     return max(0.0, (datetime.now(UTC) - at).total_seconds())
 
 
+def issue_age_seconds(issue_row: Any, payload_row: dict[str, Any]) -> float:
+    age = age_seconds(str(issue_row["first_seen_utc"]))
+    try:
+        state_age = float(payload_row.get("state_age_seconds") or 0)
+    except (TypeError, ValueError):
+        state_age = 0.0
+    return max(age, state_age)
+
+
 def analyze_snapshot(payload: dict[str, Any]) -> dict[str, Any]:
     slots = payload.get("slots") or []
     no_hash = payload.get("running_no_live_billable_slots") or []
@@ -128,32 +137,42 @@ def replacement_target(
     ).fetchall()
     cooldowns = state_db.active_search_cooldowns(conn)
     availability = state_db.latest_profile_availability(conn)
-    for row in rows:
+    org_availability = availability.get(org_label, {})
+
+    def available(row: Any, *, allow_probe_fallback: bool) -> bool:
         profile = str(row["profile_key"])
         if current_profile_key and profile == current_profile_key:
-            continue
+            return False
         if (org_label, slot_name, profile) in cooldowns or (org_label, "*", profile) in cooldowns:
-            continue
-        org_availability = availability.get(org_label, {})
+            return False
         if profile in org_availability:
             avail = org_availability[profile]
             if avail.get("ok") and int(avail.get("available_count") or 0) <= 0:
+                return allow_probe_fallback
+        return True
+
+    for allow_probe_fallback in (False, True):
+        for row in rows:
+            if not available(row, allow_probe_fallback=allow_probe_fallback):
                 continue
-        return {
-            "org_label": org_label,
-            "slot_name": slot_name,
-            "profile_key": profile,
-            "gpu_key": row["gpu_key"],
-            "priority": row["priority"],
-            "memory_mb": row["memory_mb"],
-            "label": row["label"],
-            "mode": row["mode"],
-            "decision_price_usd": decision_price,
-            "expected_profit_day": row["expected_profit_day"],
-            "protected": False,
-            "reason": f"guard_{issue_type}_retarget",
-            "assigned_at_utc": utc_now(),
-        }
+            reason = f"guard_{issue_type}_retarget"
+            if allow_probe_fallback:
+                reason += ":availability_probe_fallback"
+            return {
+                "org_label": org_label,
+                "slot_name": slot_name,
+                "profile_key": str(row["profile_key"]),
+                "gpu_key": row["gpu_key"],
+                "priority": row["priority"],
+                "memory_mb": row["memory_mb"],
+                "label": row["label"],
+                "mode": row["mode"],
+                "decision_price_usd": decision_price,
+                "expected_profit_day": row["expected_profit_day"],
+                "protected": False,
+                "reason": reason,
+                "assigned_at_utc": utc_now(),
+            }
     return None
 
 
@@ -313,7 +332,7 @@ def enforce_issues(
                     "payload": row,
                 },
             )
-            issue_age = age_seconds(str(issue_row["first_seen_utc"]))
+            issue_age = issue_age_seconds(issue_row, row)
             current = issue_current_profile_key(conn, row)
             target = replacement_target(
                 conn,

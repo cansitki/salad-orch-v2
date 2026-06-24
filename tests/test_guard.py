@@ -12,6 +12,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
 import guard
+import profile_scorer
 import state_db
 from config_loader import load_config
 
@@ -79,6 +80,67 @@ class GuardDecisionTest(unittest.TestCase):
             ).fetchone()
         self.assertEqual(target["profile_key"], decisions[0]["target_profile_key"])
         self.assertEqual(target["reason"], "guard_no_hash_retarget")
+
+    def test_guard_uses_state_age_for_old_no_hash_issue(self) -> None:
+        decisions = guard.enforce_issues(
+            db_path=self.db_path,
+            decision_price=0.64,
+            apply=False,
+            analysis={
+                "fresh_workers": 3,
+                "running_no_live_billable_slots": [
+                    {
+                        "org": "kray",
+                        "slot": "prl-kray-roi-01",
+                        "cost_day": 1.0,
+                        "state_age_seconds": 600,
+                    }
+                ],
+                "negative_slots": [],
+            },
+        )
+        self.assertEqual(decisions[0]["action"], "retarget")
+        self.assertEqual(decisions[0]["age_seconds"], 600)
+
+    def test_guard_uses_probe_fallback_when_all_profiles_report_zero_availability(self) -> None:
+        scores = profile_scorer.score_profiles(
+            db_path=self.db_path,
+            decision_price_usd=0.64,
+            pearl_fee_rate=0.01,
+            write=False,
+        )
+        with state_db.connect(self.db_path) as conn:
+            state_db.init_db(conn)
+            for row in scores:
+                if row.get("eligible"):
+                    state_db.upsert_profile_availability(
+                        conn,
+                        {
+                            "org_label": "kray",
+                            "profile_key": row["profile_key"],
+                            "available_count": 0,
+                            "ok": True,
+                        },
+                    )
+            conn.commit()
+
+        self.make_issue_old("no_hash")
+        decisions = guard.enforce_issues(
+            db_path=self.db_path,
+            decision_price=0.64,
+            apply=False,
+            analysis={
+                "fresh_workers": 3,
+                "running_no_live_billable_slots": [
+                    {"org": "kray", "slot": "prl-kray-roi-01", "cost_day": 1.0}
+                ],
+                "negative_slots": [],
+            },
+        )
+
+        self.assertEqual(decisions[0]["action"], "retarget")
+        self.assertIsNotNone(decisions[0]["target_profile_key"])
+        self.assertIn("availability_probe_fallback", decisions[0]["target"]["reason"])
 
     def test_guard_stops_when_no_profitable_replacement_exists(self) -> None:
         self.make_issue_old("negative")

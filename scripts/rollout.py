@@ -68,6 +68,14 @@ def _worker_failures(worker_payloads: list[dict[str, Any]]) -> list[dict[str, An
     return failures
 
 
+def _worker_payloads_have_action(worker_payloads: list[dict[str, Any]], action: str) -> bool:
+    for payload in worker_payloads:
+        for result in payload.get("results") or []:
+            if str(result.get("action") or "") == action:
+                return True
+    return False
+
+
 def evaluate_gates(
     *,
     db_path: str | None,
@@ -297,8 +305,9 @@ def run_rollout(
 
     worker_payloads: list[dict[str, Any]] = []
     if not skip_workers:
+        worker_orgs = _worker_orgs_for_stage(stage, org_label)
         worker_payloads = _run_org_workers(
-            _worker_orgs_for_stage(stage, org_label),
+            worker_orgs,
             db_path=db_path,
             apply_workers=apply_workers,
             allow_live_retarget=allow_live_retarget,
@@ -313,6 +322,24 @@ def run_rollout(
             width=schedule_width,
             dry_run=False,
         )
+        if apply_workers and _worker_payloads_have_action(worker_payloads, "cooldown_pending"):
+            second_pass_payloads = _run_org_workers(
+                worker_orgs,
+                db_path=db_path,
+                apply_workers=apply_workers,
+                allow_live_retarget=allow_live_retarget,
+                allow_pending_retarget=allow_pending_retarget,
+                pending_retarget_after_seconds=pending_retarget_after_seconds,
+                worker_parallelism=worker_parallelism,
+            )
+            worker_payloads.extend(second_pass_payloads)
+            scheduler_payload = fleet_scheduler.schedule_once(
+                db_path=db_path,
+                price=price,
+                fee=fee,
+                width=schedule_width,
+                dry_run=False,
+            )
 
     guard_payload = None
     if not skip_guard:

@@ -108,8 +108,8 @@ def build_shadow_compare(db_path: str | None = None) -> dict[str, Any]:
                 "risk_tier": risk_tier,
                 "reason": "blocked_risk_tier",
             }
-            if protected_positive_fill and str(risk_tier) == "marginal":
-                warnings.append({**payload, "reason": "protected_positive_marginal"})
+            if protected_positive_fill and str(risk_tier) in {"marginal", "blocked_priority"}:
+                warnings.append({**payload, "reason": f"protected_positive_{risk_tier}"})
             else:
                 unsafe_targets.append(payload)
         if expected_profit < min_profit:

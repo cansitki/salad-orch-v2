@@ -107,6 +107,51 @@ class ShadowCompareTest(unittest.TestCase):
         self.assertEqual(payload["unsafe_targets"], [])
         self.assertTrue(any(item["reason"] == "protected_positive_marginal" for item in payload["warnings"]))
 
+    def test_protected_running_positive_blocked_priority_is_warning_not_failure(self) -> None:
+        fleet_scheduler.schedule_once(db_path=self.db_path, price=0.64, fee=0.01, dry_run=False)
+        with state_db.connect(self.db_path) as conn:
+            state_db.init_db(conn)
+            state_db.update_slot_observation(
+                conn,
+                {
+                    "org_label": "kray",
+                    "slot_name": "prl-kray-roi-01",
+                    "observed_profile_key": "4080:low:2048",
+                    "observed_status": "running",
+                    "protected": True,
+                },
+            )
+            state_db.upsert_profile_score(
+                conn,
+                {
+                    "profile_key": "4080:low:2048",
+                    "mode": "base_fill",
+                    "decision_price_usd": 0.64,
+                    "expected_profit_day": 0.25,
+                    "score": 1.0,
+                    "risk_tier": "blocked_priority",
+                },
+            )
+            state_db.set_slot_target(
+                conn,
+                {
+                    "org_label": "kray",
+                    "slot_name": "prl-kray-roi-01",
+                    "profile_key": "4080:low:2048",
+                    "mode": "base_fill",
+                    "decision_price_usd": 0.64,
+                    "expected_profit_day": 0.25,
+                    "protected": True,
+                    "reason": "base_fill:protected_observed_profile",
+                },
+            )
+            conn.commit()
+
+        payload = shadow_compare.build_shadow_compare(self.db_path)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["unsafe_targets"], [])
+        self.assertTrue(any(item["reason"] == "protected_positive_blocked_priority" for item in payload["warnings"]))
+
 
 if __name__ == "__main__":
     unittest.main()

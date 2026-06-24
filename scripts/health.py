@@ -38,6 +38,17 @@ def build_health(db_path: str | None = None) -> dict[str, Any]:
                 """
             ).fetchall()
         ]
+        api_rate_limits = [
+            dict(row)
+            for row in conn.execute(
+                """
+                SELECT api_key_env, window_started_utc, request_count,
+                       max_requests_per_minute, updated_at_utc
+                FROM api_rate_limits
+                ORDER BY api_key_env
+                """
+            ).fetchall()
+        ]
         target_count = int(conn.execute("SELECT COUNT(*) AS count FROM slot_targets").fetchone()["count"])
         slot_count = int(conn.execute("SELECT COUNT(*) AS count FROM slots").fetchone()["count"])
 
@@ -68,6 +79,7 @@ def build_health(db_path: str | None = None) -> dict[str, Any]:
         "stale_heartbeats": stale_heartbeats,
         "runtime_failures": failures,
         "guard_issues": guard_issues,
+        "api_rate_limits": api_rate_limits,
         "latest_risk_mode": status.get("latest_risk_mode"),
         "latest_price_sample": status.get("latest_price_sample"),
         "slot_status": status.get("slot_status"),
@@ -91,6 +103,8 @@ def main() -> None:
         print(f"runtime_failures={len(payload['runtime_failures'])}")
     if payload["guard_issues"]:
         print(f"guard_issues={len(payload['guard_issues'])}")
+    if payload["api_rate_limits"]:
+        print(f"api_rate_limits={len(payload['api_rate_limits'])}")
 
 
 if __name__ == "__main__":

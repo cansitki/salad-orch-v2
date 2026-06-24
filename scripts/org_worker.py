@@ -12,7 +12,7 @@ from typing import Any
 import fleet_scheduler
 import state_db
 from config_loader import OrgConfig, load_config
-from fleet_common import json_dumps, utc_now
+from fleet_common import env_int, json_dumps, utc_now
 from profit_model import profile_key
 
 
@@ -47,6 +47,53 @@ def load_watch_module(org: OrgConfig, *, decision_price: float, min_profit_day: 
                 os.environ.pop(key, None)
             else:
                 os.environ[key] = value
+
+
+def acquire_api_budget(
+    *,
+    db_path: str | None,
+    api_key_env: str,
+    max_requests_per_minute: int,
+) -> dict[str, Any]:
+    total_wait = 0.0
+    while True:
+        with state_db.connect(db_path) as conn:
+            state_db.init_db(conn)
+            conn.execute("BEGIN IMMEDIATE")
+            wait_seconds = state_db.reserve_api_request(
+                conn,
+                api_key_env,
+                max_requests_per_minute=max_requests_per_minute,
+            )
+            if wait_seconds <= 0:
+                conn.commit()
+                return {
+                    "api_key_env": api_key_env,
+                    "max_requests_per_minute": max_requests_per_minute,
+                    "waited_seconds": round(total_wait, 3),
+                }
+            conn.rollback()
+        sleep_for = min(wait_seconds, 5.0)
+        time.sleep(sleep_for)
+        total_wait += sleep_for
+
+
+def install_rate_limited_request(watch: Any, org: OrgConfig, *, db_path: str | None = None) -> None:
+    max_requests = env_int("PRL_SALAD_API_MAX_REQUESTS_PER_MINUTE", 120)
+    if max_requests <= 0 or getattr(watch, "_PRL_RATE_LIMIT_INSTALLED", False):
+        return
+    original_request = watch.request
+
+    def limited_request(method: str, path: str, payload: Any | None = None) -> Any:
+        acquire_api_budget(
+            db_path=db_path,
+            api_key_env=org.api_key_env,
+            max_requests_per_minute=max_requests,
+        )
+        return original_request(method, path, payload)
+
+    watch.request = limited_request
+    watch._PRL_RATE_LIMIT_INSTALLED = True
 
 
 def target_rows(conn, org_label: str) -> list[dict[str, Any]]:
@@ -205,6 +252,7 @@ def run_once(
         conn.commit()
 
     watch = load_watch_module(org, decision_price=decision_price, min_profit_day=min_profit)
+    install_rate_limited_request(watch, org, db_path=db_path)
     results: list[dict[str, Any]] = []
     with state_db.connect(db_path) as conn:
         state_db.init_db(conn)

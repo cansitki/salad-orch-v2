@@ -6,7 +6,7 @@ import json
 import pathlib
 import sqlite3
 from dataclasses import asdict
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 from config_loader import FleetConfig, load_config
@@ -233,6 +233,14 @@ CREATE TABLE IF NOT EXISTS guard_issues (
   action_count INTEGER NOT NULL DEFAULT 0,
   payload_json TEXT NOT NULL DEFAULT '{}',
   PRIMARY KEY (org_label, slot_name, issue_type)
+);
+
+CREATE TABLE IF NOT EXISTS api_rate_limits (
+  api_key_env TEXT PRIMARY KEY,
+  window_started_utc TEXT NOT NULL,
+  request_count INTEGER NOT NULL,
+  max_requests_per_minute INTEGER NOT NULL,
+  updated_at_utc TEXT NOT NULL
 );
 """
 
@@ -562,6 +570,71 @@ def clear_guard_issues(conn: sqlite3.Connection, active_keys: set[tuple[str, str
             )
 
 
+def _parse_utc(value: str) -> datetime:
+    parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed
+
+
+def reserve_api_request(
+    conn: sqlite3.Connection,
+    api_key_env: str,
+    *,
+    max_requests_per_minute: int,
+    now_utc: str | None = None,
+) -> float:
+    if max_requests_per_minute <= 0:
+        return 0.0
+    now = now_utc or utc_now()
+    now_dt = _parse_utc(now)
+    row = conn.execute(
+        "SELECT * FROM api_rate_limits WHERE api_key_env = ?",
+        (api_key_env,),
+    ).fetchone()
+    if row is None:
+        conn.execute(
+            """
+            INSERT INTO api_rate_limits(
+              api_key_env, window_started_utc, request_count,
+              max_requests_per_minute, updated_at_utc
+            )
+            VALUES(?, ?, ?, ?, ?)
+            """,
+            (api_key_env, now, 1, max_requests_per_minute, now),
+        )
+        return 0.0
+    window_started = _parse_utc(str(row["window_started_utc"]))
+    elapsed = max(0.0, (now_dt - window_started).total_seconds())
+    if elapsed >= 60.0:
+        conn.execute(
+            """
+            UPDATE api_rate_limits
+            SET window_started_utc = ?,
+                request_count = 1,
+                max_requests_per_minute = ?,
+                updated_at_utc = ?
+            WHERE api_key_env = ?
+            """,
+            (now, max_requests_per_minute, now, api_key_env),
+        )
+        return 0.0
+    request_count = int(row["request_count"] or 0)
+    if request_count < max_requests_per_minute:
+        conn.execute(
+            """
+            UPDATE api_rate_limits
+            SET request_count = request_count + 1,
+                max_requests_per_minute = ?,
+                updated_at_utc = ?
+            WHERE api_key_env = ?
+            """,
+            (max_requests_per_minute, now, api_key_env),
+        )
+        return 0.0
+    return max(0.0, 60.0 - elapsed)
+
+
 def active_search_cooldowns(conn: sqlite3.Connection) -> set[tuple[str, str, str]]:
     rows = conn.execute(
         """
@@ -843,6 +916,7 @@ def status_payload(conn: sqlite3.Connection) -> dict[str, Any]:
         "heartbeats",
         "runtime_failures",
         "guard_issues",
+        "api_rate_limits",
         "events",
     ):
         tables[table] = int(conn.execute(f"SELECT COUNT(*) AS count FROM {table}").fetchone()["count"])

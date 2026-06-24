@@ -154,6 +154,7 @@ Tables:
 | `heartbeats` | Runtime health for each process. |
 | `runtime_failures` | Last failure per component, sanitized and operator-visible. |
 | `guard_issues` | Persistent no-hash/negative issue state with first-seen grace tracking. |
+| `api_rate_limits` | Per API key env request budget shared by org workers and guard. |
 | `events` | Structured operational events. |
 
 Database rules:
@@ -347,6 +348,13 @@ Responsibilities:
 
 It should not independently choose a GPU profile except as a temporary fallback when scheduler is stale.
 
+Current API budget behavior:
+
+- every Salad API request made through `org_worker.py` is throttled by `api_key_env`
+- orgs sharing one API key env share one SQLite budget window
+- `PRL_SALAD_API_MAX_REQUESTS_PER_MINUTE` controls the per-key budget
+- `0` disables throttling for local tests only
+
 ### `guard.py`
 
 Global safety controller.
@@ -372,6 +380,7 @@ Current implementation behavior:
 - negative grace is 90 seconds.
 - decisions are persisted to `guard_issues`, `attempts`, and `events`.
 - runtime failures are persisted to `runtime_failures`.
+- guard v2 live actions use the same per-key API budget as org workers.
 - `--apply-legacy` remains available for the old guard path.
 
 ### `supervisor.py`
@@ -434,6 +443,7 @@ Required output:
 - active guard issues
 - latest risk mode and price sample
 - slot status counts
+- API rate-limit windows
 
 This script must not call live Salad APIs. It reads the scheduler DB only, so it
 can be used frequently by `/goal` supervision without triggering API churn.
@@ -831,6 +841,9 @@ Current implementation:
 
 - `SALAD_FLEET_EXTRA_ORGS_JSON` appends new organizations without replacing existing orgs
 - `scripts/config_loader.py --validate` provides config onboarding checks
+- `api_rate_limits` stores per API key env request windows
+- `org_worker.py` and guard v2 enforce `PRL_SALAD_API_MAX_REQUESTS_PER_MINUTE`
+- `scripts/health.py --json` reports current API rate-limit windows
 - `scripts/maintenance.py` prunes historical rows with dry-run default and `--apply` for deletion
 - `scripts/maintenance.py --loop --interval 21600 --apply` can run as a six-hour retention job
 - `scripts/supervisor.py --include-maintenance` includes maintenance in the tmux plan

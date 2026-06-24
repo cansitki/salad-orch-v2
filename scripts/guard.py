@@ -133,7 +133,13 @@ def org_by_label() -> dict[str, Any]:
     return {org.label: org for org in load_config().enabled_orgs()}
 
 
-def apply_guard_target(target: dict[str, Any], *, stop_if_no_target: bool = False, reason: str) -> dict[str, Any]:
+def apply_guard_target(
+    target: dict[str, Any],
+    *,
+    db_path: str | None = None,
+    stop_if_no_target: bool = False,
+    reason: str,
+) -> dict[str, Any]:
     orgs = org_by_label()
     org = orgs.get(str(target["org_label"]))
     if org is None:
@@ -144,6 +150,7 @@ def apply_guard_target(target: dict[str, Any], *, stop_if_no_target: bool = Fals
         decision_price=float(target["decision_price_usd"]),
         min_profit_day=config.risk.min_profit_for_mode(),
     )
+    org_worker.install_rate_limited_request(watch, org, db_path=db_path)
     slot_name = str(target["slot_name"])
     if stop_if_no_target:
         watch.request("POST", f"/organizations/{watch.ORG}/projects/{watch.PROJECT}/containers/{slot_name}/stop")
@@ -246,6 +253,7 @@ def enforce_issues(
                                 "slot_name": slot_name,
                                 "decision_price_usd": decision_price,
                             },
+                            db_path=db_path,
                             stop_if_no_target=target is None,
                             reason=f"guard_{issue_type}",
                         )

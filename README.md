@@ -233,6 +233,17 @@ python3 scripts/health.py
 python3 scripts/health.py --json
 ```
 
+API rate budget:
+
+```bash
+PRL_SALAD_API_MAX_REQUESTS_PER_MINUTE=120
+```
+
+`org_worker.py` and guard v2 throttle Salad API calls through SQLite by API key
+environment variable. This matters because multiple orgs can share one API key
+env var; for example `kray`, `kray2`, and `kray3` share one configured budget.
+Set the value to `0` only for a local test where throttling must be disabled.
+
 Fresh operator report with live snapshots:
 
 ```bash

@@ -9,6 +9,7 @@ import time
 from typing import Any, Callable
 
 import health as health_status
+import guard as guard_status
 import reporter
 import rollout
 from fleet_common import json_dumps, utc_now
@@ -161,6 +162,51 @@ def _guard_due(tick_index: int, every: int) -> bool:
     return (tick_index + 1) % every == 0
 
 
+def _guard_probe_summary(payload: dict[str, Any]) -> dict[str, Any]:
+    decisions = payload.get("decisions") or []
+    actionable = [
+        decision
+        for decision in decisions
+        if str(decision.get("action") or "") in {"retarget", "stop"}
+    ]
+    return {
+        "ok": True,
+        "issue_count": int(payload.get("issue_count") or 0),
+        "decisions": len(decisions),
+        "actionable": len(actionable),
+        "actions": {
+            action: sum(1 for decision in decisions if str(decision.get("action") or "") == action)
+            for action in sorted({str(decision.get("action") or "") for decision in decisions})
+            if action
+        },
+    }
+
+
+def _guard_actionable_probe(
+    *,
+    db_path: str | None,
+    price: float | None,
+    timeout_seconds: float,
+    hard_timeout: bool,
+) -> dict[str, Any]:
+    try:
+        payload = _call_with_timeout(
+            lambda: guard_status.run_once(db_path=db_path, price=price, apply=False),
+            timeout_seconds,
+            hard_timeout=hard_timeout,
+        )
+        return _guard_probe_summary(payload)
+    except Exception as exc:
+        return {
+            "ok": False,
+            "issue_count": None,
+            "decisions": None,
+            "actionable": None,
+            "actions": {},
+            "error": f"{type(exc).__name__}: {str(exc)[:180]}",
+        }
+
+
 def _run_shadow(
     runner: RolloutRunner,
     *,
@@ -258,6 +304,7 @@ def run_monitor_tick(
     apply_all_orgs_pending: bool = False,
     guard_on_issues: bool = False,
     guard_due: bool = False,
+    guard_actionable_only: bool = False,
     org: str | None = None,
     allow_pending_retarget: bool = False,
     pending_retarget_after_seconds: int = 45,
@@ -300,12 +347,23 @@ def run_monitor_tick(
     action = "none"
     action_payload = None
     action_summary = None
+    guard_probe = None
 
     if shadow_summary["ok"]:
         if apply_guard:
             action = "guard-apply"
         elif guard_on_issues and guard_due and apply_all_orgs_pending and _has_guard_issues(shadow_summary):
-            action = "guard-apply"
+            if guard_actionable_only:
+                guard_probe = _guard_actionable_probe(
+                    db_path=db_path,
+                    price=price,
+                    timeout_seconds=runner_timeout_seconds,
+                    hard_timeout=hard_runner_timeout,
+                )
+                has_actionable_guard = not guard_probe["ok"] or int(guard_probe.get("actionable") or 0) > 0
+                action = "guard-apply" if has_actionable_guard else "all-orgs-pending"
+            else:
+                action = "guard-apply"
         elif apply_all_orgs_pending:
             action = "all-orgs-pending"
         elif apply_one_org:
@@ -338,6 +396,7 @@ def run_monitor_tick(
         "action": action,
         "shadow": shadow_summary,
         "action_result": action_summary,
+        "guard_probe": guard_probe,
         "skipped_live_action": bool(live_action_count and not shadow_summary["ok"]),
     }
 
@@ -362,6 +421,16 @@ def _print_tick(payload: dict[str, Any]) -> None:
         print(f"shadow_fallback={shadow['fallback_source']}", flush=True)
     if shadow.get("fallback_error"):
         print(f"shadow_fallback_error={shadow['fallback_error']}", flush=True)
+    if payload.get("guard_probe"):
+        probe = payload["guard_probe"]
+        if probe.get("ok"):
+            print(
+                f"guard_probe actionable={probe['actionable']} decisions={probe['decisions']} "
+                f"issues={probe['issue_count']} actions={probe['actions']}",
+                flush=True,
+            )
+        else:
+            print(f"guard_probe_error={probe.get('error')}", flush=True)
     if payload["action_result"]:
         result = payload["action_result"]
         print(
@@ -408,6 +477,11 @@ def main() -> None:
         default=0,
         help="With --apply-all-orgs-pending, run guard-apply instead every N ticks when shadow reports no-hash/negative slots.",
     )
+    parser.add_argument(
+        "--guard-actionable-only",
+        action="store_true",
+        help="With --guard-on-issues-every, run guard-apply only when a read-only guard probe has retarget/stop decisions; otherwise keep filling.",
+    )
     parser.add_argument("--org", default=None, help="Organization label for --apply-one-org.")
     parser.add_argument("--allow-pending-retarget", action="store_true", help="Allow one-org apply to patch stale creating/allocating slots.")
     parser.add_argument("--pending-retarget-after-seconds", type=int, default=45)
@@ -446,6 +520,7 @@ def main() -> None:
             apply_all_orgs_pending=args.apply_all_orgs_pending,
             guard_on_issues=guard_on_issues,
             guard_due=bool(guard_on_issues and _guard_due(ticks, args.guard_on_issues_every)),
+            guard_actionable_only=args.guard_actionable_only,
             org=args.org,
             allow_pending_retarget=args.allow_pending_retarget,
             pending_retarget_after_seconds=args.pending_retarget_after_seconds,

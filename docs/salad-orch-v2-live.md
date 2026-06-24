@@ -140,7 +140,7 @@ For active fill mode, use the pending-only live monitor after the read-only
 monitor has shown safe targets:
 
 ```bash
-PRL_PEARL_FEE_RATE=0.01 python3 scripts/runtime_monitor.py --loop --interval 60 --runner-timeout-seconds 240 --fee 0.01 --require-secrets --apply-all-orgs-pending --guard-on-issues-every 3 --confirm-live-actions --pending-retarget-after-seconds 60 --worker-parallelism 4 --skip-shadow-workers
+PRL_PEARL_FEE_RATE=0.01 python3 scripts/runtime_monitor.py --loop --interval 60 --runner-timeout-seconds 240 --fee 0.01 --require-secrets --apply-all-orgs-pending --guard-on-issues-every 1 --guard-actionable-only --confirm-live-actions --pending-retarget-after-seconds 60 --worker-parallelism 4 --skip-shadow-workers
 ```
 
 This still runs a shadow gate first, but `--skip-shadow-workers` makes that
@@ -148,9 +148,9 @@ preflight DB-only so the same cycle does not spend Salad API requests twice. The
 action pass still performs live worker observations before patching stale
 creating/allocating slots across all orgs, but it does not pass
 `--allow-live-retarget`, so running slots remain protected.
-`--guard-on-issues-every 3` keeps the first two cycles focused on fill after
-startup, then runs guard on every third cycle when DB state reports no-hash or
-negative slots.
+`--guard-actionable-only` keeps fill moving while no-hash or negative slots are
+still inside grace, but switches immediately to guard once the read-only guard
+probe has a retarget/stop decision.
 `--worker-parallelism 4` runs each organization in an isolated process, which is
 faster than the old sequential all-org scan without sharing watcher environment
 between orgs. The rollout layer only runs one organization per Salad API key in

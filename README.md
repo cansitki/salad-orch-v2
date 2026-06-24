@@ -366,15 +366,15 @@ Current fill settings:
 | --- | --- |
 | Fleet mode | fill |
 | Decision PRL price | 0.64 USD |
-| Allowed Salad priorities | batch |
+| Allowed Salad priorities | batch, low |
 | Minimum candidate profit | 0 USD/day |
 | Live upgrades | disabled |
 | Underperform optimization | disabled |
 | No-hash grace | 60 seconds |
 | Negative-profit threshold | profit < 0 USD/day |
 | Negative-profit grace | 120 seconds |
-| Allocating rotation | 90 seconds |
-| Poll interval | 30 seconds |
+| Allocating rotation | 45 seconds |
+| Poll interval | 15 seconds |
 | No-GPU sleep trigger | only after 1 hour with no GPU found |
 | No-GPU sleep duration | 15 minutes |
 
@@ -406,19 +406,9 @@ This is intentionally disabled during fill mode.
 
 ## Candidate Policy
 
-Only batch-priority GPUs are used in the current public strategy.
-
-Low-priority profiles are blocked for now because the goal is to get stable
-profitable GPUs first and optimize later.
-
-Blocked low profiles:
-
-```text
-4080:low
-4070tis:low
-5070:low
-5090:low
-```
+Batch and low-priority GPUs are allowed in fill mode, but every candidate must
+pass the same conservative profit check. Unknown-profit candidates are skipped
+instead of started blind.
 
 Common candidate classes:
 
@@ -470,7 +460,7 @@ Each watcher should show:
 PRL_FLEET_MODE=fill
 PRL_WATCH_FIXED_DECISION_PRICE_USD=0.64
 PRL_WATCH_MIN_PROFIT_USD_DAY=0
-PRL_WATCH_ALLOWED_PRIORITIES=batch
+PRL_WATCH_ALLOWED_PRIORITIES=batch,low
 ```
 
 The guard should show:
@@ -524,7 +514,7 @@ available, rotate it.
 Current rule:
 
 ```text
-Allocating rotation = 90 seconds
+Allocating rotation = 45 seconds
 ```
 
 When Salad has low GPU availability, many slots will stay allocating. This is
@@ -630,8 +620,10 @@ the slot is kept. If it stays no-hash, the guard stops or reallocates it.
 ### Everything feels slow
 
 Each cycle checks Salad availability across many GPU classes and multiple orgs.
-API timeouts and scarce availability can make one full cycle take 30 to 90
-seconds. This is expected during low availability.
+The runtime uses a 15 second poll interval, 45 second allocating rotation, and
+shorter HTTP timeout so it can catch newly available GPUs faster during scarce
+availability. API timeouts and scarce availability can still make a full cycle
+take longer than the nominal poll interval.
 
 ## Public Repo Boundary
 

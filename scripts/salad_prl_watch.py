@@ -765,8 +765,8 @@ def candidate_profit_estimate(candidate: Candidate) -> dict[str, float | str] | 
 def candidate_is_profitable(slot: str, candidate: Candidate) -> bool:
     estimate = candidate_profit_estimate(candidate)
     if estimate is None:
-        log("candidate_profit_unknown_allowed", slot=slot, candidate=candidate.label)
-        return True
+        log("candidate_profit_unknown_skipped", slot=slot, candidate=candidate.label)
+        return False
     profit_day = float(estimate["profit_day"])
     if profit_day < PRICE_GUARD_MIN_PROFIT_DAY:
         log(

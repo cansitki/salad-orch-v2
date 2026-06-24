@@ -266,19 +266,26 @@ def build_report(
         status_counts[key] = status_counts.get(key, 0) + 1
     active_pending_statuses = {"running", "creating", "allocating"}
     active_pending_slots = sum(count for key, count in status_counts.items() if key in active_pending_statuses)
-    live_hashing_gpus = sum(1 for slot in slot_rows if str(slot.get("observed_status") or "") == "running")
-    live_th = sum(float(slot.get("live_hashrate_th") or 0) for slot in slot_rows)
+    slot_live_th = sum(float(slot.get("live_hashrate_th") or 0) for slot in slot_rows)
+    slot_live_hashing_gpus = sum(1 for slot in slot_rows if float(slot.get("live_hashrate_th") or 0) > 0)
     snapshot_live_th = sum(float(row.get("th") or 0) for row in latest_slot_snapshots if float(row.get("th") or 0) > 0)
     snapshot_live_hashing_gpus = sum(1 for row in latest_slot_snapshots if float(row.get("th") or 0) > 0)
     snapshot_live_at_utc = max((str(row["at_utc"]) for row in latest_slot_snapshots if row.get("at_utc")), default=None)
-    live_th_source = "slots"
+    live_workers = [row for row in worker_rows if int(row.get("stale") or 0) == 0]
+    stale_workers = [row for row in worker_rows if int(row.get("stale") or 0) != 0]
+    worker_th = sum(float(row.get("reported_hashrate_th") or 0) for row in live_workers)
+    positive_workers = [row for row in live_workers if float(row.get("reported_hashrate_th") or 0) > 0]
+    live_th = worker_th
+    live_hashing_gpus = len(positive_workers)
+    live_th_source = "workers"
+    if live_th <= 0 and slot_live_th > 0:
+        live_th = slot_live_th
+        live_hashing_gpus = slot_live_hashing_gpus
+        live_th_source = "slots"
     if live_th <= 0 and snapshot_live_th > 0:
         live_th = snapshot_live_th
         live_hashing_gpus = snapshot_live_hashing_gpus
         live_th_source = "profit_snapshots"
-    live_workers = [row for row in worker_rows if int(row.get("stale") or 0) == 0]
-    stale_workers = [row for row in worker_rows if int(row.get("stale") or 0) != 0]
-    worker_th = sum(float(row.get("reported_hashrate_th") or 0) for row in live_workers)
     latest_payload = _payload(latest_profit)
     stuck_slots = [
         {
@@ -328,6 +335,8 @@ def build_report(
         "live_hashing_gpus": live_hashing_gpus,
         "live_th": live_th,
         "live_th_source": live_th_source,
+        "slot_live_hashing_gpus": slot_live_hashing_gpus,
+        "slot_live_th": slot_live_th,
         "snapshot_live_hashing_gpus": snapshot_live_hashing_gpus,
         "snapshot_live_th": snapshot_live_th,
         "snapshot_live_at_utc": snapshot_live_at_utc,

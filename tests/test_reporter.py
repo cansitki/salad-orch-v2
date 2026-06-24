@@ -99,6 +99,16 @@ class ReporterTest(unittest.TestCase):
                     "live_hashrate_th": 111.5,
                 },
             )
+            state_db.update_slot_observation(
+                conn,
+                {
+                    "org_label": "kray",
+                    "slot_name": "prl-kray-roi-02",
+                    "observed_status": "running",
+                    "observed_profile_key": "3080:batch:2048",
+                    "live_hashrate_th": 0,
+                },
+            )
             state_db.record_profit_snapshot(
                 conn,
                 {
@@ -123,6 +133,43 @@ class ReporterTest(unittest.TestCase):
         self.assertEqual(report["live_hashing_gpus"], 1)
         self.assertEqual(report["live_th"], 111.5)
         self.assertEqual(report["snapshot_live_th"], 100.5)
+
+    def test_worker_hashrate_wins_over_slot_observations(self) -> None:
+        with state_db.connect(self.db_path) as conn:
+            state_db.update_slot_observation(
+                conn,
+                {
+                    "org_label": "kray",
+                    "slot_name": "prl-kray-roi-01",
+                    "observed_status": "running",
+                    "observed_profile_key": "3090:batch:2048",
+                    "live_hashrate_th": 0,
+                },
+            )
+            state_db.sync_worker_rows(
+                conn,
+                [
+                    {
+                        "worker_name": "kray-prl-test-pearlfortune-inst-1",
+                        "org_label": "kray",
+                        "slot_name": "prl-kray-roi-01",
+                        "instance_id": "inst-1",
+                        "gpu_key": "3090",
+                        "reported_hashrate_th": 101.5,
+                        "last_stats_at": "2026-06-24T12:00:00+00:00",
+                    }
+                ],
+            )
+            conn.commit()
+
+        report = reporter.build_report(self.db_path)
+
+        self.assertEqual(report["live_th_source"], "workers")
+        self.assertEqual(report["live_workers"], 1)
+        self.assertEqual(report["live_hashing_gpus"], 1)
+        self.assertEqual(report["worker_th"], 101.5)
+        self.assertEqual(report["live_th"], 101.5)
+        self.assertEqual(report["slot_live_hashing_gpus"], 0)
 
     def test_profit_scenarios_are_derived_from_latest_fleet_snapshot(self) -> None:
         with state_db.connect(self.db_path) as conn:

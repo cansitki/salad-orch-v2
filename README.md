@@ -264,9 +264,10 @@ python3 scripts/reporter.py --refresh --refresh-timeout 45
 
 If live Salad/PearlFortune lookups are slow, the reporter returns the latest DB
 state with `refresh_error=...` instead of blocking indefinitely.
-For live TH, it prefers `slots.live_hashrate_th` from the latest successful
-guard snapshot and falls back to the latest per-slot `profit_snapshots` batch
-when slot rows have not been refreshed yet.
+For live TH, it prefers fresh mapped PearlFortune worker rows, then
+`slots.live_hashrate_th` from the latest successful guard snapshot, then the
+latest per-slot `profit_snapshots` batch when slot rows have not been refreshed
+yet.
 For profit scenarios, it derives `0.64` and `0.70` from the latest fleet
 snapshot's PRL/day and cost, so `profit_at_0.70` still appears when the live
 refresh only captured one decision price.

@@ -139,6 +139,19 @@ slots() {
   printf '%s' "$out"
 }
 
+api_key_env_for_org() {
+  local org=$1
+  local key_env=$DEFAULT_API_KEY_ENV
+  local upper_org
+  local per_org_var
+  upper_org=$(printf '%s' "$org" | tr '[:lower:]-' '[:upper:]_')
+  per_org_var="PRL_WATCH_API_KEY_ENV_${upper_org}"
+  if [[ -n "${!per_org_var+x}" && -n "${!per_org_var}" ]]; then
+    key_env=${!per_org_var}
+  fi
+  printf '%s' "$key_env"
+}
+
 restart_tmux() {
   local session=$1
   shift
@@ -269,7 +282,8 @@ if [[ -n "${PRL_FLEET_ORGS:-}" ]]; then
     org=${org//[[:space:]]/}
     [[ -n "$org" ]] || continue
     session="${org}-prl-watch"
-    restart_tmux "$session" "$(watch_cmd "$session" "$LOG_DIR/${org}_prl_watch.log" "$org" "$org" "$(slots "prl-${org}-roi")" "${org}-prl-${org}" "${org}-prl" "${org}-roi-" "PearlFortune ${org^^}" "$DEFAULT_API_KEY_ENV")"
+    key_env=$(api_key_env_for_org "$org")
+    restart_tmux "$session" "$(watch_cmd "$session" "$LOG_DIR/${org}_prl_watch.log" "$org" "$org" "$(slots "prl-${org}-roi")" "${org}-prl-${org}" "${org}-prl" "${org}-roi-" "PearlFortune ${org^^}" "$key_env")"
   done
 else
   restart_tmux kray-prl-watch "$(watch_cmd kray-prl-watch "$LOG_DIR/kray_prl_watch.log" kray kray "$(slots prl-kray-roi)" kray-prl-kray kray-prl kray-roi- "PearlFortune KRAY" SALAD_API_KEY_2)"

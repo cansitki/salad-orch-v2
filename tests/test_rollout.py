@@ -97,6 +97,20 @@ class RolloutTest(unittest.TestCase):
                 skip_guard=True,
             )
 
+    def test_live_apply_rollout_creates_checkpoint_before_scheduler_tick(self) -> None:
+        payload = rollout.run_rollout(
+            stage="one-org",
+            org_label="kry1",
+            db_path=self.db_path,
+            price=0.64,
+            fee=0.01,
+            apply_workers=True,
+            skip_workers=True,
+            skip_guard=True,
+        )
+        self.assertIsNotNone(payload["checkpoint"])
+        self.assertEqual(payload["checkpoint"]["stage"], "one-org")
+
 
 if __name__ == "__main__":
     unittest.main()

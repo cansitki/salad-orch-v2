@@ -211,6 +211,30 @@ def run_rollout(
         if missing:
             raise SystemExit(f"missing env vars: {', '.join(missing)}")
 
+    checkpoint = None
+    if apply_workers or apply_guard:
+        with state_db.connect(db_path) as conn:
+            state_db.init_db(conn)
+            row = state_db.create_rollout_checkpoint(
+                conn,
+                name=f"pre-{stage}",
+                stage=stage,
+                payload={
+                    "apply_workers": apply_workers,
+                    "apply_guard": apply_guard,
+                    "allow_live_retarget": allow_live_retarget,
+                    "allow_pending_retarget": allow_pending_retarget,
+                },
+            )
+            conn.commit()
+            checkpoint = {
+                "id": row["id"],
+                "name": row["name"],
+                "stage": row["stage"],
+                "target_count": row["target_count"],
+                "created_at_utc": row["created_at_utc"],
+            }
+
     scheduler_payload = fleet_scheduler.schedule_once(
         db_path=db_path,
         price=price,
@@ -267,6 +291,7 @@ def run_rollout(
         "apply_guard": apply_guard,
         "allow_live_retarget": allow_live_retarget,
         "allow_pending_retarget": allow_pending_retarget,
+        "checkpoint": checkpoint,
         "scheduler": {key: value for key, value in scheduler_payload.items() if key != "targets"},
         "workers": [
             {
@@ -371,6 +396,8 @@ def main() -> None:
         if payload["workers"]:
             for worker in payload["workers"]:
                 print(f"worker {worker['org']}: apply={worker['apply']} actions={worker['action_counts']}")
+        if payload.get("checkpoint"):
+            print(f"checkpoint: id={payload['checkpoint']['id']} targets={payload['checkpoint']['target_count']}")
         if payload["guard"]:
             print(f"guard: apply={payload['guard']['apply']} issues={payload['guard']['issue_count']} decisions={payload['guard']['decisions']}")
         for failure in gates["failed"]:

@@ -479,6 +479,23 @@ Responsibilities:
 Default behavior must stay non-destructive. Live actions require
 `--apply-workers` or `--apply-guard`.
 
+Live apply stages create a rollout checkpoint before scheduler targets are
+rewritten.
+
+### `rollback.py`
+
+Rollback helper for controlled rollout.
+
+Responsibilities:
+
+- create a checkpoint of current scheduler `slot_targets`
+- list recent rollout checkpoints
+- restore `slot_targets` from a checkpoint in dry-run mode by default
+- require `--apply` before writing restored targets
+
+This script restores target state only. Live Salad containers follow restored
+targets only after the operator runs org workers/rollout with explicit apply.
+
 ### `maintenance.py`
 
 Long-running state retention and compaction helper.
@@ -777,6 +794,7 @@ Current behavior:
 - `scripts/health.py --json` shows target coverage, stale heartbeats, runtime failures, and active guard issues from SQLite
 - `scripts/shadow_compare.py --json` reports missing targets, unsafe targets, target/observed mismatches, and diversification
 - `scripts/rollout.py` provides DB-only smoke, shadow, one-org apply, full-org apply with confirmation, and guard apply gates
+- `scripts/rollback.py` provides checkpoint list/restore for scheduler targets
 
 ### Phase 8: Shadow Mode
 
@@ -817,12 +835,13 @@ Acceptance:
 - each org maintains or improves live profitable GPU count
 - no-hash and negative slots are cleared
 - process restarts are handled
-- rollback path works
+- rollback path works through automatic rollout checkpoints and `scripts/rollback.py restore`
 
 Recommended live sequence:
 
 ```bash
 PRL_PEARL_FEE_RATE=0.01 python3 scripts/rollout.py --stage one-org --org kry1 --price 0.64 --fee 0.01 --apply-workers --require-secrets
+python3 scripts/rollback.py list
 ```
 
 Only after the one-org apply is stable:
@@ -836,6 +855,14 @@ python3 scripts/supervisor.py --ensure
 
 During the first live test, Codex should supervise health, reporter output,
 guard decisions, and org-worker attempts before enabling all orgs with apply.
+
+Rollback if one-org apply is bad:
+
+```bash
+python3 scripts/rollback.py restore <checkpoint-id>
+python3 scripts/rollback.py restore <checkpoint-id> --apply
+python3 scripts/org_worker.py --org kry1 --apply
+```
 
 Controlled one-org optimize after the fleet is full or manually approved:
 

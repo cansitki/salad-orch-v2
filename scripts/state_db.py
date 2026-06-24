@@ -242,6 +242,16 @@ CREATE TABLE IF NOT EXISTS api_rate_limits (
   max_requests_per_minute INTEGER NOT NULL,
   updated_at_utc TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS rollout_checkpoints (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  created_at_utc TEXT NOT NULL,
+  name TEXT NOT NULL,
+  stage TEXT NOT NULL,
+  target_count INTEGER NOT NULL,
+  payload_json TEXT NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS idx_rollout_checkpoints_created ON rollout_checkpoints(created_at_utc);
 """
 
 
@@ -826,6 +836,104 @@ def set_slot_target(conn: sqlite3.Connection, target: dict[str, Any]) -> None:
     )
 
 
+def current_slot_targets(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    rows = conn.execute(
+        """
+        SELECT org_label, slot_name, profile_key, mode, decision_price_usd,
+               expected_profit_day, protected, reason, assigned_at_utc,
+               expires_at_utc
+        FROM slot_targets
+        ORDER BY org_label, slot_name
+        """
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def create_rollout_checkpoint(
+    conn: sqlite3.Connection,
+    *,
+    name: str,
+    stage: str,
+    payload: dict[str, Any] | None = None,
+) -> sqlite3.Row:
+    targets = current_slot_targets(conn)
+    latest_risk = latest_risk_mode(conn)
+    checkpoint_payload = {
+        "slot_targets": targets,
+        "latest_risk_mode": dict(latest_risk) if latest_risk else None,
+        **(payload or {}),
+    }
+    cursor = conn.execute(
+        """
+        INSERT INTO rollout_checkpoints(
+          created_at_utc, name, stage, target_count, payload_json
+        )
+        VALUES(?, ?, ?, ?, ?)
+        """,
+        (
+            utc_now(),
+            name,
+            stage,
+            len(targets),
+            compact_json(safe_public_payload(checkpoint_payload)),
+        ),
+    )
+    checkpoint_id = int(cursor.lastrowid)
+    record_event(
+        conn,
+        "rollout_checkpoint_created",
+        source="state_db",
+        message="rollout checkpoint created",
+        payload={"id": checkpoint_id, "name": name, "stage": stage, "target_count": len(targets)},
+    )
+    return conn.execute("SELECT * FROM rollout_checkpoints WHERE id = ?", (checkpoint_id,)).fetchone()
+
+
+def list_rollout_checkpoints(conn: sqlite3.Connection, limit: int = 20) -> list[dict[str, Any]]:
+    rows = conn.execute(
+        """
+        SELECT id, created_at_utc, name, stage, target_count
+        FROM rollout_checkpoints
+        ORDER BY id DESC
+        LIMIT ?
+        """,
+        (limit,),
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def get_rollout_checkpoint(conn: sqlite3.Connection, checkpoint_id: int) -> dict[str, Any] | None:
+    row = conn.execute("SELECT * FROM rollout_checkpoints WHERE id = ?", (checkpoint_id,)).fetchone()
+    if row is None:
+        return None
+    data = dict(row)
+    try:
+        payload = json.loads(str(row["payload_json"] or "{}"))
+    except json.JSONDecodeError:
+        payload = {}
+    data["payload"] = payload
+    return data
+
+
+def restore_slot_targets_from_checkpoint(conn: sqlite3.Connection, checkpoint_id: int) -> dict[str, Any]:
+    checkpoint = get_rollout_checkpoint(conn, checkpoint_id)
+    if checkpoint is None:
+        raise ValueError(f"unknown rollout checkpoint {checkpoint_id}")
+    targets = list((checkpoint.get("payload") or {}).get("slot_targets") or [])
+    conn.execute("DELETE FROM slot_targets")
+    for target in targets:
+        set_slot_target(conn, target)
+    record_event(
+        conn,
+        "rollout_checkpoint_restored",
+        source="state_db",
+        level="warning",
+        message="rollout checkpoint restored slot targets",
+        payload={"id": checkpoint_id, "target_count": len(targets)},
+    )
+    return {"id": checkpoint_id, "target_count": len(targets)}
+
+
 def record_attempt(conn: sqlite3.Connection, attempt: dict[str, Any]) -> None:
     conn.execute(
         """
@@ -917,6 +1025,7 @@ def status_payload(conn: sqlite3.Connection) -> dict[str, Any]:
         "runtime_failures",
         "guard_issues",
         "api_rate_limits",
+        "rollout_checkpoints",
         "events",
     ):
         tables[table] = int(conn.execute(f"SELECT COUNT(*) AS count FROM {table}").fetchone()["count"])

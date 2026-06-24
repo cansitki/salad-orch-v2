@@ -109,6 +109,7 @@ The runnable code lives in `scripts/`.
 | `scripts/health.py` | Read-only health check for targets, stale heartbeats, guard issues, and runtime failures. |
 | `scripts/shadow_compare.py` | Read-only target-vs-observed mismatch and unsafe-target report for shadow mode. |
 | `scripts/rollout.py` | Controlled shadow/one-org/all-org/guard rollout runner with safety gates. |
+| `scripts/rollback.py` | Rollout checkpoint create/list/restore helper for scheduler targets. |
 | `scripts/maintenance.py` | Dry-run-first SQLite retention/compaction helper for long-running fleets. |
 | `.env.example` | Safe template for local secrets and runtime settings. |
 
@@ -280,6 +281,9 @@ unless `--apply-workers` or `--apply-guard` is passed.
    PRL_PEARL_FEE_RATE=0.01 python3 scripts/rollout.py --stage one-org --org kry1 --price 0.64 --fee 0.01 --apply-workers --require-secrets
    ```
 
+   Live apply stages create a rollback checkpoint automatically before the
+   scheduler writes new targets.
+
 4. Enable guard v2 live actions only after the dry-run decisions look correct:
 
    ```bash
@@ -302,6 +306,18 @@ Full-org live worker apply requires an explicit confirmation flag:
 ```bash
 PRL_PEARL_FEE_RATE=0.01 python3 scripts/rollout.py --stage all-orgs --price 0.64 --fee 0.01 --apply-workers --confirm-all-orgs --require-secrets
 ```
+
+Rollback target state:
+
+```bash
+python3 scripts/rollback.py list
+python3 scripts/rollback.py restore <checkpoint-id>
+python3 scripts/rollback.py restore <checkpoint-id> --apply
+```
+
+Restoring a checkpoint only restores scheduler `slot_targets`. To make Salad
+containers follow restored targets, run the relevant `org_worker.py --apply`
+or controlled `rollout.py` command after reviewing the dry-run restore output.
 
 Start fill mode:
 

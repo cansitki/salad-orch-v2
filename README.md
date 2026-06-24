@@ -95,6 +95,16 @@ The runnable code lives in `scripts/`.
 | `scripts/salad_prl_nonstop_supervisor.py` | Keeps tmux sessions alive and switches fill/optimize mode. |
 | `scripts/start_watchers.sh` | Starts all org watchers and the guard. |
 | `scripts/start_supervisor.sh` | Starts the nonstop supervisor. |
+| `scripts/state_db.py` | SQLite state DB, schema, heartbeats, events, targets, scores. |
+| `scripts/config_loader.py` | Multi-org config loader. Defaults to 4 orgs * 10 slots, supports JSON org config. |
+| `scripts/price_oracle.py` | Samples PearlFortune/SafeTrade price and writes trailing risk mode. |
+| `scripts/profit_model.py` | Deterministic expected profit and break-even model with configurable Pearl fee. |
+| `scripts/profile_scorer.py` | Scores GPU profiles using expected profit and recent attempt history. |
+| `scripts/fleet_scheduler.py` | Central dry-run-safe target assignment across all org slots. |
+| `scripts/org_worker.py` | Per-org worker that consumes scheduler targets; live actions require `--apply`. |
+| `scripts/guard.py` | New guard facade; analyzes current fleet by default, can delegate to legacy live guard. |
+| `scripts/supervisor.py` | Scheduler control tick and tmux process plan for the new stack. |
+| `scripts/reporter.py` | CLI/JSON status report from the scheduler DB. |
 | `.env.example` | Safe template for local secrets and runtime settings. |
 
 The current operating plan is documented in `docs/current-operations.md`.
@@ -130,6 +140,44 @@ SALAD_API_KEY_KRY1
 
 No SafeTrade API key is needed. SafeTrade is used only through its public
 PRL/USDT ticker endpoint for price discovery.
+
+## New Scheduler Shadow Mode
+
+The new deterministic scheduler can be run without live Salad changes. This is
+the default validation path.
+
+Initialize the DB and sync the default 4 organizations:
+
+```bash
+python3 scripts/state_db.py --init --sync-config --status
+```
+
+Use the current low-fee window by overriding Pearl fee to 1%:
+
+```bash
+PRL_PEARL_FEE_RATE=0.01 python3 scripts/fleet_scheduler.py --price 0.64 --fee 0.01
+python3 scripts/reporter.py
+```
+
+Dry-run one organization worker:
+
+```bash
+python3 scripts/org_worker.py --org kry1
+```
+
+`org_worker.py` does not perform live Salad actions unless `--apply` is passed.
+Even with `--apply`, running and pending slots are protected by default. Live
+retargeting requires explicit `--allow-live-retarget`; pending retargeting
+requires explicit `--allow-pending-retarget`.
+
+Run tests:
+
+```bash
+python3 -m unittest discover -s tests -v
+```
+
+To add a new organization, add one JSON object with `slots: 10` and an API key
+environment variable name. Do not put the API key value in git.
 
 Start fill mode:
 

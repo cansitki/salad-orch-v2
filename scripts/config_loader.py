@@ -1,0 +1,279 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import json
+import os
+from dataclasses import asdict, dataclass, field
+from datetime import UTC, datetime
+from typing import Any
+
+from fleet_common import env_bool, env_float, json_dumps, load_env_file, read_json_env
+
+
+@dataclass(frozen=True)
+class OrgConfig:
+    label: str
+    slug: str
+    api_key_env: str
+    slot_prefix: str
+    slots: int = 10
+    enabled: bool = True
+    worker_prefix: str | None = None
+    worker_slot_prefix: str | None = None
+    pool_worker_prefix: str | None = None
+    display_prefix: str | None = None
+
+    def slot_names(self) -> list[str]:
+        return [f"{self.slot_prefix}-{index:02d}" for index in range(1, self.slots + 1)]
+
+    def watch_env(self) -> dict[str, str]:
+        label = self.label
+        return {
+            "PRL_WATCH_NAME": f"{label}-prl-watch",
+            "PRL_WATCH_ORG": self.slug,
+            "PRL_WATCH_PUBLIC_ORG": label,
+            "PRL_WATCH_API_KEY_ENV": self.api_key_env,
+            "PRL_WATCH_SLOTS": ",".join(self.slot_names()),
+            "PRL_WATCH_WORKER_PREFIX": self.worker_prefix or f"{label}-prl",
+            "PRL_WATCH_WORKER_SLOT_PREFIX": self.worker_slot_prefix or f"{label}-roi-",
+            "PRL_WATCH_POOL_WORKER_PREFIX": self.pool_worker_prefix or f"{label}-prl-{label}",
+            "PRL_WATCH_DISPLAY_PREFIX": self.display_prefix or f"PearlFortune {label.upper()}",
+        }
+
+
+@dataclass(frozen=True)
+class RiskConfig:
+    fleet_mode: str = "fill"
+    base_decision_price: float = 0.64
+    optimize_decision_price: float = 0.62
+    boost_price_band: float = 0.02
+    boost_trailing_min_30m: float = 0.70
+    aggressive_trailing_min_1h: float = 0.72
+    risk_off_trailing_min_15m: float = 0.68
+    boost_min_window_seconds: int = 1200
+    aggressive_min_window_seconds: int = 2700
+    fill_min_profit_day: float = 0.05
+    optimize_min_profit_day: float = 0.01
+    pearl_fee_rate: float = 0.05
+    temporary_pearl_fee_rate: float | None = None
+    temporary_pearl_fee_until_utc: str | None = None
+    base_allowed_priorities: tuple[str, ...] = ("batch",)
+    boost_allowed_priorities: tuple[str, ...] = ("batch", "low")
+
+    def effective_fee_rate(self, now: datetime | None = None) -> float:
+        if self.temporary_pearl_fee_rate is None or not self.temporary_pearl_fee_until_utc:
+            return self.pearl_fee_rate
+        now = now or datetime.now(UTC)
+        raw = self.temporary_pearl_fee_until_utc
+        try:
+            until = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except ValueError:
+            return self.pearl_fee_rate
+        if until.tzinfo is None:
+            until = until.replace(tzinfo=UTC)
+        return self.temporary_pearl_fee_rate if now <= until else self.pearl_fee_rate
+
+    def decision_price_for_mode(self, mode: str | None = None) -> float:
+        selected = mode or self.fleet_mode
+        if selected == "optimize":
+            return self.optimize_decision_price
+        return self.base_decision_price
+
+    def min_profit_for_mode(self, mode: str | None = None) -> float:
+        selected = mode or self.fleet_mode
+        if selected == "optimize":
+            return self.optimize_min_profit_day
+        return self.fill_min_profit_day
+
+
+@dataclass(frozen=True)
+class MinerConfig:
+    release_tag: str = "v.1.1.8"
+    package_version: str = "v1.1.8"
+    binary: str = "miner-cuda12"
+    pool_proxy: str = "global.pearlfortune.org:443"
+
+
+@dataclass(frozen=True)
+class FleetConfig:
+    organizations: tuple[OrgConfig, ...]
+    risk: RiskConfig = field(default_factory=RiskConfig)
+    miner: MinerConfig = field(default_factory=MinerConfig)
+    project: str = "default"
+
+    def enabled_orgs(self) -> list[OrgConfig]:
+        return [org for org in self.organizations if org.enabled]
+
+    def target_slot_count(self) -> int:
+        return sum(org.slots for org in self.enabled_orgs())
+
+
+DEFAULT_ORGS = (
+    OrgConfig(
+        label="kray",
+        slug="kray",
+        api_key_env="SALAD_API_KEY_2",
+        slot_prefix="prl-kray-roi",
+        worker_prefix="kray-prl",
+        worker_slot_prefix="kray-roi-",
+        pool_worker_prefix="kray-prl-kray",
+        display_prefix="PearlFortune KRAY",
+    ),
+    OrgConfig(
+        label="kry1",
+        slug="kry1",
+        api_key_env="SALAD_API_KEY_KRY1",
+        slot_prefix="prl-kry1-roi",
+        worker_prefix="kry1-prl",
+        worker_slot_prefix="kry1-roi-",
+        pool_worker_prefix="kry1-prl-kry1",
+        display_prefix="PearlFortune KRY1",
+    ),
+    OrgConfig(
+        label="kray2",
+        slug="kray2",
+        api_key_env="SALAD_API_KEY_2",
+        slot_prefix="prl-kray2-roi",
+        worker_prefix="kray2-prl",
+        worker_slot_prefix="kray2-roi-",
+        pool_worker_prefix="kray2-prl-kray2",
+        display_prefix="PearlFortune KRAY2",
+    ),
+    OrgConfig(
+        label="kray3",
+        slug="kray3",
+        api_key_env="SALAD_API_KEY_2",
+        slot_prefix="prl-kray3-roi",
+        worker_prefix="kray3-prl",
+        worker_slot_prefix="kray3-roi-",
+        pool_worker_prefix="kray3-prl-kray3",
+        display_prefix="PearlFortune KRAY3",
+    ),
+)
+
+
+def _org_from_dict(payload: dict[str, Any]) -> OrgConfig:
+    return OrgConfig(
+        label=str(payload["label"]),
+        slug=str(payload.get("slug") or payload["label"]),
+        api_key_env=str(payload["api_key_env"]),
+        slot_prefix=str(payload["slot_prefix"]),
+        slots=int(payload.get("slots", 10)),
+        enabled=bool(payload.get("enabled", True)),
+        worker_prefix=payload.get("worker_prefix"),
+        worker_slot_prefix=payload.get("worker_slot_prefix"),
+        pool_worker_prefix=payload.get("pool_worker_prefix"),
+        display_prefix=payload.get("display_prefix"),
+    )
+
+
+def _split_csv(value: str | None, default: tuple[str, ...]) -> tuple[str, ...]:
+    if not value:
+        return default
+    return tuple(item.strip().lower() for item in value.split(",") if item.strip())
+
+
+def _load_orgs_from_env() -> tuple[OrgConfig, ...]:
+    payload = read_json_env("SALAD_FLEET_ORGS_JSON") or read_json_env("PRL_FLEET_ORGS_JSON")
+    if payload is None:
+        return DEFAULT_ORGS
+    if isinstance(payload, dict):
+        payload = payload.get("organizations") or []
+    return tuple(_org_from_dict(item) for item in payload)
+
+
+def load_config() -> FleetConfig:
+    load_env_file()
+    config_payload = read_json_env("SALAD_FLEET_CONFIG_JSON")
+
+    if config_payload:
+        org_payload = config_payload.get("organizations") or []
+        organizations = tuple(_org_from_dict(item) for item in org_payload)
+    else:
+        organizations = _load_orgs_from_env()
+
+    enabled_filter = {item.strip() for item in os.environ.get("PRL_ENABLED_ORGS", "").split(",") if item.strip()}
+    if enabled_filter:
+        organizations = tuple(
+            OrgConfig(**{**asdict(org), "enabled": org.enabled and org.label in enabled_filter})
+            for org in organizations
+        )
+
+    risk = RiskConfig(
+        fleet_mode=os.environ.get("PRL_FLEET_MODE", "fill"),
+        base_decision_price=env_float("PRL_FILL_FIXED_DECISION_PRICE_USD", 0.64),
+        optimize_decision_price=env_float("PRL_OPTIMIZE_FIXED_DECISION_PRICE_USD", 0.62),
+        boost_price_band=env_float("PRL_PRICE_BAND_USD", 0.02),
+        boost_trailing_min_30m=env_float("PRL_BOOST_TRAILING_MIN_30M_USD", 0.70),
+        aggressive_trailing_min_1h=env_float("PRL_AGGRESSIVE_TRAILING_MIN_1H_USD", 0.72),
+        risk_off_trailing_min_15m=env_float("PRL_RISK_OFF_TRAILING_MIN_15M_USD", 0.68),
+        boost_min_window_seconds=int(env_float("PRL_BOOST_MIN_WINDOW_SECONDS", 1200)),
+        aggressive_min_window_seconds=int(env_float("PRL_AGGRESSIVE_MIN_WINDOW_SECONDS", 2700)),
+        fill_min_profit_day=env_float("PRL_FILL_MIN_PROFIT_USD_DAY", 0.05),
+        optimize_min_profit_day=env_float("PRL_OPTIMIZE_MIN_PROFIT_USD_DAY", 0.01),
+        pearl_fee_rate=env_float("PRL_PEARL_FEE_RATE", 0.05),
+        temporary_pearl_fee_rate=(
+            env_float("PRL_TEMP_PEARL_FEE_RATE", 0.0)
+            if os.environ.get("PRL_TEMP_PEARL_FEE_RATE")
+            else None
+        ),
+        temporary_pearl_fee_until_utc=os.environ.get("PRL_TEMP_PEARL_FEE_UNTIL_UTC"),
+        base_allowed_priorities=_split_csv(os.environ.get("PRL_BASE_ALLOWED_PRIORITIES"), ("batch",)),
+        boost_allowed_priorities=_split_csv(os.environ.get("PRL_BOOST_ALLOWED_PRIORITIES"), ("batch", "low")),
+    )
+
+    miner = MinerConfig(
+        release_tag=os.environ.get("PRL_WATCH_MINER_RELEASE_TAG", "v.1.1.8"),
+        package_version=os.environ.get("PRL_WATCH_MINER_PACKAGE_VERSION", "v1.1.8"),
+        binary=os.environ.get("PRL_WATCH_MINER_BINARY", "miner-cuda12"),
+        pool_proxy=os.environ.get("PRL_POOL_PROXY", "global.pearlfortune.org:443"),
+    )
+
+    return FleetConfig(organizations=organizations, risk=risk, miner=miner)
+
+
+def public_config_dict(config: FleetConfig) -> dict[str, Any]:
+    return {
+        "project": config.project,
+        "target_slot_count": config.target_slot_count(),
+        "organizations": [asdict(org) for org in config.organizations],
+        "risk": {
+            **asdict(config.risk),
+            "effective_pearl_fee_rate": config.risk.effective_fee_rate(),
+        },
+        "miner": asdict(config.miner),
+        "secrets_present": {
+            org.label: bool(os.environ.get(org.api_key_env))
+            for org in config.organizations
+        },
+    }
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Load the public Salad PRL fleet config.")
+    parser.add_argument("--json", action="store_true", help="Emit JSON.")
+    parser.add_argument("--check-secrets", action="store_true", help="Exit non-zero if an enabled org key is missing.")
+    args = parser.parse_args()
+
+    config = load_config()
+    payload = public_config_dict(config)
+    if args.check_secrets:
+        missing = [
+            org.api_key_env
+            for org in config.enabled_orgs()
+            if not os.environ.get(org.api_key_env)
+        ]
+        if missing:
+            raise SystemExit(f"missing env vars: {', '.join(sorted(set(missing)))}")
+    if args.json:
+        print(json_dumps(payload))
+    else:
+        for org in config.enabled_orgs():
+            print(f"{org.label}: slug={org.slug} slots={org.slots} key_env={org.api_key_env}")
+        print(f"target_slots={config.target_slot_count()}")
+        print(f"effective_pearl_fee_rate={config.risk.effective_fee_rate():.4f}")
+
+
+if __name__ == "__main__":
+    main()

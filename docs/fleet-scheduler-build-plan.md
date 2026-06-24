@@ -47,6 +47,12 @@ Can can add more organizations over time if the system proves profitable and sta
 
 The scheduler should treat every organization as a 10-slot unit by default, but should not hardcode a maximum number of organizations.
 
+Current implementation note:
+
+- Default config is still `4 organizations * 10 slots = 40 target slots`.
+- Scaling is config-driven; adding an org means adding another 10-slot org definition.
+- Evaluate scale by slot coverage per org, not by assuming 1000 GPUs are already available.
+
 ## Non-Goals
 
 - Do not automate browser cookie flows for normal runtime control.
@@ -224,6 +230,12 @@ profit_day  = revenue_day - cost_day
 ```
 
 Use a conservative Pearl fee of `5%` for decision ranking unless explicitly configured otherwise.
+
+Current fee override:
+
+- Normal conservative default remains `PRL_PEARL_FEE_RATE=0.05`.
+- For the current next-24h low-fee window, run scheduler commands with `PRL_PEARL_FEE_RATE=0.01` or set `PRL_TEMP_PEARL_FEE_RATE=0.01` plus `PRL_TEMP_PEARL_FEE_UNTIL_UTC`.
+- Keep the fee explicit in command output and DB risk mode so reports show which assumption produced each target set.
 
 The model must output:
 
@@ -461,6 +473,7 @@ Hysteresis:
 - require sustained high price before expanding allowed profiles
 - require sustained lower price before cutting live risky slots
 - do not flip modes on one sample
+- current implementation requires at least 5 samples and `PRL_BOOST_MIN_WINDOW_SECONDS` of confirmed history before `boost_fill`
 
 ## Subagents
 
@@ -503,6 +516,12 @@ Acceptance:
 - heartbeat writes and expires correctly
 - secret scan passes
 
+Implemented files:
+
+- `scripts/state_db.py`
+- `scripts/config_loader.py`
+- `scripts/fleet_common.py`
+
 ### Phase 2: Price Oracle And Profit Model
 
 Deliver:
@@ -519,6 +538,11 @@ Acceptance:
 - correctly classifies profiles at `0.64` and `0.70`
 - handles API failures without crashing
 
+Implemented files:
+
+- `scripts/price_oracle.py`
+- `scripts/profit_model.py`
+
 ### Phase 3: Profile Scoring
 
 Deliver:
@@ -533,6 +557,10 @@ Acceptance:
 - repeated unavailable profiles are penalized
 - fast successful profiles are promoted during fill
 - score changes are explainable from stored events
+
+Implemented file:
+
+- `scripts/profile_scorer.py`
 
 ### Phase 4: Central Scheduler
 
@@ -551,6 +579,17 @@ Acceptance:
 - live protected slots are not retargeted in fill mode
 - dry-run explains every target decision
 
+Implemented file:
+
+- `scripts/fleet_scheduler.py`
+
+Safe default behavior:
+
+- scheduler writes DB targets only; it does not call Salad APIs directly
+- default base fill allows `batch` only
+- `low` is available for boost/optimize modes only if profitable under the active fee and decision price
+- profile assignment is diversified across the top eligible profiles instead of sending every slot to one GPU
+
 ### Phase 5: Per-Org Worker Refactor
 
 Deliver:
@@ -566,6 +605,17 @@ Acceptance:
 - worker can create and start stopped slots
 - worker can patch/reallocate wrong target
 - no live profitable slot is changed unless policy allows it
+
+Implemented file:
+
+- `scripts/org_worker.py`
+
+Safe default behavior:
+
+- no live changes unless `--apply` is passed
+- running slots are protected unless `--allow-live-retarget` is passed
+- creating/allocating slots are protected unless `--allow-pending-retarget` is passed
+- this lets the new worker shadow existing runtime without churn
 
 ### Phase 6: Global Guard
 
@@ -584,6 +634,15 @@ Acceptance:
 - fill-mode profitable live slots are protected
 - guard decisions are recorded and explainable
 
+Implemented file:
+
+- `scripts/guard.py`
+
+Current status:
+
+- default mode analyzes and records guard issues without live actions
+- live enforcement is still delegated to the existing `scripts/salad_prl_guard.py` with `--apply-legacy`
+
 ### Phase 7: Supervisor And Reporter
 
 Deliver:
@@ -601,6 +660,11 @@ Acceptance:
 - no-GPU sleep starts only after one hour
 - reporter shows slot/profit/health summary
 
+Implemented files:
+
+- `scripts/supervisor.py`
+- `scripts/reporter.py`
+
 ### Phase 8: Shadow Mode
 
 Run new scheduler without controlling production.
@@ -616,6 +680,15 @@ Acceptance:
 - shadow targets are more diversified than current watcher targets
 - no unsafe target appears
 - profile tier decisions match expected risk mode
+
+Current shadow-mode commands:
+
+```bash
+python3 scripts/state_db.py --init --sync-config --status
+PRL_PEARL_FEE_RATE=0.01 python3 scripts/fleet_scheduler.py --price 0.64 --fee 0.01
+python3 scripts/reporter.py
+python3 scripts/org_worker.py --org kry1
+```
 
 ### Phase 9: Controlled Rollout
 

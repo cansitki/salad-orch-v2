@@ -169,6 +169,7 @@ def _run_shadow(
         fee=fee,
         apply_workers=False,
         apply_guard=False,
+        skip_guard=True,
         require_secrets=require_secrets,
         require_fresh_heartbeats=require_fresh_heartbeats,
         allow_degraded=allow_degraded,
@@ -209,6 +210,7 @@ def _run_action(
             confirm_all_orgs=True,
             allow_pending_retarget=True,
             pending_retarget_after_seconds=pending_retarget_after_seconds,
+            skip_guard=True,
             require_secrets=require_secrets,
             worker_parallelism=worker_parallelism,
         )
@@ -224,6 +226,7 @@ def _run_action(
             apply_workers=True,
             allow_pending_retarget=allow_pending_retarget,
             pending_retarget_after_seconds=pending_retarget_after_seconds,
+            skip_guard=True,
             require_secrets=require_secrets,
             worker_parallelism=worker_parallelism,
         )

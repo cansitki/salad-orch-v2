@@ -49,6 +49,7 @@ class RuntimeMonitorTest(unittest.TestCase):
         self.assertEqual(calls[0]["stage"], "shadow")
         self.assertFalse(calls[0]["apply_workers"])
         self.assertFalse(calls[0]["apply_guard"])
+        self.assertTrue(calls[0]["skip_guard"])
 
     def test_live_action_requires_confirmation(self) -> None:
         with self.assertRaises(SystemExit):
@@ -71,6 +72,8 @@ class RuntimeMonitorTest(unittest.TestCase):
         self.assertTrue(payload["ok"])
         self.assertEqual(payload["action"], "guard-apply")
         self.assertEqual([call["stage"] for call in calls], ["shadow", "guard-apply"])
+        self.assertTrue(calls[0]["skip_guard"])
+        self.assertNotIn("skip_guard", calls[1])
         self.assertTrue(calls[1]["apply_guard"])
         self.assertTrue(calls[1]["require_secrets"])
 
@@ -119,6 +122,8 @@ class RuntimeMonitorTest(unittest.TestCase):
 
         self.assertTrue(payload["ok"])
         self.assertEqual([call["stage"] for call in calls], ["shadow", "one-org"])
+        self.assertTrue(calls[0]["skip_guard"])
+        self.assertTrue(calls[1]["skip_guard"])
         self.assertTrue(calls[1]["allow_pending_retarget"])
         self.assertEqual(calls[1]["pending_retarget_after_seconds"], 75)
 
@@ -140,6 +145,8 @@ class RuntimeMonitorTest(unittest.TestCase):
         self.assertTrue(payload["ok"])
         self.assertEqual(payload["action"], "all-orgs-pending")
         self.assertEqual([call["stage"] for call in calls], ["shadow", "all-orgs"])
+        self.assertTrue(calls[0]["skip_guard"])
+        self.assertTrue(calls[1]["skip_guard"])
         self.assertTrue(calls[1]["apply_workers"])
         self.assertTrue(calls[1]["confirm_all_orgs"])
         self.assertTrue(calls[1]["allow_pending_retarget"])

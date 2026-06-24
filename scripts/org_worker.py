@@ -217,6 +217,20 @@ def pending_instance_ids(instances: list[dict[str, Any]]) -> list[str]:
     return ids
 
 
+def running_instance_ids(instances: list[dict[str, Any]]) -> list[str]:
+    ids: list[str] = []
+    seen: set[str] = set()
+    for instance in instances:
+        if not (instance.get("ready") or instance.get("started")):
+            continue
+        instance_id = str(instance.get("id") or "")
+        if not instance_id or instance_id in seen:
+            continue
+        seen.add(instance_id)
+        ids.append(instance_id)
+    return ids
+
+
 def observed_status(group: dict[str, Any] | None, counts: dict[str, int]) -> str:
     if group is None:
         return "missing"
@@ -335,6 +349,18 @@ def planned_action(
             action = "observe"
             age_text = "unknown" if pending_age is None else f"{pending_age:.1f}"
             reason = f"target_pending_wait:age_{age_text}_lt_{pending_status_retarget_after_seconds}"
+    elif counts["running"] > 0 and not live_hashing:
+        running_age = pending_profile_age_seconds(target)
+        if running_age is None or running_age < pending_retarget_after_seconds:
+            action = "observe"
+            age_text = "unknown" if running_age is None else f"{running_age:.1f}"
+            reason = (
+                f"running_no_hash_same_profile_wait:{current or 'unknown'}:"
+                f"age_{age_text}_lt_{pending_retarget_after_seconds}"
+            )
+        else:
+            action = "restart_no_hash"
+            reason = f"stale_running_no_hash_same_profile:{current or 'unknown'}:age_{running_age:.1f}"
     else:
         action = "observe"
         reason = "target_already_active_or_pending"
@@ -349,6 +375,7 @@ def planned_action(
         "counts": counts,
         "instance_count": len(instances),
         "pending_instance_ids": pending_instance_ids(instances),
+        "running_instance_ids": running_instance_ids(instances),
     }
 
 
@@ -398,6 +425,26 @@ def execute_action(watch: Any, target: dict[str, Any], plan: dict[str, Any], *, 
             "applied": True,
             **plan,
             "recycled_pending_instances": recycled,
+            "restart_requested": restart_requested,
+            "restart_reason": restart_reason,
+        }
+    elif plan["action"] == "restart_no_hash":
+        reallocated = []
+        for instance_id in plan.get("running_instance_ids") or []:
+            watch.reallocate(slot_name, str(instance_id), "running_no_hash_same_profile")
+            reallocated.append(str(instance_id))
+        restart_requested = False
+        restart_reason = None
+        if not reallocated:
+            restart_reason = "running_no_hash_without_visible_instances"
+            watch.request("POST", f"/organizations/{watch.ORG}/projects/{watch.PROJECT}/containers/{slot_name}/stop")
+            watch.start_slot(slot_name, f"running_no_hash_same_profile:{restart_reason}")
+            restart_requested = True
+        return {
+            "ok": True,
+            "applied": True,
+            **plan,
+            "reallocated_instances": reallocated,
             "restart_requested": restart_requested,
             "restart_reason": restart_reason,
         }
@@ -521,7 +568,7 @@ def run_once(
                 "reset_observed_age": bool(
                     apply
                     and result.get("applied")
-                    and str(result.get("action") or "") == "cooldown_pending"
+                    and str(result.get("action") or "") in {"cooldown_pending", "restart_no_hash"}
                 ),
             }
         )

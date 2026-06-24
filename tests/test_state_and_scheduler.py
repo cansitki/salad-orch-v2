@@ -875,6 +875,117 @@ class StateAndSchedulerTest(unittest.TestCase):
             [("prl-kray-roi-01", "stale_pending_same_profile:stale_pending_without_visible_instances")],
         )
 
+    def test_org_worker_reallocates_running_no_hash_same_profile_instances(self) -> None:
+        class Watch:
+            ORG = "kray"
+            PROJECT = "default"
+
+            class Candidate:
+                def __init__(self, label, priority, gpu_keys, memory):
+                    self.label = label
+                    self.priority = priority
+                    self.gpu_keys = gpu_keys
+                    self.memory = memory
+
+            def __init__(self):
+                self.reallocate_calls = []
+
+            def reallocate(self, slot_name, instance_id, reason):
+                self.reallocate_calls.append((slot_name, instance_id, reason))
+
+        watch = Watch()
+        result = org_worker.execute_action(
+            watch,
+            {
+                "slot_name": "prl-kray-roi-10",
+                "label": "RTX 3090 batch",
+                "priority": "batch",
+                "gpu_key": "3090",
+                "memory_mb": 2048,
+            },
+            {
+                "slot_name": "prl-kray-roi-10",
+                "action": "restart_no_hash",
+                "reason": "stale_running_no_hash_same_profile:3090:batch:2048:age_300.0",
+                "target_profile_key": "3090:batch:2048",
+                "current_profile_key": "3090:batch:2048",
+                "observed_status": "running",
+                "protected": False,
+                "counts": {"allocating": 0, "creating": 0, "running": 1, "stopping": 0},
+                "instance_count": 1,
+                "running_instance_ids": ["running-1"],
+            },
+            apply=True,
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["applied"])
+        self.assertEqual(result["reallocated_instances"], ["running-1"])
+        self.assertFalse(result["restart_requested"])
+        self.assertEqual(watch.reallocate_calls, [("prl-kray-roi-10", "running-1", "running_no_hash_same_profile")])
+
+    def test_org_worker_restarts_running_no_hash_same_profile_without_visible_instances(self) -> None:
+        class Watch:
+            ORG = "kray"
+            PROJECT = "default"
+
+            class Candidate:
+                def __init__(self, label, priority, gpu_keys, memory):
+                    self.label = label
+                    self.priority = priority
+                    self.gpu_keys = gpu_keys
+                    self.memory = memory
+
+            def __init__(self):
+                self.request_calls = []
+                self.start_calls = []
+
+            def request(self, method, path):
+                self.request_calls.append((method, path))
+                return {}
+
+            def start_slot(self, slot_name, reason):
+                self.start_calls.append((slot_name, reason))
+
+        watch = Watch()
+        result = org_worker.execute_action(
+            watch,
+            {
+                "slot_name": "prl-kray-roi-10",
+                "label": "RTX 3090 batch",
+                "priority": "batch",
+                "gpu_key": "3090",
+                "memory_mb": 2048,
+            },
+            {
+                "slot_name": "prl-kray-roi-10",
+                "action": "restart_no_hash",
+                "reason": "stale_running_no_hash_same_profile:3090:batch:2048:age_300.0",
+                "target_profile_key": "3090:batch:2048",
+                "current_profile_key": "3090:batch:2048",
+                "observed_status": "running",
+                "protected": False,
+                "counts": {"allocating": 0, "creating": 0, "running": 1, "stopping": 0},
+                "instance_count": 0,
+                "running_instance_ids": [],
+            },
+            apply=True,
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["applied"])
+        self.assertEqual(result["reallocated_instances"], [])
+        self.assertTrue(result["restart_requested"])
+        self.assertEqual(result["restart_reason"], "running_no_hash_without_visible_instances")
+        self.assertEqual(
+            watch.request_calls,
+            [("POST", "/organizations/kray/projects/default/containers/prl-kray-roi-10/stop")],
+        )
+        self.assertEqual(
+            watch.start_calls,
+            [("prl-kray-roi-10", "running_no_hash_same_profile:running_no_hash_without_visible_instances")],
+        )
+
     def test_org_worker_waits_on_fresh_pending_same_profile(self) -> None:
         class Watch:
             def slot_state(self, _slot_name):
@@ -1023,6 +1134,71 @@ class StateAndSchedulerTest(unittest.TestCase):
 
         self.assertEqual(plan["action"], "patch")
         self.assertIn("stale_running_no_hash_profile_mismatch", plan["reason"])
+        self.assertFalse(plan["protected"])
+
+    def test_org_worker_waits_before_restarting_fresh_running_no_hash_same_profile(self) -> None:
+        class Watch:
+            def slot_state(self, _slot_name):
+                return (
+                    {
+                        "priority": "batch",
+                        "container": {"resources": {"gpu_classes": ["gpu-rtx-3090"], "memory": 2048}},
+                        "current_state": {"instance_status_counts": {"running_count": 1}},
+                    },
+                    [{"id": "running-1", "ready": True, "started": True}],
+                )
+
+            GPU = {"3090": "gpu-rtx-3090"}
+
+        plan = org_worker.planned_action(
+            Watch(),
+            "prl-kray-roi-10",
+            {
+                "profile_key": "3090:batch:2048",
+                "observed_profile_since_utc": datetime.now(UTC).isoformat(timespec="seconds"),
+                "live_worker_count": 0,
+                "live_worker_th": 0,
+            },
+            protect_running=True,
+            pending_retarget_after_seconds=60,
+        )
+
+        self.assertEqual(plan["action"], "observe")
+        self.assertIn("running_no_hash_same_profile_wait", plan["reason"])
+        self.assertFalse(plan["protected"])
+
+    def test_org_worker_restarts_stale_running_no_hash_same_profile(self) -> None:
+        class Watch:
+            def slot_state(self, _slot_name):
+                return (
+                    {
+                        "priority": "batch",
+                        "container": {"resources": {"gpu_classes": ["gpu-rtx-3090"], "memory": 2048}},
+                        "current_state": {"instance_status_counts": {"running_count": 1}},
+                    },
+                    [{"id": "running-1", "ready": True, "started": True}],
+                )
+
+            GPU = {"3090": "gpu-rtx-3090"}
+
+        plan = org_worker.planned_action(
+            Watch(),
+            "prl-kray-roi-10",
+            {
+                "profile_key": "3090:batch:2048",
+                "observed_profile_since_utc": (datetime.now(UTC) - timedelta(minutes=5)).isoformat(
+                    timespec="seconds"
+                ),
+                "live_worker_count": 0,
+                "live_worker_th": 0,
+            },
+            protect_running=True,
+            pending_retarget_after_seconds=60,
+        )
+
+        self.assertEqual(plan["action"], "restart_no_hash")
+        self.assertIn("stale_running_no_hash_same_profile", plan["reason"])
+        self.assertEqual(plan["running_instance_ids"], ["running-1"])
         self.assertFalse(plan["protected"])
 
     def test_scheduler_assigns_diversified_profitable_batch_targets(self) -> None:

@@ -449,6 +449,20 @@ Required output:
 This script must not call live Salad APIs. It reads the scheduler DB only, so it
 can be used frequently by `/goal` supervision without triggering API churn.
 
+### `shadow_compare.py`
+
+Read-only shadow-mode target validation.
+
+Responsibilities:
+
+- compare scheduler targets against observed slot state
+- flag missing targets and targets for unknown slots
+- flag unsafe targets: missing profile score, blocked risk tier, or below minimum profit
+- flag protected running mismatches outside optimize mode
+- report target diversification so one profile does not dominate the entire fleet
+
+This script must not call live Salad APIs. It reads the scheduler DB only.
+
 ### `rollout.py`
 
 Controlled rollout runner for live testing.
@@ -761,6 +775,7 @@ Current behavior:
 - `scripts/reporter.py --refresh` records fresh guard snapshots at `0.64` and `0.70`
 - `scripts/reporter.py --refresh --refresh-timeout N` fails fast and reports stale DB data with `refresh_error` if live APIs hang
 - `scripts/health.py --json` shows target coverage, stale heartbeats, runtime failures, and active guard issues from SQLite
+- `scripts/shadow_compare.py --json` reports missing targets, unsafe targets, target/observed mismatches, and diversification
 - `scripts/rollout.py` provides DB-only smoke, shadow, one-org apply, full-org apply with confirmation, and guard apply gates
 
 ### Phase 8: Shadow Mode
@@ -783,6 +798,7 @@ Current shadow-mode commands:
 
 ```bash
 PRL_PEARL_FEE_RATE=0.01 python3 scripts/rollout.py --stage shadow --price 0.64 --fee 0.01 --skip-workers --skip-guard
+python3 scripts/shadow_compare.py
 PRL_PEARL_FEE_RATE=0.01 python3 scripts/rollout.py --stage shadow --price 0.64 --fee 0.01 --require-secrets
 ```
 

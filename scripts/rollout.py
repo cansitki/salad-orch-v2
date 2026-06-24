@@ -11,6 +11,7 @@ import guard
 import health
 import org_worker
 import reporter
+import shadow_compare
 import state_db
 from config_loader import load_config
 from fleet_common import json_dumps
@@ -241,6 +242,7 @@ def run_rollout(
         refresh_timeout_seconds=refresh_timeout_seconds,
     )
     health_payload = health.build_health(db_path)
+    shadow_payload = shadow_compare.build_shadow_compare(db_path)
     gates = evaluate_gates(
         db_path=db_path,
         scheduler_payload=scheduler_payload,
@@ -250,6 +252,15 @@ def run_rollout(
         health_payload=health_payload,
         allow_degraded=allow_degraded,
     )
+    if not shadow_payload.get("ok"):
+        gates["failed"].append(
+            {
+                "gate": "shadow_compare",
+                "message": f"{len(shadow_payload.get('gate_failures') or [])} shadow comparison gate failures",
+                "examples": shadow_payload.get("gate_failures") or [],
+            }
+        )
+        gates["ok"] = False
     return {
         "stage": stage,
         "apply_workers": apply_workers,
@@ -292,6 +303,14 @@ def run_rollout(
             "runtime_failures": len(health_payload.get("runtime_failures") or []),
             "guard_issues": len(health_payload.get("guard_issues") or []),
             "stale_heartbeats": len(health_payload.get("stale_heartbeats") or []),
+        },
+        "shadow_compare": {
+            "ok": shadow_payload.get("ok"),
+            "unsafe_targets": len(shadow_payload.get("unsafe_targets") or []),
+            "missing_targets": len(shadow_payload.get("missing_targets") or []),
+            "mismatches": len(shadow_payload.get("mismatches") or []),
+            "unique_target_profiles": (shadow_payload.get("diversification") or {}).get("unique_target_profiles"),
+            "top_profile_share": (shadow_payload.get("diversification") or {}).get("top_profile_share"),
         },
         "gates": gates,
     }
@@ -347,7 +366,7 @@ def main() -> None:
         print(
             f"stage={payload['stage']} ok={gates['ok']} "
             f"targets={gates['coverage']['assigned_targets']}/{gates['coverage']['target_slots']} "
-            f"health={payload['health']['health']}"
+            f"health={payload['health']['health']} shadow={payload['shadow_compare']['ok']}"
         )
         if payload["workers"]:
             for worker in payload["workers"]:

@@ -107,6 +107,7 @@ The runnable code lives in `scripts/`.
 | `scripts/supervisor.py` | Scheduler control tick and tmux process plan for the new stack. |
 | `scripts/reporter.py` | CLI/JSON status report from the scheduler DB. |
 | `scripts/health.py` | Read-only health check for targets, stale heartbeats, guard issues, and runtime failures. |
+| `scripts/shadow_compare.py` | Read-only target-vs-observed mismatch and unsafe-target report for shadow mode. |
 | `scripts/rollout.py` | Controlled shadow/one-org/all-org/guard rollout runner with safety gates. |
 | `scripts/maintenance.py` | Dry-run-first SQLite retention/compaction helper for long-running fleets. |
 | `.env.example` | Safe template for local secrets and runtime settings. |
@@ -264,6 +265,7 @@ unless `--apply-workers` or `--apply-guard` is passed.
 
    ```bash
    PRL_PEARL_FEE_RATE=0.01 python3 scripts/rollout.py --stage shadow --price 0.64 --fee 0.01 --skip-workers --skip-guard
+   python3 scripts/shadow_compare.py
    ```
 
 2. Shadow all orgs with live read-only worker observations:

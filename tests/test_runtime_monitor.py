@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import pathlib
 import sys
 import time
@@ -172,6 +173,43 @@ class RuntimeMonitorTest(unittest.TestCase):
         self.assertNotIn("allow_live_retarget", calls[1])
         self.assertEqual(calls[1]["pending_retarget_after_seconds"], 75)
         self.assertTrue(calls[1]["require_secrets"])
+
+    def test_pending_retarget_also_sets_scheduler_pending_protection(self) -> None:
+        calls = []
+        original = os.environ.get("PRL_PENDING_TARGET_PROTECT_SECONDS")
+        os.environ["PRL_PENDING_TARGET_PROTECT_SECONDS"] = "999"
+
+        def runner(**kwargs):
+            calls.append(
+                {
+                    "stage": kwargs["stage"],
+                    "protect_seconds": os.environ.get("PRL_PENDING_TARGET_PROTECT_SECONDS"),
+                }
+            )
+            return rollout_payload(stage=kwargs["stage"])
+
+        try:
+            payload = runtime_monitor.run_monitor_tick(
+                apply_all_orgs_pending=True,
+                confirm_live_actions=True,
+                pending_retarget_after_seconds=60,
+                runner=runner,
+            )
+
+            self.assertTrue(payload["ok"])
+            self.assertEqual(
+                calls,
+                [
+                    {"stage": "shadow", "protect_seconds": "60"},
+                    {"stage": "all-orgs", "protect_seconds": "60"},
+                ],
+            )
+            self.assertEqual(os.environ.get("PRL_PENDING_TARGET_PROTECT_SECONDS"), "999")
+        finally:
+            if original is None:
+                os.environ.pop("PRL_PENDING_TARGET_PROTECT_SECONDS", None)
+            else:
+                os.environ["PRL_PENDING_TARGET_PROTECT_SECONDS"] = original
 
     def test_guard_on_issues_runs_guard_instead_of_fill_when_due(self) -> None:
         calls = []

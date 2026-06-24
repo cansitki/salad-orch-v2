@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 import multiprocessing
+import os
 import queue
 import signal
 import time
@@ -20,6 +22,19 @@ RolloutRunner = Callable[..., dict[str, Any]]
 
 class RemoteRunnerError(RuntimeError):
     pass
+
+
+@contextmanager
+def _scheduler_pending_target_protection(seconds: int):
+    previous = os.environ.get("PRL_PENDING_TARGET_PROTECT_SECONDS")
+    os.environ["PRL_PENDING_TARGET_PROTECT_SECONDS"] = str(max(0, int(seconds)))
+    try:
+        yield
+    finally:
+        if previous is None:
+            os.environ.pop("PRL_PENDING_TARGET_PROTECT_SECONDS", None)
+        else:
+            os.environ["PRL_PENDING_TARGET_PROTECT_SECONDS"] = previous
 
 
 def _process_timeout_entry(callback: Callable[[], dict[str, Any]], result_queue: Any) -> None:
@@ -218,21 +233,23 @@ def _run_shadow(
     allow_degraded: bool,
     worker_parallelism: int,
     skip_workers: bool,
+    pending_retarget_after_seconds: int,
 ) -> dict[str, Any]:
-    return runner(
-        stage="shadow",
-        db_path=db_path,
-        price=price,
-        fee=fee,
-        apply_workers=False,
-        apply_guard=False,
-        skip_guard=True,
-        skip_workers=skip_workers,
-        require_secrets=require_secrets,
-        require_fresh_heartbeats=require_fresh_heartbeats,
-        allow_degraded=allow_degraded,
-        worker_parallelism=worker_parallelism,
-    )
+    with _scheduler_pending_target_protection(pending_retarget_after_seconds):
+        return runner(
+            stage="shadow",
+            db_path=db_path,
+            price=price,
+            fee=fee,
+            apply_workers=False,
+            apply_guard=False,
+            skip_guard=True,
+            skip_workers=skip_workers,
+            require_secrets=require_secrets,
+            require_fresh_heartbeats=require_fresh_heartbeats,
+            allow_degraded=allow_degraded,
+            worker_parallelism=worker_parallelism,
+        )
 
 
 def _run_action(
@@ -248,46 +265,47 @@ def _run_action(
     pending_retarget_after_seconds: int,
     worker_parallelism: int,
 ) -> dict[str, Any]:
-    if action == "guard-apply":
-        return runner(
-            stage="guard-apply",
-            db_path=db_path,
-            price=price,
-            fee=fee,
-            apply_guard=True,
-            require_secrets=require_secrets,
-            worker_parallelism=worker_parallelism,
-        )
-    if action == "all-orgs-pending":
-        return runner(
-            stage="all-orgs",
-            db_path=db_path,
-            price=price,
-            fee=fee,
-            apply_workers=True,
-            confirm_all_orgs=True,
-            allow_pending_retarget=True,
-            pending_retarget_after_seconds=pending_retarget_after_seconds,
-            skip_guard=True,
-            require_secrets=require_secrets,
-            worker_parallelism=worker_parallelism,
-        )
-    if action == "one-org-apply":
-        if not org:
-            raise SystemExit("--org is required with --apply-one-org")
-        return runner(
-            stage="one-org",
-            db_path=db_path,
-            org_label=org,
-            price=price,
-            fee=fee,
-            apply_workers=True,
-            allow_pending_retarget=allow_pending_retarget,
-            pending_retarget_after_seconds=pending_retarget_after_seconds,
-            skip_guard=True,
-            require_secrets=require_secrets,
-            worker_parallelism=worker_parallelism,
-        )
+    with _scheduler_pending_target_protection(pending_retarget_after_seconds):
+        if action == "guard-apply":
+            return runner(
+                stage="guard-apply",
+                db_path=db_path,
+                price=price,
+                fee=fee,
+                apply_guard=True,
+                require_secrets=require_secrets,
+                worker_parallelism=worker_parallelism,
+            )
+        if action == "all-orgs-pending":
+            return runner(
+                stage="all-orgs",
+                db_path=db_path,
+                price=price,
+                fee=fee,
+                apply_workers=True,
+                confirm_all_orgs=True,
+                allow_pending_retarget=True,
+                pending_retarget_after_seconds=pending_retarget_after_seconds,
+                skip_guard=True,
+                require_secrets=require_secrets,
+                worker_parallelism=worker_parallelism,
+            )
+        if action == "one-org-apply":
+            if not org:
+                raise SystemExit("--org is required with --apply-one-org")
+            return runner(
+                stage="one-org",
+                db_path=db_path,
+                org_label=org,
+                price=price,
+                fee=fee,
+                apply_workers=True,
+                allow_pending_retarget=allow_pending_retarget,
+                pending_retarget_after_seconds=pending_retarget_after_seconds,
+                skip_guard=True,
+                require_secrets=require_secrets,
+                worker_parallelism=worker_parallelism,
+            )
     raise RuntimeError(f"unknown action {action}")
 
 
@@ -337,6 +355,7 @@ def run_monitor_tick(
                 allow_degraded=allow_degraded_shadow,
                 worker_parallelism=worker_parallelism,
                 skip_workers=skip_shadow_workers,
+                pending_retarget_after_seconds=pending_retarget_after_seconds,
             ),
             runner_timeout_seconds,
             hard_timeout=hard_runner_timeout,

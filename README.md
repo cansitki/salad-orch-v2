@@ -337,6 +337,9 @@ unless `--apply-workers` or `--apply-guard` is passed.
    `--guard-actionable-only` keeps fill moving while no-hash or negative slots
    are still inside grace, but switches immediately to guard once the read-only
    guard probe has a retarget/stop decision.
+   `--pending-retarget-after-seconds` is also applied to the scheduler's
+   pending-target protection window for that monitor tick, so target selection
+   and live patching use the same grace period.
    `--worker-parallelism 4` runs each organization in an isolated process so
    the legacy watcher environment cannot leak between orgs while the fill scan
    finishes faster. Org worker heartbeats default to a 300 second stale window
@@ -385,7 +388,8 @@ unless `--apply-workers` or `--apply-guard` is passed.
 
    To rotate stale creating/allocating slots after the configured grace, add
    `--allow-pending-retarget`. Fresh pending slots are still protected until
-   `--pending-retarget-after-seconds` elapses:
+   `--pending-retarget-after-seconds` elapses; the monitor also passes that
+   value through to the scheduler's pending-target protection window:
 
    ```bash
    PRL_PEARL_FEE_RATE=0.01 python3 scripts/runtime_monitor.py --once --runner-timeout-seconds 90 --price 0.64 --fee 0.01 --require-secrets --apply-one-org --org kry1 --confirm-live-actions --allow-pending-retarget --pending-retarget-after-seconds 60

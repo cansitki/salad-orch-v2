@@ -124,6 +124,32 @@ class ReporterTest(unittest.TestCase):
         self.assertEqual(report["live_th"], 111.5)
         self.assertEqual(report["snapshot_live_th"], 100.5)
 
+    def test_profit_scenarios_are_derived_from_latest_fleet_snapshot(self) -> None:
+        with state_db.connect(self.db_path) as conn:
+            state_db.record_profit_snapshot(
+                conn,
+                {
+                    "at_utc": "2026-06-24T12:00:00+00:00",
+                    "scope": "fleet",
+                    "decision_price_usd": 0.64,
+                    "live_price_usd": 0.68,
+                    "th": 1000.0,
+                    "cost_day": 20.0,
+                    "revenue_day": 30.0,
+                    "profit_day": 10.0,
+                    "payload": {"totals": {"prl_day": 46.875, "cost_day": 20.0}},
+                },
+            )
+            conn.commit()
+
+        report = reporter.build_report(self.db_path)
+
+        self.assertEqual(report["profit_at_0_64"]["source"], "latest_snapshot")
+        self.assertAlmostEqual(report["profit_at_0_64"]["profit_day"], 10.0)
+        self.assertEqual(report["profit_at_0_70"]["source"], "latest_snapshot")
+        self.assertAlmostEqual(report["profit_at_0_70"]["revenue_day"], 32.8125)
+        self.assertAlmostEqual(report["profit_at_0_70"]["profit_day"], 12.8125)
+
 
 if __name__ == "__main__":
     unittest.main()

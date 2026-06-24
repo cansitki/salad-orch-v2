@@ -34,6 +34,52 @@ def _payload(row: Any) -> dict[str, Any]:
         return {}
 
 
+def _float_or_none(value: Any) -> float | None:
+    try:
+        if value is None:
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _fleet_prl_day(latest_profit: Any, latest_payload: dict[str, Any]) -> float | None:
+    totals = latest_payload.get("totals") if isinstance(latest_payload, dict) else {}
+    if isinstance(totals, dict):
+        prl_day = _float_or_none(totals.get("prl_day"))
+        if prl_day is not None:
+            return prl_day
+    revenue_day = _float_or_none(latest_profit["revenue_day"] if latest_profit else None)
+    decision_price = _float_or_none(latest_profit["decision_price_usd"] if latest_profit else None)
+    if revenue_day is None or not decision_price:
+        return None
+    return revenue_day / decision_price
+
+
+def _derive_profit_at_price(latest_profit: Any, latest_payload: dict[str, Any], price: float) -> dict[str, Any] | None:
+    if latest_profit is None:
+        return None
+    prl_day = _fleet_prl_day(latest_profit, latest_payload)
+    if prl_day is None:
+        return None
+    totals = latest_payload.get("totals") if isinstance(latest_payload, dict) else {}
+    cost_day = _float_or_none(latest_profit["cost_day"])
+    if cost_day is None and isinstance(totals, dict):
+        cost_day = _float_or_none(totals.get("cost_day"))
+    if cost_day is None:
+        return None
+    revenue_day = prl_day * price
+    return {
+        "profit_day": revenue_day - cost_day,
+        "revenue_day": revenue_day,
+        "cost_day": cost_day,
+        "live_price_usd": latest_profit["live_price_usd"],
+        "at_utc": latest_profit["at_utc"],
+        "prl_day": prl_day,
+        "source": "latest_snapshot",
+    }
+
+
 def _slot_snapshots_for_batch(conn: Any, snapshot_at_utc: str | None = None) -> list[dict[str, Any]]:
     if snapshot_at_utc:
         rows = [
@@ -266,9 +312,14 @@ def build_report(
             "cost_day": row["cost_day"],
             "live_price_usd": row["live_price_usd"],
             "at_utc": row["at_utc"],
+            "source": "stored_snapshot",
         }
         for row in profit_at_prices
     }
+    for scenario_price in (0.64, 0.70):
+        derived = _derive_profit_at_price(latest_profit, latest_payload, scenario_price)
+        if derived:
+            profit_by_price[f"{scenario_price:.2f}"] = derived
     return {
         "target_slots": config.target_slot_count(),
         "refresh_error": refresh_error,

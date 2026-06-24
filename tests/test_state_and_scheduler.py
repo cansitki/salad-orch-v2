@@ -288,6 +288,35 @@ class StateAndSchedulerTest(unittest.TestCase):
         self.assertEqual(plan["action"], "patch")
         self.assertIn("stale_pending_profile_mismatch", plan["reason"])
 
+    def test_org_worker_skips_live_hashing_target_without_guard_issue(self) -> None:
+        target = {
+            "slot_name": "prl-kray-roi-01",
+            "profile_key": "3090:batch:2048",
+            "slot_observed_profile_key": "3090:batch:2048",
+            "slot_observed_status": "running",
+            "live_worker_count": 1,
+            "live_worker_th": 111.5,
+            "active_guard_issues": 0,
+        }
+
+        self.assertTrue(org_worker.should_skip_live_hashing_target(target, apply=True, allow_live_retarget=False))
+        result = org_worker.skipped_live_hashing_result(target)
+
+        self.assertEqual(result["action"], "skip_live_hashing")
+        self.assertEqual(result["current_profile_key"], "3090:batch:2048")
+        self.assertEqual(result["observed_status"], "running")
+        self.assertTrue(result["protected"])
+
+    def test_org_worker_does_not_skip_live_hashing_target_with_guard_issue(self) -> None:
+        target = {
+            "slot_observed_status": "running",
+            "live_worker_count": 1,
+            "live_worker_th": 111.5,
+            "active_guard_issues": 1,
+        }
+
+        self.assertFalse(org_worker.should_skip_live_hashing_target(target, apply=True, allow_live_retarget=False))
+
     def test_scheduler_assigns_diversified_profitable_batch_targets(self) -> None:
         payload = fleet_scheduler.schedule_once(
             db_path=self.db_path,

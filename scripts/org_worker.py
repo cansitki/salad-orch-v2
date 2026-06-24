@@ -100,17 +100,66 @@ def install_rate_limited_request(watch: Any, org: OrgConfig, *, db_path: str | N
 def target_rows(conn, org_label: str) -> list[dict[str, Any]]:
     rows = conn.execute(
         """
+        WITH live_workers AS (
+          SELECT org_label, slot_name,
+                 COUNT(*) AS live_worker_count,
+                 SUM(reported_hashrate_th) AS live_worker_th
+          FROM workers
+          WHERE stale = 0 AND reported_hashrate_th > 0
+          GROUP BY org_label, slot_name
+        ),
+        active_guard AS (
+          SELECT org_label, slot_name, COUNT(*) AS active_guard_issues
+          FROM guard_issues
+          GROUP BY org_label, slot_name
+        )
         SELECT t.*, p.gpu_key, p.priority, p.memory_mb, p.label,
-               s.observed_status_since_utc, s.observed_profile_since_utc
+               s.observed_profile_key AS slot_observed_profile_key,
+               s.observed_status AS slot_observed_status,
+               s.live_hashrate_th AS slot_live_hashrate_th,
+               s.protected AS slot_protected,
+               s.observed_status_since_utc, s.observed_profile_since_utc,
+               COALESCE(lw.live_worker_count, 0) AS live_worker_count,
+               COALESCE(lw.live_worker_th, 0) AS live_worker_th,
+               COALESCE(ag.active_guard_issues, 0) AS active_guard_issues
         FROM slot_targets t
         JOIN gpu_profiles p ON p.profile_key = t.profile_key
         LEFT JOIN slots s ON s.org_label = t.org_label AND s.slot_name = t.slot_name
+        LEFT JOIN live_workers lw ON lw.org_label = t.org_label AND lw.slot_name = t.slot_name
+        LEFT JOIN active_guard ag ON ag.org_label = t.org_label AND ag.slot_name = t.slot_name
         WHERE t.org_label = ?
         ORDER BY t.slot_name
         """,
         (org_label,),
     ).fetchall()
     return [dict(row) for row in rows]
+
+
+def should_skip_live_hashing_target(target: dict[str, Any], *, apply: bool, allow_live_retarget: bool) -> bool:
+    if not apply or allow_live_retarget:
+        return False
+    if int(target.get("active_guard_issues") or 0) > 0:
+        return False
+    if str(target.get("slot_observed_status") or "") != "running":
+        return False
+    return float(target.get("live_worker_th") or 0) > 0 and int(target.get("live_worker_count") or 0) > 0
+
+
+def skipped_live_hashing_result(target: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "slot_name": str(target["slot_name"]),
+        "action": "skip_live_hashing",
+        "reason": "live_hashing_without_guard_issue",
+        "target_profile_key": target["profile_key"],
+        "current_profile_key": target.get("slot_observed_profile_key"),
+        "observed_status": target.get("slot_observed_status") or "running",
+        "protected": True,
+        "counts": {"running": 1, "creating": 0, "allocating": 0, "stopping": 0},
+        "instance_count": int(target.get("live_worker_count") or 0),
+        "live_worker_th": float(target.get("live_worker_th") or 0),
+        "ok": True,
+        "applied": False,
+    }
 
 
 def current_profile_key(watch: Any, group: dict[str, Any] | None) -> str | None:
@@ -287,22 +336,27 @@ def run_once(
     observation_rows: list[dict[str, Any]] = []
     for target in targets:
         started = time.monotonic()
-        plan = planned_action(
-            watch,
-            str(target["slot_name"]),
-            target,
-            protect_running=not allow_live_retarget,
-            protect_pending=not allow_pending_retarget,
-            pending_retarget_after_seconds=pending_retarget_after_seconds,
-        )
-        try:
-            result = execute_action(watch, target, plan, apply=apply)
+        if should_skip_live_hashing_target(target, apply=apply, allow_live_retarget=allow_live_retarget):
+            result = skipped_live_hashing_result(target)
             ok = True
             error = None
-        except Exception as exc:
-            result = {"ok": False, "applied": False, **plan, "error": type(exc).__name__}
-            ok = False
-            error = f"{type(exc).__name__}: {str(exc)[:180]}"
+        else:
+            plan = planned_action(
+                watch,
+                str(target["slot_name"]),
+                target,
+                protect_running=not allow_live_retarget,
+                protect_pending=not allow_pending_retarget,
+                pending_retarget_after_seconds=pending_retarget_after_seconds,
+            )
+            try:
+                result = execute_action(watch, target, plan, apply=apply)
+                ok = True
+                error = None
+            except Exception as exc:
+                result = {"ok": False, "applied": False, **plan, "error": type(exc).__name__}
+                ok = False
+                error = f"{type(exc).__name__}: {str(exc)[:180]}"
         attempt_rows.append(
             {
                 "at_utc": utc_now(),

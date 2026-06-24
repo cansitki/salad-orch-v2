@@ -14,6 +14,16 @@ import config_loader
 
 
 class ConfigLoaderTest(unittest.TestCase):
+    def test_default_fill_priorities_include_low_for_profitable_fill(self) -> None:
+        with patch.object(config_loader, "load_env_file", lambda: None), patch.dict(
+            config_loader.os.environ,
+            {},
+            clear=True,
+        ):
+            config = config_loader.load_config()
+
+        self.assertEqual(config.risk.base_allowed_priorities, ("batch", "low"))
+
     def test_extra_orgs_append_to_defaults(self) -> None:
         extra = [
             {

@@ -61,6 +61,13 @@ class MaintenanceTest(unittest.TestCase):
         self.assertEqual(len(maintenance_items), 1)
         self.assertIn("--apply", maintenance_items[0]["cmd"])
 
+    def test_supervisor_availability_probe_includes_low_priority(self) -> None:
+        plan = supervisor.process_plan(db_path=self.db_path)
+        probe = next(item for item in plan if item["name"] == "salad-availability-probe")
+
+        self.assertIn("--priorities", probe["cmd"])
+        self.assertIn("batch,low", probe["cmd"])
+
     def test_supervisor_tmux_sessions_load_dotenv(self) -> None:
         command = supervisor.tmux_command("salad-test", ["python3", "scripts/price_oracle.py", "--loop"])
 

@@ -64,7 +64,7 @@ class RiskConfig:
     pearl_fee_rate: float = 0.05
     temporary_pearl_fee_rate: float | None = None
     temporary_pearl_fee_until_utc: str | None = None
-    base_allowed_priorities: tuple[str, ...] = ("batch",)
+    base_allowed_priorities: tuple[str, ...] = ("batch", "low")
     boost_allowed_priorities: tuple[str, ...] = ("batch", "low")
 
     def effective_fee_rate(self, now: datetime | None = None) -> float:
@@ -319,7 +319,7 @@ def load_config() -> FleetConfig:
             else None
         ),
         temporary_pearl_fee_until_utc=os.environ.get("PRL_TEMP_PEARL_FEE_UNTIL_UTC"),
-        base_allowed_priorities=_split_csv(os.environ.get("PRL_BASE_ALLOWED_PRIORITIES"), ("batch",)),
+        base_allowed_priorities=_split_csv(os.environ.get("PRL_BASE_ALLOWED_PRIORITIES"), ("batch", "low")),
         boost_allowed_priorities=_split_csv(os.environ.get("PRL_BOOST_ALLOWED_PRIORITIES"), ("batch", "low")),
     )
 

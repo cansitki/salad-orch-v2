@@ -170,7 +170,7 @@ Run the availability probe beside the monitor so the scheduler has fresh
 per-org capacity hints instead of rotating profitable profiles blindly:
 
 ```bash
-PRL_PEARL_FEE_RATE=0.01 python3 scripts/availability_probe.py --loop --interval 300 --priorities batch
+PRL_PEARL_FEE_RATE=0.01 python3 scripts/availability_probe.py --loop --interval 300 --priorities batch,low
 ```
 
 The probe uses the same API budget limiter as live workers, so it should slow

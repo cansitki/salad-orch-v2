@@ -40,7 +40,18 @@ def process_plan(
         {
             "name": "salad-availability-probe",
             "heartbeat": "availability_probe",
-            "cmd": _with_db(["python3", str(SCRIPT_DIR / "availability_probe.py"), "--loop", "--interval", "300"], db_path),
+            "cmd": _with_db(
+                [
+                    "python3",
+                    str(SCRIPT_DIR / "availability_probe.py"),
+                    "--loop",
+                    "--interval",
+                    "300",
+                    "--priorities",
+                    "batch,low",
+                ],
+                db_path,
+            ),
         },
         {
             "name": "salad-fleet-scheduler",

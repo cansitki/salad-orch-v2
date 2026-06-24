@@ -288,6 +288,46 @@ class StateAndSchedulerTest(unittest.TestCase):
         self.assertEqual(plan["action"], "patch")
         self.assertIn("stale_pending_profile_mismatch", plan["reason"])
 
+    def test_org_worker_failed_patch_becomes_profile_cooldown_action(self) -> None:
+        class Watch:
+            class Candidate:
+                def __init__(self, label, priority, gpu_keys, memory):
+                    self.label = label
+                    self.priority = priority
+                    self.gpu_keys = gpu_keys
+                    self.memory = memory
+
+            def patch_slot(self, _slot_name, _candidate, _reason):
+                return False
+
+        result = org_worker.execute_action(
+            Watch(),
+            {
+                "slot_name": "prl-kray-roi-01",
+                "label": "RTX 4090 batch",
+                "priority": "batch",
+                "gpu_key": "4090",
+                "memory_mb": 2048,
+            },
+            {
+                "slot_name": "prl-kray-roi-01",
+                "action": "patch",
+                "reason": "stale_pending_profile_mismatch:4080:batch:2048:age_300.0",
+                "target_profile_key": "4090:batch:2048",
+                "current_profile_key": "4080:batch:2048",
+                "observed_status": "allocating",
+                "protected": False,
+                "counts": {"allocating": 1, "creating": 0, "running": 0, "stopping": 0},
+                "instance_count": 0,
+            },
+            apply=True,
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertFalse(result["applied"])
+        self.assertEqual(result["action"], "cooldown_failed_patch")
+        self.assertEqual(result["original_action"], "patch")
+
     def test_org_worker_cooldowns_stale_pending_same_profile(self) -> None:
         class Watch:
             def slot_state(self, _slot_name):

@@ -302,7 +302,14 @@ def execute_action(watch: Any, target: dict[str, Any], plan: dict[str, Any], *, 
     elif plan["action"] == "patch":
         ok = watch.patch_slot(slot_name, candidate, "fleet_scheduler_target")
         if not ok:
-            raise RuntimeError("patch_slot returned false")
+            return {
+                "ok": True,
+                "applied": False,
+                **plan,
+                "action": "cooldown_failed_patch",
+                "original_action": "patch",
+                "error": "patch_slot returned false",
+            }
     elif plan["action"] == "start":
         watch.start_slot(slot_name, "fleet_scheduler_target")
     else:
@@ -368,7 +375,7 @@ def run_once(
                 result = {"ok": False, "applied": False, **plan, "error": type(exc).__name__}
                 ok = False
                 error = f"{type(exc).__name__}: {str(exc)[:180]}"
-        if apply and ok and result.get("action") == "cooldown_pending":
+        if apply and ok and result.get("action") in {"cooldown_pending", "cooldown_failed_patch"}:
             now = datetime.now(UTC)
             cooldown_rows.append(
                 {
@@ -380,7 +387,7 @@ def run_once(
                         timespec="seconds"
                     ),
                     "attempts": 1,
-                    "reason": result.get("reason") or "stale_pending_same_profile",
+                    "reason": result.get("reason") or result.get("error") or "stale_pending_same_profile",
                     "updated_at_utc": now.isoformat(timespec="seconds"),
                 }
             )

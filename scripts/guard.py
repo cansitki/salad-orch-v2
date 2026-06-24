@@ -133,6 +133,10 @@ def org_by_label() -> dict[str, Any]:
     return {org.label: org for org in load_config().enabled_orgs()}
 
 
+def guard_failure_component(org_label: str, slot_name: str, issue_type: str) -> str:
+    return f"guard:{org_label}:{slot_name}:{issue_type}"
+
+
 def apply_guard_target(
     target: dict[str, Any],
     *,
@@ -245,6 +249,8 @@ def enforce_issues(
                 else:
                     decision["action"] = "stop"
                 if apply:
+                    # Release SQLite write locks before live Salad calls; the rate limiter also writes to this DB.
+                    conn.commit()
                     try:
                         applied = apply_guard_target(
                             target
@@ -259,6 +265,7 @@ def enforce_issues(
                         )
                         decision["applied"] = applied
                         state_db.increment_guard_issue_action(conn, org_label, slot_name, issue_type)
+                        state_db.clear_failure(conn, guard_failure_component(org_label, slot_name, issue_type))
                         state_db.record_attempt(
                             conn,
                             {
@@ -274,7 +281,7 @@ def enforce_issues(
                         decision["apply_error"] = f"{type(exc).__name__}: {str(exc)[:180]}"
                         state_db.record_failure(
                             conn,
-                            f"guard:{org_label}:{slot_name}:{issue_type}",
+                            guard_failure_component(org_label, slot_name, issue_type),
                             severity="warning",
                             error_type=type(exc).__name__,
                             message=str(exc)[:180],
@@ -314,6 +321,15 @@ def enforce_issues(
             )
             decisions.append(decision)
         state_db.clear_guard_issues(conn, active_keys)
+        active_components = {
+            guard_failure_component(org_label, slot_name, issue_type)
+            for org_label, slot_name, issue_type in active_keys
+        }
+        rows = conn.execute("SELECT component FROM runtime_failures WHERE component LIKE 'guard:%'").fetchall()
+        for row in rows:
+            component = str(row["component"])
+            if component not in active_components:
+                state_db.clear_failure(conn, component)
         conn.commit()
     return decisions
 

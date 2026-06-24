@@ -315,6 +315,14 @@ unless `--apply-workers` or `--apply-guard` is passed.
    PRL_PEARL_FEE_RATE=0.01 python3 scripts/runtime_monitor.py --once --price 0.64 --fee 0.01 --require-secrets --apply-guard --confirm-live-actions
    ```
 
+   If a previous guard apply failed and left `runtime_failures`, use
+   `--allow-degraded-shadow` only for the retry preflight. The final action gate
+   still remains strict:
+
+   ```bash
+   PRL_PEARL_FEE_RATE=0.01 python3 scripts/runtime_monitor.py --once --price 0.64 --fee 0.01 --require-secrets --apply-guard --confirm-live-actions --allow-degraded-shadow
+   ```
+
 5. Start tmux supervision for the full new stack:
 
    ```bash

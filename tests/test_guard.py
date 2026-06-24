@@ -5,6 +5,7 @@ import sys
 import tempfile
 import unittest
 from datetime import UTC, datetime, timedelta
+from unittest.mock import patch
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -101,6 +102,46 @@ class GuardDecisionTest(unittest.TestCase):
         )
         self.assertEqual(decisions[0]["action"], "stop")
         self.assertIsNone(decisions[0]["target_profile_key"])
+
+    def test_successful_apply_clears_slot_runtime_failure(self) -> None:
+        self.make_issue_old("negative")
+        with state_db.connect(self.db_path) as conn:
+            state_db.init_db(conn)
+            state_db.record_failure(
+                conn,
+                guard.guard_failure_component("kray", "prl-kray-roi-01", "negative"),
+                severity="warning",
+                error_type="TypeError",
+                message="old apply failure",
+            )
+            conn.commit()
+
+        with patch("guard.apply_guard_target", return_value={"action": "retarget", "applied": True}):
+            decisions = guard.enforce_issues(
+                db_path=self.db_path,
+                decision_price=0.64,
+                apply=True,
+                analysis={
+                    "fresh_workers": 3,
+                    "running_no_live_billable_slots": [],
+                    "negative_slots": [
+                        {
+                            "org": "kray",
+                            "slot": "prl-kray-roi-01",
+                            "gpu": "3090",
+                            "priority": "batch",
+                            "profit_day": -1.0,
+                        }
+                    ],
+                },
+            )
+
+        self.assertEqual(decisions[0]["action"], "retarget")
+        with state_db.connect(self.db_path) as conn:
+            failures = conn.execute("SELECT COUNT(*) FROM runtime_failures").fetchone()[0]
+            attempt = conn.execute("SELECT ok FROM attempts ORDER BY id DESC LIMIT 1").fetchone()
+        self.assertEqual(failures, 0)
+        self.assertEqual(attempt["ok"], 1)
 
 
 if __name__ == "__main__":

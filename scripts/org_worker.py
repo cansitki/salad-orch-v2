@@ -84,13 +84,13 @@ def install_rate_limited_request(watch: Any, org: OrgConfig, *, db_path: str | N
         return
     original_request = watch.request
 
-    def limited_request(method: str, path: str, payload: Any | None = None) -> Any:
+    def limited_request(method: str, path: str, payload: Any | None = None, *args: Any, **kwargs: Any) -> Any:
         acquire_api_budget(
             db_path=db_path,
             api_key_env=org.api_key_env,
             max_requests_per_minute=max_requests,
         )
-        return original_request(method, path, payload)
+        return original_request(method, path, payload, *args, **kwargs)
 
     watch.request = limited_request
     watch._PRL_RATE_LIMIT_INSTALLED = True

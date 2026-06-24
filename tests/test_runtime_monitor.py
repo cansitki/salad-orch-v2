@@ -72,6 +72,25 @@ class RuntimeMonitorTest(unittest.TestCase):
         self.assertTrue(calls[1]["apply_guard"])
         self.assertTrue(calls[1]["require_secrets"])
 
+    def test_allow_degraded_shadow_is_limited_to_preflight(self) -> None:
+        calls = []
+
+        def runner(**kwargs):
+            calls.append(kwargs)
+            return rollout_payload(stage=kwargs["stage"])
+
+        payload = runtime_monitor.run_monitor_tick(
+            apply_guard=True,
+            confirm_live_actions=True,
+            allow_degraded_shadow=True,
+            runner=runner,
+        )
+
+        self.assertTrue(payload["ok"])
+        self.assertEqual([call["stage"] for call in calls], ["shadow", "guard-apply"])
+        self.assertTrue(calls[0]["allow_degraded"])
+        self.assertNotIn("allow_degraded", calls[1])
+
     def test_one_org_apply_requires_org(self) -> None:
         with self.assertRaises(SystemExit):
             runtime_monitor.run_monitor_tick(

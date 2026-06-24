@@ -41,6 +41,7 @@ def _run_shadow(
     fee: float | None,
     require_secrets: bool,
     require_fresh_heartbeats: bool,
+    allow_degraded: bool,
 ) -> dict[str, Any]:
     return runner(
         stage="shadow",
@@ -50,6 +51,7 @@ def _run_shadow(
         apply_guard=False,
         require_secrets=require_secrets,
         require_fresh_heartbeats=require_fresh_heartbeats,
+        allow_degraded=allow_degraded,
     )
 
 
@@ -90,6 +92,7 @@ def run_monitor_tick(
     fee: float | None = None,
     require_secrets: bool = False,
     require_fresh_heartbeats: bool = False,
+    allow_degraded_shadow: bool = False,
     apply_guard: bool = False,
     apply_one_org: bool = False,
     org: str | None = None,
@@ -109,6 +112,7 @@ def run_monitor_tick(
         fee=fee,
         require_secrets=require_secrets,
         require_fresh_heartbeats=require_fresh_heartbeats,
+        allow_degraded=allow_degraded_shadow,
     )
     shadow_summary = _summarize_rollout(shadow_payload)
     action = "none"
@@ -174,6 +178,11 @@ def main() -> None:
     parser.add_argument("--fee", type=float, default=None)
     parser.add_argument("--require-secrets", action="store_true")
     parser.add_argument("--require-fresh-heartbeats", action="store_true")
+    parser.add_argument(
+        "--allow-degraded-shadow",
+        action="store_true",
+        help="Allow degraded shadow preflight before a confirmed live action; action result remains strict.",
+    )
     parser.add_argument("--apply-guard", action="store_true", help="Run guard-apply after a passing shadow gate.")
     parser.add_argument("--apply-one-org", action="store_true", help="Run one-org worker apply after a passing shadow gate.")
     parser.add_argument("--org", default=None, help="Organization label for --apply-one-org.")
@@ -192,6 +201,7 @@ def main() -> None:
             fee=args.fee,
             require_secrets=args.require_secrets,
             require_fresh_heartbeats=args.require_fresh_heartbeats,
+            allow_degraded_shadow=args.allow_degraded_shadow,
             apply_guard=args.apply_guard,
             apply_one_org=args.apply_one_org,
             org=args.org,

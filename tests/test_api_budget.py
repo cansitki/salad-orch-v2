@@ -4,6 +4,7 @@ import pathlib
 import sys
 import tempfile
 import unittest
+import os
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -11,6 +12,8 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 import state_db
 import health
+import org_worker
+from config_loader import OrgConfig
 
 
 class ApiBudgetTest(unittest.TestCase):
@@ -87,6 +90,36 @@ class ApiBudgetTest(unittest.TestCase):
             conn.commit()
         payload = health.build_health(self.db_path)
         self.assertEqual(payload["api_rate_limits"][0]["api_key_env"], "SALAD_API_KEY_SHARED")
+
+    def test_rate_limited_request_forwards_keyword_arguments(self) -> None:
+        class DummyWatch:
+            def __init__(self) -> None:
+                self.calls = []
+
+            def request(self, method, path, payload=None, *, patch=False):
+                self.calls.append((method, path, payload, patch))
+                return {"patch": patch}
+
+        old_value = os.environ.get("PRL_SALAD_API_MAX_REQUESTS_PER_MINUTE")
+        os.environ["PRL_SALAD_API_MAX_REQUESTS_PER_MINUTE"] = "120"
+        try:
+            watch = DummyWatch()
+            org = OrgConfig(
+                label="test",
+                slug="test",
+                api_key_env="SALAD_API_KEY_TEST",
+                slot_prefix="prl-test-roi",
+            )
+            org_worker.install_rate_limited_request(watch, org, db_path=self.db_path)
+            result = watch.request("PATCH", "/containers/test", {"x": 1}, patch=True)
+        finally:
+            if old_value is None:
+                os.environ.pop("PRL_SALAD_API_MAX_REQUESTS_PER_MINUTE", None)
+            else:
+                os.environ["PRL_SALAD_API_MAX_REQUESTS_PER_MINUTE"] = old_value
+
+        self.assertEqual(result, {"patch": True})
+        self.assertEqual(watch.calls, [("PATCH", "/containers/test", {"x": 1}, True)])
 
 
 if __name__ == "__main__":

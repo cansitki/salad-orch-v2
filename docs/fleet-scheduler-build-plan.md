@@ -504,6 +504,7 @@ Responsibilities:
 - skip live actions when shadow gates fail
 - require `--confirm-live-actions` before any live apply path
 - allow only one live action per tick so guard apply and worker apply do not collide
+- allow explicit degraded preflight retries with `--allow-degraded-shadow` while keeping the final live action gate strict
 
 Default behavior is read-only. Live action modes are:
 
@@ -880,6 +881,7 @@ Only after the one-org apply is stable:
 
 ```bash
 PRL_PEARL_FEE_RATE=0.01 python3 scripts/runtime_monitor.py --once --price 0.64 --fee 0.01 --require-secrets --apply-guard --confirm-live-actions
+PRL_PEARL_FEE_RATE=0.01 python3 scripts/runtime_monitor.py --once --price 0.64 --fee 0.01 --require-secrets --apply-guard --confirm-live-actions --allow-degraded-shadow
 python3 scripts/rollout.py --stage guard-apply --apply-guard --require-secrets
 PRL_PEARL_FEE_RATE=0.01 python3 scripts/rollout.py --stage all-orgs --price 0.64 --fee 0.01 --apply-workers --confirm-all-orgs --require-secrets
 python3 scripts/supervisor.py --print-plan

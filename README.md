@@ -97,6 +97,8 @@ The runnable code lives in `scripts/`.
 | `scripts/start_supervisor.sh` | Starts the nonstop supervisor. |
 | `.env.example` | Safe template for local secrets and runtime settings. |
 
+The current operating plan is documented in `docs/current-operations.md`.
+
 The public scripts are intentionally parameterized. Secrets are read from env
 vars or `.env`, not from source code.
 
@@ -439,8 +441,8 @@ L40S is intentionally ignored in the current plan.
 ### 1. Start In Fill Mode
 
 ```bash
-PRL_FLEET_MODE=fill bash start-watchers.sh
-PRL_FLEET_MODE=fill bash start-supervisor.sh
+PRL_FLEET_MODE=fill bash scripts/start_watchers.sh
+PRL_FLEET_MODE=fill bash scripts/start_supervisor.sh
 ```
 
 Expected tmux sessions:

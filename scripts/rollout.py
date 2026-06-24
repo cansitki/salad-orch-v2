@@ -42,15 +42,48 @@ def _target_profit_violations(db_path: str | None, min_profit_day: float) -> lis
         state_db.init_db(conn)
         rows = conn.execute(
             """
-            SELECT org_label, slot_name, profile_key, expected_profit_day, mode, reason
-            FROM slot_targets
-            WHERE expected_profit_day < ?
-              AND NOT (mode != 'optimize' AND protected = 1 AND expected_profit_day >= 0)
-            ORDER BY expected_profit_day ASC
+            SELECT t.org_label, t.slot_name, t.profile_key, t.expected_profit_day,
+                   t.mode, t.reason, t.protected,
+                   s.observed_status, s.live_hashrate_th,
+                   s.protected AS observed_protected,
+                   sp.profit_day AS observed_profit_day
+            FROM slot_targets t
+            LEFT JOIN slots s ON s.org_label = t.org_label AND s.slot_name = t.slot_name
+            LEFT JOIN profit_snapshots sp
+              ON sp.scope = 'slot'
+             AND sp.org_label = t.org_label
+             AND sp.slot_name = t.slot_name
+             AND sp.at_utc = (
+                SELECT at_utc
+                FROM profit_snapshots
+                WHERE scope = 'slot'
+                ORDER BY at_utc DESC, id DESC
+                LIMIT 1
+             )
+            WHERE t.expected_profit_day < ?
+            ORDER BY t.expected_profit_day ASC
             """,
             (min_profit_day,),
         ).fetchall()
-    return [dict(row) for row in rows]
+    violations: list[dict[str, Any]] = []
+    for row in rows:
+        payload = dict(row)
+        expected_profit = float(payload.get("expected_profit_day") or 0)
+        observed_profit_raw = payload.get("observed_profit_day")
+        observed_profit = float(observed_profit_raw) if observed_profit_raw is not None else None
+        profit_floor = observed_profit if observed_profit is not None else expected_profit
+        protected_positive_fill = (
+            str(payload.get("mode") or "") != "optimize"
+            and int(payload.get("protected") or 0) > 0
+            and str(payload.get("observed_status") or "") == "running"
+            and int(payload.get("observed_protected") or 0) > 0
+            and float(payload.get("live_hashrate_th") or 0) > 0
+            and profit_floor >= 0
+        )
+        if protected_positive_fill:
+            continue
+        violations.append(payload)
+    return violations
 
 
 def _worker_failures(worker_payloads: list[dict[str, Any]]) -> list[dict[str, Any]]:

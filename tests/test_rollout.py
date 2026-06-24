@@ -12,6 +12,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 import rollout
 import state_db
+from config_loader import load_config
 
 
 class RolloutTest(unittest.TestCase):
@@ -75,6 +76,65 @@ class RolloutTest(unittest.TestCase):
         )
         self.assertFalse(gates["ok"])
         self.assertEqual(gates["failed"][0]["gate"], "target_coverage")
+
+    def test_target_profit_gate_allows_protected_live_positive_slot(self) -> None:
+        with state_db.connect(self.db_path) as conn:
+            state_db.init_db(conn)
+            state_db.sync_config(conn, load_config())
+            state_db.update_slot_observation(
+                conn,
+                {
+                    "org_label": "kray",
+                    "slot_name": "prl-kray-roi-01",
+                    "observed_profile_key": "5070:low:2048",
+                    "observed_status": "running",
+                    "live_hashrate_th": 121.7,
+                    "protected": True,
+                },
+            )
+            state_db.record_profit_snapshot(
+                conn,
+                {
+                    "at_utc": "2026-06-24T23:30:00+00:00",
+                    "scope": "slot",
+                    "org_label": "kray",
+                    "slot_name": "prl-kray-roi-01",
+                    "profile_key": "5070:low:2048",
+                    "decision_price_usd": 0.64,
+                    "th": 121.7,
+                    "cost_day": 3.192,
+                    "revenue_day": 3.24,
+                    "profit_day": 0.048,
+                    "payload": {},
+                },
+            )
+            state_db.set_slot_target(
+                conn,
+                {
+                    "org_label": "kray",
+                    "slot_name": "prl-kray-roi-01",
+                    "profile_key": "5070:low:2048",
+                    "mode": "risk_off",
+                    "decision_price_usd": 0.64,
+                    "expected_profit_day": -0.06,
+                    "protected": True,
+                    "reason": "risk_off:negative_observed_profile_no_replacement",
+                },
+            )
+            conn.commit()
+
+        gates = rollout.evaluate_gates(
+            db_path=self.db_path,
+            scheduler_payload={"mode": "risk_off", "assigned_targets": 40, "target_slots": 40},
+            worker_payloads=[],
+            guard_payload=None,
+            report_payload={"running_no_live_billable_slots": [], "negative_slots": []},
+            health_payload={"health": "healthy", "runtime_failures": [], "stale_heartbeats": []},
+            allow_degraded=False,
+        )
+
+        self.assertTrue(gates["ok"])
+        self.assertEqual(gates["failed"], [])
 
     def test_stale_heartbeats_warn_by_default_for_one_shot_rollout(self) -> None:
         gates = rollout.evaluate_gates(

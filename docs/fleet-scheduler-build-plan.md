@@ -493,6 +493,23 @@ One-shot rollout commands treat stale process heartbeats as warnings by default
 because a full read-only pass can exceed a component heartbeat TTL while it is
 still progressing. Use `--require-fresh-heartbeats` for supervised runtime gates.
 
+### `runtime_monitor.py`
+
+Safe ongoing runtime monitor for `/goal` supervision.
+
+Responsibilities:
+
+- repeatedly run read-only shadow rollout gates
+- summarize target coverage, health, live hashing count, no-hash, negative, and stuck slots
+- skip live actions when shadow gates fail
+- require `--confirm-live-actions` before any live apply path
+- allow only one live action per tick so guard apply and worker apply do not collide
+
+Default behavior is read-only. Live action modes are:
+
+- `--apply-guard --confirm-live-actions`
+- `--apply-one-org --org <label> --confirm-live-actions`
+
 ### `rollback.py`
 
 Rollback helper for controlled rollout.
@@ -795,6 +812,7 @@ Implemented files:
 - `scripts/reporter.py`
 - `scripts/health.py`
 - `scripts/rollout.py`
+- `scripts/runtime_monitor.py`
 
 Current behavior:
 
@@ -805,6 +823,7 @@ Current behavior:
 - `scripts/health.py --json` shows target coverage, stale heartbeats, runtime failures, and active guard issues from SQLite
 - `scripts/shadow_compare.py --json` reports missing targets, unsafe targets, target/observed mismatches, and diversification
 - `scripts/rollout.py` provides DB-only smoke, shadow, one-org apply, full-org apply with confirmation, and guard apply gates
+- `scripts/runtime_monitor.py --loop` repeatedly runs shadow gates and can perform one explicitly confirmed live action after a passing gate
 - `scripts/rollback.py` provides checkpoint list/restore for scheduler targets
 
 ### Phase 8: Shadow Mode
@@ -829,6 +848,7 @@ Current shadow-mode commands:
 PRL_PEARL_FEE_RATE=0.01 python3 scripts/rollout.py --stage shadow --price 0.64 --fee 0.01 --skip-workers --skip-guard
 python3 scripts/shadow_compare.py
 PRL_PEARL_FEE_RATE=0.01 python3 scripts/rollout.py --stage shadow --price 0.64 --fee 0.01 --require-secrets
+PRL_PEARL_FEE_RATE=0.01 python3 scripts/runtime_monitor.py --loop --interval 120 --price 0.64 --fee 0.01 --require-secrets
 ```
 
 ### Phase 9: Controlled Rollout
@@ -852,12 +872,14 @@ Recommended live sequence:
 
 ```bash
 PRL_PEARL_FEE_RATE=0.01 python3 scripts/rollout.py --stage one-org --org kry1 --price 0.64 --fee 0.01 --apply-workers --require-secrets
+PRL_PEARL_FEE_RATE=0.01 python3 scripts/runtime_monitor.py --once --price 0.64 --fee 0.01 --require-secrets --apply-one-org --org kry1 --confirm-live-actions
 python3 scripts/rollback.py list
 ```
 
 Only after the one-org apply is stable:
 
 ```bash
+PRL_PEARL_FEE_RATE=0.01 python3 scripts/runtime_monitor.py --once --price 0.64 --fee 0.01 --require-secrets --apply-guard --confirm-live-actions
 python3 scripts/rollout.py --stage guard-apply --apply-guard --require-secrets
 PRL_PEARL_FEE_RATE=0.01 python3 scripts/rollout.py --stage all-orgs --price 0.64 --fee 0.01 --apply-workers --confirm-all-orgs --require-secrets
 python3 scripts/supervisor.py --print-plan

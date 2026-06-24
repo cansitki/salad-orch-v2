@@ -109,6 +109,7 @@ The runnable code lives in `scripts/`.
 | `scripts/health.py` | Read-only health check for targets, stale heartbeats, guard issues, and runtime failures. |
 | `scripts/shadow_compare.py` | Read-only target-vs-observed mismatch and unsafe-target report for shadow mode. |
 | `scripts/rollout.py` | Controlled shadow/one-org/all-org/guard rollout runner with safety gates. |
+| `scripts/runtime_monitor.py` | Safe runtime monitor loop for repeated shadow gates and explicitly confirmed live actions. |
 | `scripts/rollback.py` | Rollout checkpoint create/list/restore helper for scheduler targets. |
 | `scripts/maintenance.py` | Dry-run-first SQLite retention/compaction helper for long-running fleets. |
 | `.env.example` | Safe template for local secrets and runtime settings. |
@@ -281,10 +282,22 @@ unless `--apply-workers` or `--apply-guard` is passed.
    warnings; add `--require-fresh-heartbeats` when validating under tmux
    supervision.
 
+   Continuous read-only monitor loop:
+
+   ```bash
+   PRL_PEARL_FEE_RATE=0.01 python3 scripts/runtime_monitor.py --loop --interval 120 --price 0.64 --fee 0.01 --require-secrets
+   ```
+
 3. Apply one org only:
 
    ```bash
    PRL_PEARL_FEE_RATE=0.01 python3 scripts/rollout.py --stage one-org --org kry1 --price 0.64 --fee 0.01 --apply-workers --require-secrets
+   ```
+
+   Safer monitor-gated one-org apply:
+
+   ```bash
+   PRL_PEARL_FEE_RATE=0.01 python3 scripts/runtime_monitor.py --once --price 0.64 --fee 0.01 --require-secrets --apply-one-org --org kry1 --confirm-live-actions
    ```
 
    Live apply stages create a rollback checkpoint automatically before the
@@ -294,6 +307,12 @@ unless `--apply-workers` or `--apply-guard` is passed.
 
    ```bash
    python3 scripts/rollout.py --stage guard-apply --apply-guard --require-secrets
+   ```
+
+   Safer monitor-gated guard apply:
+
+   ```bash
+   PRL_PEARL_FEE_RATE=0.01 python3 scripts/runtime_monitor.py --once --price 0.64 --fee 0.01 --require-secrets --apply-guard --confirm-live-actions
    ```
 
 5. Start tmux supervision for the full new stack:

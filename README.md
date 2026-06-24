@@ -303,6 +303,12 @@ unless `--apply-workers` or `--apply-guard` is passed.
    PRL_PEARL_FEE_RATE=0.01 python3 scripts/runtime_monitor.py --loop --interval 120 --runner-timeout-seconds 90 --price 0.64 --fee 0.01 --require-secrets
    ```
 
+   If a live Salad/PearlFortune read times out, the monitor prints the runner
+   error and falls back to the scheduler DB for target coverage, health, live
+   hashing, no-hash, negative, and stuck counts. `shadow_fallback=db` means the
+   tick did not pass the live shadow gate; it only kept the operator summary
+   useful while the external API was slow.
+
 3. Apply one org only:
 
    ```bash

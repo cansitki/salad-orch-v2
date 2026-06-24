@@ -6,6 +6,8 @@ import signal
 import time
 from typing import Any, Callable
 
+import health as health_status
+import reporter
 import rollout
 from fleet_common import json_dumps, utc_now
 
@@ -46,7 +48,34 @@ def _failure_summary(stage: str, exc: BaseException) -> dict[str, Any]:
         "failed_gates": [gate],
         "warning_gates": [],
         "error": f"{type(exc).__name__}: {str(exc)[:180]}",
+        "fallback_source": None,
+        "fallback_error": None,
     }
+
+
+def _failure_summary_with_db_fallback(stage: str, exc: BaseException, db_path: str | None = None) -> dict[str, Any]:
+    summary = _failure_summary(stage, exc)
+    try:
+        report_payload = reporter.build_report(db_path)
+        health_payload = health_status.build_health(db_path)
+    except Exception as fallback_exc:
+        summary["fallback_source"] = "unavailable"
+        summary["fallback_error"] = f"{type(fallback_exc).__name__}: {str(fallback_exc)[:180]}"
+        return summary
+
+    summary.update(
+        {
+            "targets": report_payload.get("assigned_targets") or health_payload.get("target_count"),
+            "target_slots": report_payload.get("target_slots") or health_payload.get("slot_count"),
+            "health": health_payload.get("health") or summary["health"],
+            "live_hashing_gpus": report_payload.get("live_hashing_gpus"),
+            "no_hash": len(report_payload.get("running_no_live_billable_slots") or []),
+            "negative": len(report_payload.get("negative_slots") or []),
+            "stuck": len(report_payload.get("stuck_slots") or []),
+            "fallback_source": "db",
+        }
+    )
+    return summary
 
 
 def _summarize_rollout(payload: dict[str, Any]) -> dict[str, Any]:
@@ -75,6 +104,7 @@ def _summarize_rollout(payload: dict[str, Any]) -> dict[str, Any]:
 def _run_shadow(
     runner: RolloutRunner,
     *,
+    db_path: str | None,
     price: float | None,
     fee: float | None,
     require_secrets: bool,
@@ -83,6 +113,7 @@ def _run_shadow(
 ) -> dict[str, Any]:
     return runner(
         stage="shadow",
+        db_path=db_path,
         price=price,
         fee=fee,
         apply_workers=False,
@@ -97,6 +128,7 @@ def _run_action(
     runner: RolloutRunner,
     *,
     action: str,
+    db_path: str | None,
     org: str | None,
     price: float | None,
     fee: float | None,
@@ -107,6 +139,7 @@ def _run_action(
     if action == "guard-apply":
         return runner(
             stage="guard-apply",
+            db_path=db_path,
             price=price,
             fee=fee,
             apply_guard=True,
@@ -117,6 +150,7 @@ def _run_action(
             raise SystemExit("--org is required with --apply-one-org")
         return runner(
             stage="one-org",
+            db_path=db_path,
             org_label=org,
             price=price,
             fee=fee,
@@ -130,6 +164,7 @@ def _run_action(
 
 def run_monitor_tick(
     *,
+    db_path: str | None = None,
     price: float | None = None,
     fee: float | None = None,
     require_secrets: bool = False,
@@ -155,6 +190,7 @@ def run_monitor_tick(
         shadow_payload = _call_with_timeout(
             lambda: _run_shadow(
                 runner,
+                db_path=db_path,
                 price=price,
                 fee=fee,
                 require_secrets=require_secrets,
@@ -165,7 +201,7 @@ def run_monitor_tick(
         )
         shadow_summary = _summarize_rollout(shadow_payload)
     except Exception as exc:
-        shadow_summary = _failure_summary("shadow", exc)
+        shadow_summary = _failure_summary_with_db_fallback("shadow", exc, db_path)
     action = "none"
     action_payload = None
     action_summary = None
@@ -181,6 +217,7 @@ def run_monitor_tick(
                     lambda: _run_action(
                         runner,
                         action=action,
+                        db_path=db_path,
                         org=org,
                         price=price,
                         fee=fee,
@@ -192,7 +229,7 @@ def run_monitor_tick(
                 )
                 action_summary = _summarize_rollout(action_payload)
             except Exception as exc:
-                action_summary = _failure_summary(action, exc)
+                action_summary = _failure_summary_with_db_fallback(action, exc, db_path)
 
     return {
         "at_utc": utc_now(),
@@ -220,6 +257,10 @@ def _print_tick(payload: dict[str, Any]) -> None:
         print(f"shadow_warnings={','.join(str(item) for item in shadow['warning_gates'])}", flush=True)
     if shadow.get("error"):
         print(f"shadow_error={shadow['error']}", flush=True)
+    if shadow.get("fallback_source"):
+        print(f"shadow_fallback={shadow['fallback_source']}", flush=True)
+    if shadow.get("fallback_error"):
+        print(f"shadow_fallback_error={shadow['fallback_error']}", flush=True)
     if payload["action_result"]:
         result = payload["action_result"]
         print(
@@ -233,12 +274,17 @@ def _print_tick(payload: dict[str, Any]) -> None:
             print(f"action_warnings={','.join(str(item) for item in result['warning_gates'])}", flush=True)
         if result.get("error"):
             print(f"action_error={result['error']}", flush=True)
+        if result.get("fallback_source"):
+            print(f"action_fallback={result['fallback_source']}", flush=True)
+        if result.get("fallback_error"):
+            print(f"action_fallback_error={result['fallback_error']}", flush=True)
     if payload["skipped_live_action"]:
         print("live_action_skipped=shadow_gate_failed", flush=True)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Safe continuous monitor for Salad PRL rollout gates.")
+    parser.add_argument("--db", default=None)
     parser.add_argument("--price", type=float, default=None)
     parser.add_argument("--fee", type=float, default=None)
     parser.add_argument("--require-secrets", action="store_true")
@@ -265,6 +311,7 @@ def main() -> None:
     ticks = 0
     while True:
         payload = run_monitor_tick(
+            db_path=args.db,
             price=args.price,
             fee=args.fee,
             require_secrets=args.require_secrets,

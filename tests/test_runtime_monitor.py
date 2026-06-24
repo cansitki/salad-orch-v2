@@ -4,6 +4,7 @@ import pathlib
 import sys
 import time
 import unittest
+from unittest.mock import patch
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -153,6 +154,52 @@ class RuntimeMonitorTest(unittest.TestCase):
         self.assertEqual(payload["action"], "none")
         self.assertIn("monitor_timeout", payload["shadow"]["failed_gates"])
         self.assertIn("TimeoutError", payload["shadow"]["error"])
+
+    def test_shadow_runner_error_uses_db_fallback_status(self) -> None:
+        def runner(**_kwargs):
+            raise RuntimeError("salad api timed out")
+
+        with (
+            patch(
+                "runtime_monitor.reporter.build_report",
+                return_value={
+                    "assigned_targets": 40,
+                    "target_slots": 40,
+                    "live_hashing_gpus": 12,
+                    "running_no_live_billable_slots": [{}],
+                    "negative_slots": [],
+                    "stuck_slots": [{}, {}],
+                },
+            ) as report_mock,
+            patch(
+                "runtime_monitor.health_status.build_health",
+                return_value={"health": "degraded", "target_count": 40, "slot_count": 40},
+            ) as health_mock,
+        ):
+            payload = runtime_monitor.run_monitor_tick(db_path="/tmp/fleet.db", runner=runner)
+
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["shadow"]["failed_gates"], ["monitor_runner_error"])
+        self.assertEqual(payload["shadow"]["targets"], 40)
+        self.assertEqual(payload["shadow"]["target_slots"], 40)
+        self.assertEqual(payload["shadow"]["health"], "degraded")
+        self.assertEqual(payload["shadow"]["live_hashing_gpus"], 12)
+        self.assertEqual(payload["shadow"]["no_hash"], 1)
+        self.assertEqual(payload["shadow"]["stuck"], 2)
+        self.assertEqual(payload["shadow"]["fallback_source"], "db")
+        report_mock.assert_called_once_with("/tmp/fleet.db")
+        health_mock.assert_called_once_with("/tmp/fleet.db")
+
+    def test_shadow_runner_error_reports_unavailable_fallback(self) -> None:
+        def runner(**_kwargs):
+            raise RuntimeError("salad api timed out")
+
+        with patch("runtime_monitor.reporter.build_report", side_effect=RuntimeError("db locked")):
+            payload = runtime_monitor.run_monitor_tick(runner=runner)
+
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["shadow"]["fallback_source"], "unavailable")
+        self.assertIn("db locked", payload["shadow"]["fallback_error"])
 
     def test_action_timeout_returns_failed_action_result(self) -> None:
         calls = []

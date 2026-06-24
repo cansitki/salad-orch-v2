@@ -112,7 +112,11 @@ shadow_error=ReadTimeout: ...
 ```
 
 A timeout means Salad or pool APIs were slow. It should not hang the monitor.
-Retry later or let the loop continue.
+Retry later or let the loop continue. When DB fallback is available, the timeout
+output also includes latest read-only target coverage, health, live hashing,
+no-hash, negative, and stuck counts plus `shadow_fallback=db`. That fallback is
+an operator summary only; the shadow gate is still failed and no live action
+should run from that tick.
 
 ## Start Persistent Read-Only Monitoring
 

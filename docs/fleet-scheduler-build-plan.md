@@ -506,6 +506,7 @@ Responsibilities:
 - allow only one live action per tick so guard apply and worker apply do not collide
 - allow explicit degraded preflight retries with `--allow-degraded-shadow` while keeping the final live action gate strict
 - enforce `--runner-timeout-seconds` around each rollout stage so slow Salad API reads fail the tick instead of hanging the monitor
+- when a rollout runner fails or times out, fall back to read-only DB status from `reporter.py` and `health.py` so the monitor still reports target coverage, health, live hashing, no-hash, negative, and stuck counts
 
 Default behavior is read-only. Live action modes are:
 
@@ -837,7 +838,7 @@ Current behavior:
 - `scripts/health.py --json` shows target coverage, stale heartbeats, runtime failures, and active guard issues from SQLite
 - `scripts/shadow_compare.py --json` reports missing targets, unsafe targets, target/observed mismatches, and diversification
 - `scripts/rollout.py` provides DB-only smoke, shadow, one-org apply, full-org apply with confirmation, and guard apply gates
-- `scripts/runtime_monitor.py --loop` repeatedly runs shadow gates and can perform one explicitly confirmed live action after a passing gate
+- `scripts/runtime_monitor.py --loop` repeatedly runs shadow gates, reports DB fallback status on runner timeout/error, and can perform one explicitly confirmed live action after a passing gate
 - `scripts/rollback.py` provides checkpoint list/restore for scheduler targets
 
 ### Phase 8: Shadow Mode

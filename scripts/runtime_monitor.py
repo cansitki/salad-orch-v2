@@ -33,18 +33,26 @@ def _call_with_process_timeout(callback: Callable[[], dict[str, Any]], timeout_s
     result_queue = ctx.Queue(maxsize=1)
     process = ctx.Process(target=_process_timeout_entry, args=(callback, result_queue))
     process.start()
-    process.join(timeout_seconds)
+    try:
+        item = result_queue.get(timeout=timeout_seconds)
+    except queue.Empty as exc:
+        process.join(0)
+        if process.is_alive():
+            process.terminate()
+            process.join(5)
+            if process.is_alive():
+                process.kill()
+                process.join(5)
+            raise TimeoutError(f"monitor runner exceeded {timeout_seconds:.1f}s") from exc
+        raise RemoteRunnerError(f"monitor runner exited without result rc={process.exitcode}") from exc
+
+    process.join(5)
     if process.is_alive():
         process.terminate()
         process.join(5)
         if process.is_alive():
             process.kill()
             process.join(5)
-        raise TimeoutError(f"monitor runner exceeded {timeout_seconds:.1f}s")
-    try:
-        item = result_queue.get_nowait()
-    except queue.Empty as exc:
-        raise RemoteRunnerError(f"monitor runner exited without result rc={process.exitcode}") from exc
     if item[0] == "ok":
         return item[1]
     raise RemoteRunnerError(f"{item[1]}: {item[2]}")

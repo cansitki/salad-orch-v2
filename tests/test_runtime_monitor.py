@@ -216,6 +216,14 @@ class RuntimeMonitorTest(unittest.TestCase):
         self.assertIn("monitor_timeout", payload["shadow"]["failed_gates"])
         self.assertIn("TimeoutError", payload["shadow"]["error"])
 
+    def test_hard_timeout_runner_returns_large_payload_without_queue_deadlock(self) -> None:
+        result = runtime_monitor._call_with_process_timeout(
+            lambda: {"blob": "x" * 1_000_000},
+            timeout_seconds=2.0,
+        )
+
+        self.assertEqual(len(result["blob"]), 1_000_000)
+
     def test_shadow_runner_error_uses_db_fallback_status(self) -> None:
         def runner(**_kwargs):
             raise RuntimeError("salad api timed out")

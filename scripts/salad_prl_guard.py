@@ -340,12 +340,17 @@ def reallocate_slot(org: str, slot: str, reason: str, *, retarget: bool = True) 
     module = watchers.get(org)
     if module is None:
         return []
+    pre_retarget_instances = running_instances(module, slot)
+    pre_retarget_ids = {str(instance.get("id") or "") for instance in pre_retarget_instances}
     retargeted = retarget_slot(org, slot, reason) if retarget else None
     actions: list[dict[str, Any]] = []
-    for instance in running_instances(module, slot):
+    instances_by_id: dict[str, dict[str, Any]] = {}
+    for instance in pre_retarget_instances + running_instances(module, slot):
         instance_id = str(instance.get("id") or "")
         if not instance_id:
             continue
+        instances_by_id.setdefault(instance_id, instance)
+    for instance_id, instance in instances_by_id.items():
         module.reallocate(slot, instance_id, reason)
         actions.append(
             {
@@ -355,6 +360,7 @@ def reallocate_slot(org: str, slot: str, reason: str, *, retarget: bool = True) 
                 "state": instance.get("state"),
                 "ready": instance.get("ready"),
                 "started": instance.get("started"),
+                "captured_before_retarget": instance_id in pre_retarget_ids,
                 "retargeted": retargeted,
             }
         )

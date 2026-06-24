@@ -154,6 +154,69 @@ class ShadowCompareTest(unittest.TestCase):
         self.assertEqual(payload["unsafe_targets"], [])
         self.assertTrue(any(item["reason"] == "protected_positive_blocked_priority" for item in payload["warnings"]))
 
+    def test_protected_running_live_positive_negative_profile_score_is_warning_not_failure(self) -> None:
+        fleet_scheduler.schedule_once(db_path=self.db_path, price=0.64, fee=0.01, dry_run=False)
+        with state_db.connect(self.db_path) as conn:
+            state_db.init_db(conn)
+            state_db.update_slot_observation(
+                conn,
+                {
+                    "org_label": "kray",
+                    "slot_name": "prl-kray-roi-01",
+                    "observed_profile_key": "5070:low:2048",
+                    "observed_status": "running",
+                    "live_hashrate_th": 121.7,
+                    "protected": True,
+                },
+            )
+            state_db.upsert_profile_score(
+                conn,
+                {
+                    "profile_key": "5070:low:2048",
+                    "mode": "risk_off",
+                    "decision_price_usd": 0.64,
+                    "expected_profit_day": -0.06,
+                    "score": -100.0,
+                    "risk_tier": "negative",
+                },
+            )
+            state_db.record_profit_snapshot(
+                conn,
+                {
+                    "at_utc": "2026-06-24T23:30:00+00:00",
+                    "scope": "slot",
+                    "org_label": "kray",
+                    "slot_name": "prl-kray-roi-01",
+                    "profile_key": "5070:low:2048",
+                    "decision_price_usd": 0.64,
+                    "th": 121.7,
+                    "cost_day": 3.192,
+                    "revenue_day": 3.24,
+                    "profit_day": 0.048,
+                    "payload": {},
+                },
+            )
+            state_db.set_slot_target(
+                conn,
+                {
+                    "org_label": "kray",
+                    "slot_name": "prl-kray-roi-01",
+                    "profile_key": "5070:low:2048",
+                    "mode": "risk_off",
+                    "decision_price_usd": 0.64,
+                    "expected_profit_day": -0.06,
+                    "protected": True,
+                    "reason": "risk_off:negative_observed_profile_no_replacement",
+                },
+            )
+            conn.commit()
+
+        payload = shadow_compare.build_shadow_compare(self.db_path)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["unsafe_targets"], [])
+        self.assertTrue(any(item["reason"] == "protected_positive_negative" for item in payload["warnings"]))
+        self.assertTrue(any(item["reason"] == "protected_positive_below_min_profit" for item in payload["warnings"]))
+
     def test_protected_running_without_hashrate_is_not_protected_positive_warning(self) -> None:
         fleet_scheduler.schedule_once(db_path=self.db_path, price=0.64, fee=0.01, dry_run=False)
         with state_db.connect(self.db_path) as conn:

@@ -21,10 +21,22 @@ def _target_rows(conn) -> list[dict[str, Any]]:
         """
         SELECT t.*, s.observed_profile_key, s.observed_status,
                s.live_hashrate_th, s.protected AS observed_protected,
-               ps.risk_tier, ps.score, ps.scored_at_utc
+               ps.risk_tier, ps.score, ps.scored_at_utc,
+               sp.profit_day AS observed_profit_day
         FROM slot_targets t
         LEFT JOIN slots s ON s.org_label = t.org_label AND s.slot_name = t.slot_name
         LEFT JOIN profile_scores ps ON ps.profile_key = t.profile_key AND ps.mode = t.mode
+        LEFT JOIN profit_snapshots sp
+          ON sp.scope = 'slot'
+         AND sp.org_label = t.org_label
+         AND sp.slot_name = t.slot_name
+         AND sp.at_utc = (
+            SELECT at_utc
+            FROM profit_snapshots
+            WHERE scope = 'slot'
+            ORDER BY at_utc DESC, id DESC
+            LIMIT 1
+         )
         ORDER BY t.org_label, t.slot_name
         """
     ).fetchall()
@@ -84,14 +96,17 @@ def build_shadow_compare(db_path: str | None = None) -> dict[str, Any]:
         observed_status = str(target.get("observed_status") or "")
         observed_protected = int(target.get("observed_protected") or 0) > 0
         observed_live_hashrate_th = float(target.get("live_hashrate_th") or 0)
+        observed_profit_raw = target.get("observed_profit_day")
+        observed_profit = float(observed_profit_raw) if observed_profit_raw is not None else None
         target_protected = int(target.get("protected") or 0) > 0
+        profit_floor = observed_profit if observed_profit is not None else expected_profit
         protected_positive_fill = (
             mode != "optimize"
             and observed_status == "running"
             and observed_protected
             and observed_live_hashrate_th > 0
             and target_protected
-            and expected_profit >= 0
+            and profit_floor >= 0
         )
         if risk_tier is None:
             unsafe_targets.append(
@@ -110,7 +125,9 @@ def build_shadow_compare(db_path: str | None = None) -> dict[str, Any]:
                 "risk_tier": risk_tier,
                 "reason": "blocked_risk_tier",
             }
-            if protected_positive_fill and str(risk_tier) in {"marginal", "blocked_priority"}:
+            if observed_profit is not None:
+                payload["observed_profit_day"] = observed_profit
+            if protected_positive_fill:
                 warnings.append({**payload, "reason": f"protected_positive_{risk_tier}"})
             else:
                 unsafe_targets.append(payload)
@@ -123,6 +140,8 @@ def build_shadow_compare(db_path: str | None = None) -> dict[str, Any]:
                 "min_profit_day": min_profit,
                 "reason": "below_min_profit",
             }
+            if observed_profit is not None:
+                payload["observed_profit_day"] = observed_profit
             if protected_positive_fill:
                 warnings.append({**payload, "reason": "protected_positive_below_min_profit"})
             else:

@@ -55,6 +55,7 @@ class RiskConfig:
     aggressive_min_window_seconds: int = 2700
     fill_min_profit_day: float = 0.05
     optimize_min_profit_day: float = 0.01
+    optimize_min_upgrade_delta_day: float = 0.25
     pearl_fee_rate: float = 0.05
     temporary_pearl_fee_rate: float | None = None
     temporary_pearl_fee_until_utc: str | None = None
@@ -258,6 +259,7 @@ def load_config() -> FleetConfig:
         aggressive_min_window_seconds=int(env_float("PRL_AGGRESSIVE_MIN_WINDOW_SECONDS", 2700)),
         fill_min_profit_day=env_float("PRL_FILL_MIN_PROFIT_USD_DAY", 0.05),
         optimize_min_profit_day=env_float("PRL_OPTIMIZE_MIN_PROFIT_USD_DAY", 0.01),
+        optimize_min_upgrade_delta_day=env_float("PRL_OPTIMIZE_MIN_UPGRADE_DELTA_USD_DAY", 0.25),
         pearl_fee_rate=env_float("PRL_PEARL_FEE_RATE", 0.05),
         temporary_pearl_fee_rate=(
             env_float("PRL_TEMP_PEARL_FEE_RATE", 0.0)

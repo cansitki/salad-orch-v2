@@ -328,6 +328,7 @@ Target assignment rules:
 - Creating slots rotate if no progress after timeout.
 - `running_without_pool` waits no-hash grace, then rotates.
 - Live profitable slots are protected in fill mode.
+- In optimize mode, live protected slots are retargeted only when the best eligible replacement clears the configured upgrade delta.
 - Target selection should be diversified by org and slot index.
 
 ### `org_worker.py`
@@ -666,10 +667,11 @@ Safe default behavior:
 - scheduler writes DB targets only; it does not call Salad APIs directly
 - default base fill allows `batch` only
 - `low` is available for boost/optimize modes only if profitable under the active fee and decision price
+- optimize replacement requires `PRL_OPTIMIZE_MIN_UPGRADE_DELTA_USD_DAY` profit/day improvement
 - profile assignment is diversified across the top eligible profiles instead of sending every slot to one GPU
 - recent availability data caps per-org/profile assignments when present
 - active no-GPU cooldowns prevent retrying a profile until the cooldown expires
-- protected running slots keep their observed profile in `slot_targets`
+- protected running slots keep their observed profile in fill mode; optimize mode can assign an upgrade target but live patching still requires worker/rollout retarget flags
 
 ### Phase 5: Per-Org Worker Refactor
 
@@ -698,6 +700,7 @@ Safe default behavior:
 - creating/allocating slots are protected unless `--allow-pending-retarget` is passed
 - this lets the new worker shadow existing runtime without churn
 - every worker tick writes observed slot status/profile/protection state into `slots`
+- `scripts/rollout.py` requires `--confirm-live-retarget` before passing live retarget authority to workers
 
 ### Phase 6: Global Guard
 
@@ -817,6 +820,12 @@ python3 scripts/supervisor.py --ensure
 
 During the first live test, Codex should supervise health, reporter output,
 guard decisions, and org-worker attempts before enabling all orgs with apply.
+
+Controlled one-org optimize after the fleet is full or manually approved:
+
+```bash
+PRL_FLEET_MODE=optimize python3 scripts/rollout.py --stage one-org --org kry1 --price 0.62 --apply-workers --allow-live-retarget --confirm-live-retarget --require-secrets
+```
 
 ### Phase 10: Multi-Organization Scale Readiness
 

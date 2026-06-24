@@ -85,6 +85,18 @@ class RolloutTest(unittest.TestCase):
                 skip_guard=True,
             )
 
+    def test_live_retarget_requires_confirmation(self) -> None:
+        with self.assertRaises(SystemExit):
+            rollout.run_rollout(
+                stage="one-org",
+                org_label="kry1",
+                db_path=self.db_path,
+                apply_workers=True,
+                allow_live_retarget=True,
+                skip_workers=True,
+                skip_guard=True,
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

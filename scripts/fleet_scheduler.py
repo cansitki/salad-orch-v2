@@ -83,6 +83,27 @@ def build_targets(
             return (1, slot_name)
         return (2, slot_name)
 
+    def diversified_candidate(
+        org_label: str,
+        slot_name: str,
+        slot_index: int,
+        org_index: int,
+        *,
+        skip_profile_key: str | None = None,
+        min_profit_day: float | None = None,
+    ) -> tuple[int, dict[str, Any]] | None:
+        for offset in range(len(profiles)):
+            profile_index = (slot_index - 1 + org_index * 3 + offset) % len(profiles)
+            candidate = profiles[profile_index]
+            candidate_key = str(candidate["profile_key"])
+            if skip_profile_key and candidate_key == skip_profile_key:
+                continue
+            if min_profit_day is not None and float(candidate["expected_profit_day"]) < min_profit_day:
+                continue
+            if has_capacity(org_label, slot_name, candidate_key):
+                return profile_index, candidate
+        return None
+
     for org_index, org in enumerate(enabled_orgs):
         ordered_slots = sorted(org.slot_names(), key=lambda slot_name: slot_sort_key(org.label, slot_name))
         for slot_index, slot_name in enumerate(ordered_slots, start=1):
@@ -90,17 +111,32 @@ def build_targets(
             observed_profile = slot_row.get("observed_profile_key")
             protected = int(slot_row.get("protected") or 0) > 0
             if protected and observed_profile and observed_profile in scores_by_key:
-                profile = scores_by_key[str(observed_profile)]
-                profile_index = 0
-                reason = f"{mode}:protected_observed_profile"
+                current = scores_by_key[str(observed_profile)]
+                selected = None
+                if mode == "optimize":
+                    min_upgrade_profit = (
+                        float(current["expected_profit_day"])
+                        + float(config.risk.optimize_min_upgrade_delta_day)
+                    )
+                    selected = diversified_candidate(
+                        org.label,
+                        slot_name,
+                        slot_index,
+                        org_index,
+                        skip_profile_key=str(observed_profile),
+                        min_profit_day=min_upgrade_profit,
+                    )
+                if selected is not None:
+                    profile_index, profile = selected
+                    protected = False
+                    delta = float(profile["expected_profit_day"]) - float(current["expected_profit_day"])
+                    reason = f"{mode}:upgrade_from_{observed_profile}:delta_{delta:.3f}"
+                else:
+                    profile = current
+                    profile_index = 0
+                    reason = f"{mode}:protected_observed_profile"
             else:
-                selected: tuple[int, dict[str, Any]] | None = None
-                for offset in range(len(profiles)):
-                    profile_index = (slot_index - 1 + org_index * 3 + offset) % len(profiles)
-                    candidate = profiles[profile_index]
-                    if has_capacity(org.label, slot_name, str(candidate["profile_key"])):
-                        selected = (profile_index, candidate)
-                        break
+                selected = diversified_candidate(org.label, slot_name, slot_index, org_index)
                 if selected is None:
                     continue
                 profile_index, profile = selected

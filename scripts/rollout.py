@@ -184,6 +184,9 @@ def run_rollout(
     apply_workers: bool = False,
     apply_guard: bool = False,
     confirm_all_orgs: bool = False,
+    allow_live_retarget: bool = False,
+    allow_pending_retarget: bool = False,
+    confirm_live_retarget: bool = False,
     skip_workers: bool = False,
     skip_guard: bool = False,
     refresh_report: bool = False,
@@ -198,6 +201,10 @@ def run_rollout(
         raise SystemExit("confirm_all_orgs is required for stage='all-orgs' with apply_workers=True")
     if stage == "guard-apply" and not apply_guard:
         raise SystemExit("apply_guard is required for stage='guard-apply'")
+    if allow_live_retarget and not apply_workers:
+        raise SystemExit("apply_workers is required when allow_live_retarget is set")
+    if allow_live_retarget and not confirm_live_retarget:
+        raise SystemExit("confirm_live_retarget is required when allow_live_retarget is set")
     if require_secrets:
         missing = _missing_secret_envs()
         if missing:
@@ -219,6 +226,8 @@ def run_rollout(
                     org_label=org,
                     db_path=db_path,
                     apply=apply_workers,
+                    allow_live_retarget=allow_live_retarget,
+                    allow_pending_retarget=allow_pending_retarget,
                 )
             )
 
@@ -245,6 +254,8 @@ def run_rollout(
         "stage": stage,
         "apply_workers": apply_workers,
         "apply_guard": apply_guard,
+        "allow_live_retarget": allow_live_retarget,
+        "allow_pending_retarget": allow_pending_retarget,
         "scheduler": {key: value for key, value in scheduler_payload.items() if key != "targets"},
         "workers": [
             {
@@ -296,6 +307,9 @@ def main() -> None:
     parser.add_argument("--width", type=int, default=10)
     parser.add_argument("--apply-workers", action="store_true", help="Allow org_worker live Salad actions.")
     parser.add_argument("--apply-guard", action="store_true", help="Allow guard v2 live retarget/stop actions.")
+    parser.add_argument("--allow-live-retarget", action="store_true", help="Allow org_worker to patch running slots.")
+    parser.add_argument("--allow-pending-retarget", action="store_true", help="Allow org_worker to patch creating/allocating slots.")
+    parser.add_argument("--confirm-live-retarget", action="store_true", help="Required with --allow-live-retarget.")
     parser.add_argument("--confirm-all-orgs", action="store_true", help="Required with --stage all-orgs --apply-workers.")
     parser.add_argument("--skip-workers", action="store_true")
     parser.add_argument("--skip-guard", action="store_true")
@@ -315,6 +329,9 @@ def main() -> None:
         apply_workers=args.apply_workers,
         apply_guard=args.apply_guard,
         confirm_all_orgs=args.confirm_all_orgs,
+        allow_live_retarget=args.allow_live_retarget,
+        allow_pending_retarget=args.allow_pending_retarget,
+        confirm_live_retarget=args.confirm_live_retarget,
         skip_workers=args.skip_workers,
         skip_guard=args.skip_guard,
         refresh_report=args.refresh_report,

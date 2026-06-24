@@ -589,6 +589,25 @@ Current optimize settings:
 Optimize mode can replace active GPUs if the replacement is meaningfully better.
 This is intentionally disabled during fill mode.
 
+The new scheduler only emits an optimize upgrade target when the replacement is
+at least `PRL_OPTIMIZE_MIN_UPGRADE_DELTA_USD_DAY` more profitable than the
+observed running profile. The worker still refuses to patch running slots unless
+`--allow-live-retarget` is explicitly passed, and rollout requires
+`--confirm-live-retarget` with that flag.
+
+Controlled optimize dry-run:
+
+```bash
+PRL_FLEET_MODE=optimize python3 scripts/fleet_scheduler.py --mode optimize --price 0.62
+python3 scripts/rollout.py --stage one-org --org kry1 --price 0.62 --skip-workers --skip-guard
+```
+
+Controlled live optimize for one org:
+
+```bash
+PRL_FLEET_MODE=optimize python3 scripts/rollout.py --stage one-org --org kry1 --price 0.62 --apply-workers --allow-live-retarget --confirm-live-retarget --require-secrets
+```
+
 ## Candidate Policy
 
 Batch and low-priority GPUs are allowed in fill mode, but every candidate must

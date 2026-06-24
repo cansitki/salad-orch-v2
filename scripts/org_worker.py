@@ -162,6 +162,12 @@ def skipped_live_hashing_result(target: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def observed_profile_key_for_result(target: dict[str, Any], result: dict[str, Any], *, apply: bool) -> Any:
+    if apply and result.get("applied") and result.get("action") in {"create", "patch", "start"}:
+        return str(target["profile_key"])
+    return result.get("current_profile_key")
+
+
 def current_profile_key(watch: Any, group: dict[str, Any] | None) -> str | None:
     if not group:
         return None
@@ -455,7 +461,7 @@ def run_once(
             {
                 "org_label": org_label,
                 "slot_name": str(target["slot_name"]),
-                "observed_profile_key": result.get("current_profile_key"),
+                "observed_profile_key": observed_profile_key_for_result(target, result, apply=apply),
                 "observed_status": result.get("observed_status"),
                 "protected": bool(result.get("protected")),
             }

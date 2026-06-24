@@ -397,6 +397,19 @@ class StateAndSchedulerTest(unittest.TestCase):
         self.assertEqual(plan["action"], "observe")
         self.assertIn("pending_profile_mismatch_wait", plan["reason"])
 
+    def test_org_worker_records_target_profile_after_successful_patch(self) -> None:
+        observed = org_worker.observed_profile_key_for_result(
+            {"profile_key": "4090:batch:2048"},
+            {
+                "action": "patch",
+                "applied": True,
+                "current_profile_key": "3070:batch:4096",
+            },
+            apply=True,
+        )
+
+        self.assertEqual(observed, "4090:batch:2048")
+
     def test_org_worker_failed_patch_becomes_profile_cooldown_action(self) -> None:
         class Watch:
             class Candidate:

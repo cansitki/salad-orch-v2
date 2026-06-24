@@ -68,7 +68,7 @@ def profile_runtime_stats(conn) -> dict[str, dict[str, float]]:
         SELECT *
         FROM profit_snapshots
         WHERE scope = 'slot'
-          AND at_utc >= datetime('now', '-24 hours')
+          AND julianday(at_utc) >= julianday('now', '-24 hours')
         ORDER BY at_utc ASC, id ASC
         """
     ).fetchall()
@@ -117,7 +117,7 @@ def profile_runtime_stats(conn) -> dict[str, dict[str, float]]:
         FROM attempts
         WHERE profile_key IS NOT NULL
           AND ok = 1
-          AND at_utc >= datetime('now', '-24 hours')
+          AND julianday(at_utc) >= julianday('now', '-24 hours')
           AND action NOT LIKE 'dry_run_%'
           AND action IN ('create', 'patch', 'start', 'guard_retarget')
         ORDER BY at_utc ASC

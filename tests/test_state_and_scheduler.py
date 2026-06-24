@@ -313,6 +313,94 @@ class StateAndSchedulerTest(unittest.TestCase):
         self.assertEqual(by_profile["3090:batch:2048"]["reason"]["live_hash_samples"], 1.0)
         self.assertEqual(by_profile["3090:batch:2048"]["reason"]["avg_time_to_hash_seconds"], 120.0)
 
+    def test_attempt_stats_excludes_iso_rows_older_than_24_hours(self) -> None:
+        now = datetime.now(UTC)
+        old = now - timedelta(hours=25)
+        with state_db.connect(self.db_path) as conn:
+            state_db.init_db(conn)
+            state_db.record_attempt(
+                conn,
+                {
+                    "at_utc": old.isoformat(timespec="seconds"),
+                    "org_label": "kray",
+                    "slot_name": "prl-kray-roi-01",
+                    "action": "capacity_failure",
+                    "profile_key": "4090:batch:2048",
+                    "ok": False,
+                },
+            )
+            state_db.record_attempt(
+                conn,
+                {
+                    "at_utc": now.isoformat(timespec="seconds"),
+                    "org_label": "kray",
+                    "slot_name": "prl-kray-roi-02",
+                    "action": "patch",
+                    "profile_key": "4090:batch:2048",
+                    "ok": True,
+                },
+            )
+            stats = state_db.attempt_stats(conn)
+
+        self.assertEqual(stats["4090:batch:2048"]["success"], 1)
+        self.assertEqual(stats["4090:batch:2048"]["failure"], 0)
+        self.assertEqual(stats["4090:batch:2048"]["capacity_failure"], 0)
+
+    def test_profile_runtime_stats_excludes_iso_rows_older_than_24_hours(self) -> None:
+        now = datetime.now(UTC)
+        old = now - timedelta(hours=25)
+        with state_db.connect(self.db_path) as conn:
+            state_db.init_db(conn)
+            state_db.record_attempt(
+                conn,
+                {
+                    "at_utc": old.isoformat(timespec="seconds"),
+                    "org_label": "kray",
+                    "slot_name": "prl-kray-roi-01",
+                    "action": "patch",
+                    "profile_key": "3090:batch:2048",
+                    "ok": True,
+                },
+            )
+            state_db.record_profit_snapshot(
+                conn,
+                {
+                    "at_utc": old.isoformat(timespec="seconds"),
+                    "scope": "slot",
+                    "org_label": "kray",
+                    "slot_name": "prl-kray-roi-01",
+                    "profile_key": "3080:batch:2048",
+                    "decision_price_usd": 0.64,
+                    "th": 0,
+                    "cost_day": 1.44,
+                    "revenue_day": 0,
+                    "profit_day": -1.44,
+                    "payload": {"gpu": "3080", "priority": "batch"},
+                },
+            )
+            state_db.record_profit_snapshot(
+                conn,
+                {
+                    "at_utc": now.isoformat(timespec="seconds"),
+                    "scope": "slot",
+                    "org_label": "kray",
+                    "slot_name": "prl-kray-roi-01",
+                    "profile_key": "3090:batch:2048",
+                    "decision_price_usd": 0.64,
+                    "th": 100,
+                    "cost_day": 2.16,
+                    "revenue_day": 3,
+                    "profit_day": 0.84,
+                    "payload": {"gpu": "3090", "priority": "batch"},
+                },
+            )
+            stats = profile_scorer.profile_runtime_stats(conn)
+
+        self.assertNotIn("3080:batch:2048", stats)
+        self.assertEqual(stats["3090:batch:2048"]["live_hash_samples"], 1)
+        self.assertEqual(stats["3090:batch:2048"]["no_hash_samples"], 0)
+        self.assertEqual(stats["3090:batch:2048"]["time_to_hash_samples"], 0)
+
     def test_org_worker_waits_before_retargeting_fresh_pending_mismatch(self) -> None:
         class Watch:
             def slot_state(self, _slot_name):

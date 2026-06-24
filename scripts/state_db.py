@@ -1083,7 +1083,7 @@ def attempt_stats(conn: sqlite3.Connection) -> dict[str, dict[str, float]]:
         SELECT profile_key, action, ok, COUNT(*) AS count
         FROM attempts
         WHERE profile_key IS NOT NULL
-          AND at_utc >= datetime('now', '-24 hours')
+          AND julianday(at_utc) >= julianday('now', '-24 hours')
         GROUP BY profile_key, action, ok
         """
     ).fetchall()

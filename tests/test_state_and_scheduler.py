@@ -1151,6 +1151,63 @@ class StateAndSchedulerTest(unittest.TestCase):
         self.assertEqual(row["protected"], 0)
         self.assertIn("replace_nohash_observed_profile", row["reason"])
 
+    def test_scheduler_uses_fresh_existing_target_age_for_pending_protection(self) -> None:
+        config = load_config()
+        original = os.environ.get("PRL_PENDING_TARGET_PROTECT_SECONDS")
+        os.environ.pop("PRL_PENDING_TARGET_PROTECT_SECONDS", None)
+        try:
+            now = datetime.now(UTC)
+            observed_at = (now - timedelta(seconds=130)).isoformat(timespec="seconds")
+            assigned_at = now.isoformat(timespec="seconds")
+            with state_db.connect(self.db_path) as conn:
+                state_db.init_db(conn)
+                state_db.sync_config(conn, config)
+                state_db.update_slot_observation(
+                    conn,
+                    {
+                        "org_label": "kray",
+                        "slot_name": "prl-kray-roi-01",
+                        "observed_profile_key": "4090:batch:2048",
+                        "observed_status": "allocating",
+                        "updated_at_utc": observed_at,
+                    },
+                )
+                state_db.set_slot_target(
+                    conn,
+                    {
+                        "org_label": "kray",
+                        "slot_name": "prl-kray-roi-01",
+                        "profile_key": "4090:batch:2048",
+                        "mode": "base_fill",
+                        "decision_price_usd": 0.64,
+                        "expected_profit_day": 1.0,
+                        "protected": False,
+                        "reason": "previous_assignment",
+                        "assigned_at_utc": assigned_at,
+                    },
+                )
+                conn.commit()
+            fleet_scheduler.schedule_once(db_path=self.db_path, price=0.64, fee=0.01, dry_run=False)
+        finally:
+            if original is None:
+                os.environ.pop("PRL_PENDING_TARGET_PROTECT_SECONDS", None)
+            else:
+                os.environ["PRL_PENDING_TARGET_PROTECT_SECONDS"] = original
+
+        with state_db.connect(self.db_path) as conn:
+            row = conn.execute(
+                """
+                SELECT profile_key, protected, reason
+                FROM slot_targets
+                WHERE org_label = 'kray' AND slot_name = 'prl-kray-roi-01'
+                """
+            ).fetchone()
+
+        self.assertEqual(row["profile_key"], "4090:batch:2048")
+        self.assertEqual(row["protected"], 0)
+        self.assertIn("protected_pending_observed_profile", row["reason"])
+        self.assertIn("lt_120", row["reason"])
+
     def test_scheduler_retargets_fresh_pending_profile_under_cooldown(self) -> None:
         config = load_config()
         original = os.environ.get("PRL_PENDING_TARGET_PROTECT_SECONDS")

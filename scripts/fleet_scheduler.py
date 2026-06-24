@@ -54,6 +54,7 @@ def build_targets(
     availability: dict[str, dict[str, dict[str, Any]]] | None = None,
     cooldowns: set[tuple[str, str, str]] | None = None,
     guard_targets: dict[tuple[str, str], dict[str, Any]] | None = None,
+    existing_targets: dict[tuple[str, str], dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     eligible_profiles = _eligible_profiles(scores)
     profiles = eligible_profiles[: max(1, min(width, len(eligible_profiles)))]
@@ -63,6 +64,7 @@ def build_targets(
     availability = availability or {}
     cooldowns = cooldowns or set()
     guard_targets = guard_targets or {}
+    existing_targets = existing_targets or {}
     scores_by_key = {str(score["profile_key"]): score for score in scores}
     pending_target_protect_seconds = max(0, env_int("PRL_PENDING_TARGET_PROTECT_SECONDS", 120))
     min_profit_day = config.risk.min_profit_for_mode("optimize" if mode == "optimize" else "fill")
@@ -266,6 +268,19 @@ def build_targets(
             pending_age = _age_seconds(
                 slot_row.get("observed_profile_since_utc") or slot_row.get("observed_status_since_utc")
             )
+            previous_target = existing_targets.get((org.label, slot_name), {})
+            previous_target_age = _age_seconds(previous_target.get("assigned_at_utc"))
+            if (
+                pending_observed
+                and observed_profile
+                and previous_target_age is not None
+                and str(previous_target.get("profile_key") or "") == str(observed_profile)
+            ):
+                pending_age = (
+                    previous_target_age
+                    if pending_age is None
+                    else min(pending_age, previous_target_age)
+                )
             pending_protect = (
                 pending_observed
                 and mode != "optimize"
@@ -429,6 +444,10 @@ def schedule_once(
         availability = state_db.latest_profile_availability(conn)
         cooldowns = state_db.active_search_cooldowns(conn)
         guard_targets = active_guard_targets(conn)
+        existing_targets = {
+            (str(row["org_label"]), str(row["slot_name"])): dict(row)
+            for row in conn.execute("SELECT * FROM slot_targets").fetchall()
+        }
         db_mode = str(risk["mode"]) if risk else None
         db_price = float(risk["decision_price_usd"]) if risk else config.risk.decision_price_for_mode()
         selected_mode = _scheduler_mode(config, mode or db_mode)
@@ -453,6 +472,7 @@ def schedule_once(
         availability=availability,
         cooldowns=cooldowns,
         guard_targets=guard_targets,
+        existing_targets=existing_targets,
     )
 
     with state_db.connect(db_path) as conn:

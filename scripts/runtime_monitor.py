@@ -165,6 +165,7 @@ def _run_shadow(
     require_fresh_heartbeats: bool,
     allow_degraded: bool,
     worker_parallelism: int,
+    skip_workers: bool,
 ) -> dict[str, Any]:
     return runner(
         stage="shadow",
@@ -174,6 +175,7 @@ def _run_shadow(
         apply_workers=False,
         apply_guard=False,
         skip_guard=True,
+        skip_workers=skip_workers,
         require_secrets=require_secrets,
         require_fresh_heartbeats=require_fresh_heartbeats,
         allow_degraded=allow_degraded,
@@ -257,6 +259,7 @@ def run_monitor_tick(
     runner_timeout_seconds: float = 90,
     hard_runner_timeout: bool = False,
     worker_parallelism: int = 1,
+    skip_shadow_workers: bool = False,
     runner: RolloutRunner = rollout.run_rollout,
 ) -> dict[str, Any]:
     live_action_count = sum(1 for enabled in (apply_guard, apply_one_org, apply_all_orgs_pending) if enabled)
@@ -280,6 +283,7 @@ def run_monitor_tick(
                 require_fresh_heartbeats=require_fresh_heartbeats,
                 allow_degraded=allow_degraded_shadow,
                 worker_parallelism=worker_parallelism,
+                skip_workers=skip_shadow_workers,
             ),
             runner_timeout_seconds,
             hard_timeout=hard_runner_timeout,
@@ -402,6 +406,11 @@ def main() -> None:
     parser.add_argument("--allow-pending-retarget", action="store_true", help="Allow one-org apply to patch stale creating/allocating slots.")
     parser.add_argument("--pending-retarget-after-seconds", type=int, default=45)
     parser.add_argument("--worker-parallelism", type=int, default=1)
+    parser.add_argument(
+        "--skip-shadow-workers",
+        action="store_true",
+        help="Use DB-only shadow preflight before live actions to reduce repeated Salad API reads.",
+    )
     parser.add_argument("--confirm-live-actions", action="store_true", help="Required for any live action.")
     parser.add_argument("--once", action="store_true")
     parser.add_argument("--loop", action="store_true")
@@ -438,6 +447,7 @@ def main() -> None:
             runner_timeout_seconds=args.runner_timeout_seconds,
             hard_runner_timeout=not args.soft_runner_timeout,
             worker_parallelism=args.worker_parallelism,
+            skip_shadow_workers=args.skip_shadow_workers,
         )
         if args.json:
             print(json_dumps(payload))

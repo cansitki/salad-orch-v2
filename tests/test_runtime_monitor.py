@@ -61,6 +61,7 @@ class RuntimeMonitorTest(unittest.TestCase):
         self.assertFalse(calls[0]["apply_workers"])
         self.assertFalse(calls[0]["apply_guard"])
         self.assertTrue(calls[0]["skip_guard"])
+        self.assertFalse(calls[0]["skip_workers"])
 
     def test_live_action_requires_confirmation(self) -> None:
         with self.assertRaises(SystemExit):
@@ -248,6 +249,27 @@ class RuntimeMonitorTest(unittest.TestCase):
         )
 
         self.assertTrue(payload["ok"])
+        self.assertEqual([call["worker_parallelism"] for call in calls], [4, 4])
+
+    def test_skip_shadow_workers_only_affects_shadow_preflight(self) -> None:
+        calls = []
+
+        def runner(**kwargs):
+            calls.append(kwargs)
+            return rollout_payload(stage=kwargs["stage"])
+
+        payload = runtime_monitor.run_monitor_tick(
+            apply_all_orgs_pending=True,
+            confirm_live_actions=True,
+            skip_shadow_workers=True,
+            worker_parallelism=4,
+            runner=runner,
+        )
+
+        self.assertTrue(payload["ok"])
+        self.assertEqual([call["stage"] for call in calls], ["shadow", "all-orgs"])
+        self.assertTrue(calls[0]["skip_workers"])
+        self.assertNotIn("skip_workers", calls[1])
         self.assertEqual([call["worker_parallelism"] for call in calls], [4, 4])
 
     def test_live_action_is_skipped_when_shadow_fails(self) -> None:

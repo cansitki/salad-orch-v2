@@ -140,12 +140,14 @@ For active fill mode, use the pending-only live monitor after the read-only
 monitor has shown safe targets:
 
 ```bash
-PRL_PEARL_FEE_RATE=0.01 python3 scripts/runtime_monitor.py --loop --interval 120 --runner-timeout-seconds 240 --price 0.64 --fee 0.01 --require-secrets --apply-all-orgs-pending --confirm-live-actions --pending-retarget-after-seconds 60 --worker-parallelism 4
+PRL_PEARL_FEE_RATE=0.01 python3 scripts/runtime_monitor.py --loop --interval 120 --runner-timeout-seconds 240 --price 0.64 --fee 0.01 --require-secrets --apply-all-orgs-pending --confirm-live-actions --pending-retarget-after-seconds 60 --worker-parallelism 4 --skip-shadow-workers
 ```
 
-This still runs a shadow gate first. It can patch stale creating/allocating
-slots across all orgs, but it does not pass `--allow-live-retarget`, so running
-slots remain protected.
+This still runs a shadow gate first, but `--skip-shadow-workers` makes that
+preflight DB-only so the same cycle does not spend Salad API requests twice. The
+action pass still performs live worker observations before patching stale
+creating/allocating slots across all orgs, but it does not pass
+`--allow-live-retarget`, so running slots remain protected.
 `--worker-parallelism 4` runs each organization in an isolated process, which is
 faster than the old sequential all-org scan without sharing watcher environment
 between orgs.

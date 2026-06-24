@@ -367,14 +367,14 @@ Current fill settings:
 | Fleet mode | fill |
 | Decision PRL price | 0.64 USD |
 | Allowed Salad priorities | batch, low |
-| Minimum candidate profit | 0 USD/day |
+| Minimum candidate profit | 0.05 USD/day |
 | Live upgrades | disabled |
 | Underperform optimization | disabled |
 | No-hash grace | 60 seconds |
 | Guard poll interval | 15 seconds |
 | Guard snapshot HTTP timeout | 4 seconds, 1 attempt |
 | Negative-profit threshold | profit < 0 USD/day |
-| Negative-profit grace | 120 seconds |
+| Negative-profit grace | 90 seconds |
 | Allocating rotation | 45 seconds |
 | Poll interval | 15 seconds |
 | No-GPU sleep trigger | only after 1 hour with no GPU found |

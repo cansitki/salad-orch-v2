@@ -223,6 +223,106 @@ class RolloutTest(unittest.TestCase):
         self.assertEqual(payload["workers"][0]["action_counts"], {"cooldown_pending": 1})
         self.assertEqual(payload["workers"][1]["action_counts"], {"patch": 1})
 
+    def test_scheduler_replacement_target_triggers_same_cycle_second_worker_pass(self) -> None:
+        initial_scheduler_payload = {
+            "mode": "base_fill",
+            "assigned_targets": 40,
+            "target_slots": 40,
+            "targets": [],
+        }
+        replacement_scheduler_payload = {
+            "mode": "base_fill",
+            "assigned_targets": 40,
+            "target_slots": 40,
+            "targets": [
+                {
+                    "org_label": "kry1",
+                    "slot_name": "prl-kry1-roi-01",
+                    "profile_key": "5090:batch:2048",
+                    "reason": "risk_off:replace_nohash_observed_profile:4070tis:low:2048:availability_probe_fallback",
+                }
+            ],
+        }
+        final_scheduler_payload = {
+            "mode": "base_fill",
+            "assigned_targets": 40,
+            "target_slots": 40,
+            "targets": [],
+        }
+        report_payload = {
+            "assigned_targets": 40,
+            "target_slots": 40,
+            "active_pending_slots": 0,
+            "live_hashing_gpus": 0,
+            "running_no_live_billable_slots": [],
+            "negative_slots": [],
+            "stuck_slots": [],
+        }
+        health_payload = {
+            "health": "healthy",
+            "target_count": 40,
+            "slot_count": 40,
+            "runtime_failures": [],
+            "guard_issues": [],
+            "stale_heartbeats": [],
+        }
+        shadow_payload = {
+            "ok": True,
+            "unsafe_targets": [],
+            "missing_targets": [],
+            "mismatches": [],
+            "warnings": [],
+            "diversification": {"unique_target_profiles": 4, "top_profile_share": 0.25},
+        }
+        worker_passes = [
+            [
+                {
+                    "org": "kry1",
+                    "apply": True,
+                    "targets": 10,
+                    "action_counts": {"observe": 1},
+                    "results": [{"slot_name": "roi01", "action": "observe", "ok": True}],
+                }
+            ],
+            [
+                {
+                    "org": "kry1",
+                    "apply": True,
+                    "targets": 10,
+                    "action_counts": {"patch": 1},
+                    "results": [{"slot_name": "roi01", "action": "patch", "ok": True}],
+                }
+            ],
+        ]
+
+        with (
+            mock.patch.object(
+                rollout.fleet_scheduler,
+                "schedule_once",
+                side_effect=[initial_scheduler_payload, replacement_scheduler_payload, final_scheduler_payload],
+            ) as schedule_once,
+            mock.patch.object(rollout.reporter, "build_report", return_value=report_payload),
+            mock.patch.object(rollout.health, "build_health", return_value=health_payload),
+            mock.patch.object(rollout.shadow_compare, "build_shadow_compare", return_value=shadow_payload),
+            mock.patch.object(rollout, "_run_org_workers", side_effect=worker_passes) as run_workers,
+        ):
+            payload = rollout.run_rollout(
+                stage="one-org",
+                org_label="kry1",
+                db_path=self.db_path,
+                price=0.64,
+                fee=0.01,
+                apply_workers=True,
+                allow_pending_retarget=True,
+                skip_guard=True,
+            )
+
+        self.assertEqual(run_workers.call_count, 2)
+        self.assertEqual(schedule_once.call_count, 3)
+        self.assertEqual(len(payload["workers"]), 2)
+        self.assertEqual(payload["workers"][0]["action_counts"], {"observe": 1})
+        self.assertEqual(payload["workers"][1]["action_counts"], {"patch": 1})
+
     def test_parallel_org_workers_return_large_payloads_without_pool_deadlock(self) -> None:
         def fake_run_once(**kwargs):
             return {

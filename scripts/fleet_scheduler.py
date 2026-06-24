@@ -64,7 +64,7 @@ def build_targets(
     cooldowns = cooldowns or set()
     guard_targets = guard_targets or {}
     scores_by_key = {str(score["profile_key"]): score for score in scores}
-    pending_target_protect_seconds = max(0, env_int("PRL_PENDING_TARGET_PROTECT_SECONDS", 180))
+    pending_target_protect_seconds = max(0, env_int("PRL_PENDING_TARGET_PROTECT_SECONDS", 120))
     min_profit_day = config.risk.min_profit_for_mode("optimize" if mode == "optimize" else "fill")
     assigned_by_org_profile: dict[tuple[str, str], int] = {}
     targets: list[dict[str, Any]] = []

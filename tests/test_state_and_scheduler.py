@@ -1111,6 +1111,46 @@ class StateAndSchedulerTest(unittest.TestCase):
         self.assertEqual(row["protected"], 0)
         self.assertIn("protected_pending_observed_profile", row["reason"])
 
+    def test_scheduler_default_pending_target_protection_is_120_seconds(self) -> None:
+        config = load_config()
+        original = os.environ.get("PRL_PENDING_TARGET_PROTECT_SECONDS")
+        os.environ.pop("PRL_PENDING_TARGET_PROTECT_SECONDS", None)
+        try:
+            with state_db.connect(self.db_path) as conn:
+                state_db.init_db(conn)
+                state_db.sync_config(conn, config)
+                observed_at = (datetime.now(UTC) - timedelta(seconds=130)).isoformat(timespec="seconds")
+                state_db.update_slot_observation(
+                    conn,
+                    {
+                        "org_label": "kray",
+                        "slot_name": "prl-kray-roi-01",
+                        "observed_profile_key": "4090:batch:2048",
+                        "observed_status": "allocating",
+                        "updated_at_utc": observed_at,
+                    },
+                )
+                conn.commit()
+            fleet_scheduler.schedule_once(db_path=self.db_path, price=0.64, fee=0.01, dry_run=False)
+        finally:
+            if original is None:
+                os.environ.pop("PRL_PENDING_TARGET_PROTECT_SECONDS", None)
+            else:
+                os.environ["PRL_PENDING_TARGET_PROTECT_SECONDS"] = original
+
+        with state_db.connect(self.db_path) as conn:
+            row = conn.execute(
+                """
+                SELECT profile_key, protected, reason
+                FROM slot_targets
+                WHERE org_label = 'kray' AND slot_name = 'prl-kray-roi-01'
+                """
+            ).fetchone()
+
+        self.assertNotEqual(row["profile_key"], "4090:batch:2048")
+        self.assertEqual(row["protected"], 0)
+        self.assertIn("replace_nohash_observed_profile", row["reason"])
+
     def test_scheduler_retargets_fresh_pending_profile_under_cooldown(self) -> None:
         config = load_config()
         original = os.environ.get("PRL_PENDING_TARGET_PROTECT_SECONDS")

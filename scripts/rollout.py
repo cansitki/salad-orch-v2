@@ -77,6 +77,16 @@ def _worker_payloads_have_action(worker_payloads: list[dict[str, Any]], action: 
     return False
 
 
+def _scheduler_payload_has_replacement_targets(scheduler_payload: dict[str, Any]) -> bool:
+    for target in scheduler_payload.get("targets") or []:
+        reason = str(target.get("reason") or "")
+        if ":replace_nohash_observed_profile:" in reason:
+            return True
+        if ":replace_negative_observed_profile:" in reason:
+            return True
+    return False
+
+
 def evaluate_gates(
     *,
     db_path: str | None,
@@ -420,7 +430,10 @@ def run_rollout(
             width=schedule_width,
             dry_run=False,
         )
-        if apply_workers and _worker_payloads_have_action(worker_payloads, "cooldown_pending"):
+        if apply_workers and (
+            _worker_payloads_have_action(worker_payloads, "cooldown_pending")
+            or _scheduler_payload_has_replacement_targets(scheduler_payload)
+        ):
             second_pass_payloads = _run_org_workers(
                 worker_orgs,
                 db_path=db_path,

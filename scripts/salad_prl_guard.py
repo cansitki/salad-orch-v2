@@ -23,6 +23,9 @@ STOPPED_SLOT_STATE_PATH = pathlib.Path(
 OBSERVATION_STATE_PATH = pathlib.Path(
     os.environ.get("PRL_GUARD_OBSERVATION_STATE_PATH", str(STATE_DIR / "prl_guard_observations.json"))
 )
+SLOT_ACTION_STATE_PATH = pathlib.Path(
+    os.environ.get("PRL_SLOT_ACTION_STATE_PATH", str(STATE_DIR / "prl_slot_actions.json"))
+)
 FALLBACK_PRL_PRICE = float(os.environ.get("PRL_NOHASH_FALLBACK_PRICE", "0.62"))
 PRICE_BAND_USD = float(os.environ.get("PRL_PRICE_BAND_USD", "0.02"))
 DECISION_PRICE_CAP_USD = float(os.environ.get("PRL_DECISION_PRICE_CAP_USD", "0.63"))
@@ -295,6 +298,47 @@ def recent_stopped_slot_age_seconds(org: str, slot: str) -> float | None:
     return max(0.0, time.time() - stopped_at)
 
 
+def safe_slot_action_token(org: str, slot: str) -> str:
+    text = f"{org}__{slot}"
+    return "".join(char if char.isalnum() or char in {"-", "_"} else "_" for char in text)
+
+
+def slot_action_detail_path(org: str, slot: str) -> pathlib.Path:
+    return SLOT_ACTION_STATE_PATH.parent / f"{SLOT_ACTION_STATE_PATH.stem}.d" / f"{safe_slot_action_token(org, slot)}.json"
+
+
+def slot_action_with_age(entry: Any) -> dict[str, Any] | None:
+    if not isinstance(entry, dict):
+        return None
+    try:
+        action_at = float(entry.get("at") or 0)
+    except (TypeError, ValueError):
+        return None
+    if action_at <= 0:
+        return None
+    return {
+        **entry,
+        "age_seconds": max(0.0, time.time() - action_at),
+    }
+
+
+def recent_slot_action(org: str, slot: str) -> dict[str, Any] | None:
+    try:
+        detail = json.loads(slot_action_detail_path(org, slot).read_text(encoding="utf-8"))
+    except Exception:
+        detail = None
+    action = slot_action_with_age(detail)
+    if action is not None:
+        return action
+    try:
+        state = json.loads(SLOT_ACTION_STATE_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    if not isinstance(state, dict):
+        return None
+    return slot_action_with_age(state.get(f"{org}/{slot}") or state.get(slot))
+
+
 BMU_WATCH_ENV = {
     "PRL_WATCH_NAME": "bmu-prl-watch",
     "PRL_WATCH_LOG": str(STATE_DIR / "logs" / "bmu_prl_watch.log"),
@@ -515,6 +559,8 @@ def retarget_slot(org: str, slot: str, reason: str) -> dict[str, Any] | None:
             patch=True,
         )
         module.SLOT_LAST_PATCH[slot] = time.time()
+        if hasattr(module, "record_slot_action_state"):
+            module.record_slot_action_state(slot, "patched", reason, candidate.label)
         module.log(
             "slot_patched",
             slot=slot,
@@ -953,6 +999,25 @@ def tick() -> None:
                 requested_gpus=item.get("requested_gpus"),
             )
             continue
+        recent_action = recent_slot_action(org, slot)
+        if recent_action is not None:
+            action_age = float(recent_action.get("age_seconds") or 0)
+            if action_age < STUCK_NON_LIVE_RETARGET_COOLDOWN_SECONDS:
+                log(
+                    "stuck_non_live_slot_recent_action_cooldown",
+                    org=org,
+                    slot=slot,
+                    action=recent_action.get("action"),
+                    action_age_seconds=round(action_age, 1),
+                    cooldown_seconds=STUCK_NON_LIVE_RETARGET_COOLDOWN_SECONDS,
+                    state_age_seconds=item.get("state_age_seconds"),
+                    status=item.get("status"),
+                    running=item.get("running"),
+                    creating=item.get("creating"),
+                    allocating=item.get("allocating"),
+                    requested_gpus=item.get("requested_gpus"),
+                )
+                continue
         last_retargeted_at = STUCK_NON_LIVE_RETARGETED_AT.get(key)
         if last_retargeted_at is not None:
             cooldown_age = time.time() - last_retargeted_at

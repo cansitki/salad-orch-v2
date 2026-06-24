@@ -19,6 +19,9 @@ SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parent
 STATE_DIR = pathlib.Path(os.environ.get("SALAD_PRL_STATE_DIR", str(REPO_ROOT / "state")))
 ENV = pathlib.Path(os.environ.get("SALAD_PRL_ENV", str(REPO_ROOT / ".env")))
+SLOT_ACTION_STATE_PATH = pathlib.Path(
+    os.environ.get("PRL_SLOT_ACTION_STATE_PATH", str(STATE_DIR / "prl_slot_actions.json"))
+)
 
 
 def load_env_file() -> None:
@@ -378,6 +381,54 @@ def save_no_gpu_state() -> None:
         "updated_at": now().isoformat(timespec="seconds"),
     }
     NO_GPU_STATE_PATH.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def safe_slot_action_token(org: str, slot: str) -> str:
+    text = f"{org}__{slot}"
+    return "".join(char if char.isalnum() or char in {"-", "_"} else "_" for char in text)
+
+
+def slot_action_detail_path(org: str, slot: str) -> pathlib.Path:
+    return SLOT_ACTION_STATE_PATH.parent / f"{SLOT_ACTION_STATE_PATH.stem}.d" / f"{safe_slot_action_token(org, slot)}.json"
+
+
+def write_slot_action_detail(org: str, slot: str, payload: dict[str, Any]) -> None:
+    path = slot_action_detail_path(org, slot)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(f"{path.suffix}.tmp")
+    tmp.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
+    tmp.replace(path)
+
+
+def record_slot_action_state(slot: str, action: str, reason: str = "", candidate: str = "") -> None:
+    try:
+        SLOT_ACTION_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            state = json.loads(SLOT_ACTION_STATE_PATH.read_text(encoding="utf-8"))
+        except Exception:
+            state = {}
+        if not isinstance(state, dict):
+            state = {}
+        now_ts = time.time()
+        payload = {
+            "at": now_ts,
+            "at_utc": now().isoformat(timespec="seconds"),
+            "org": PUBLIC_ORG,
+            "slot": slot,
+            "action": action,
+            "reason": reason,
+            "candidate": candidate,
+        }
+        state[f"{PUBLIC_ORG}/{slot}"] = payload
+        write_slot_action_detail(PUBLIC_ORG, slot, payload)
+        if ORG != PUBLIC_ORG:
+            state[f"{ORG}/{slot}"] = payload
+            write_slot_action_detail(ORG, slot, payload)
+        tmp = SLOT_ACTION_STATE_PATH.with_suffix(f"{SLOT_ACTION_STATE_PATH.suffix}.tmp")
+        tmp.write_text(json.dumps(state, sort_keys=True) + "\n", encoding="utf-8")
+        tmp.replace(SLOT_ACTION_STATE_PATH)
+    except Exception as exc:
+        log("slot_action_state_write_failed", slot=slot, action=action, error=type(exc).__name__, detail=str(exc)[:180])
 
 
 def remove_no_gpu_state() -> None:
@@ -1474,6 +1525,7 @@ def create_slot(slot: str, candidate: Candidate, *, start_after: bool = True) ->
     try:
         request("POST", f"/organizations/{ORG}/projects/{PROJECT}/containers", payload)
         SLOT_LAST_PATCH[slot] = time.time()
+        record_slot_action_state(slot, "created", "create_slot", candidate.label)
         log("slot_created", slot=slot, candidate=candidate.label, gpu_ids=candidate.gpu_ids, memory=candidate.memory)
         if start_after:
             start_slot(slot, "after_create")
@@ -1495,6 +1547,7 @@ def patch_slot(slot: str, candidate: Candidate, reason: str, *, start_after: boo
             patch=True,
         )
         SLOT_LAST_PATCH[slot] = time.time()
+        record_slot_action_state(slot, "patched", reason, candidate.label)
         log("slot_patched", slot=slot, candidate=candidate.label, gpu_ids=candidate.gpu_ids, memory=candidate.memory, reason=reason)
         if start_after:
             start_slot(slot, f"after_patch:{reason}")
@@ -1533,6 +1586,7 @@ def start_slot(slot: str, reason: str) -> None:
     try:
         request("POST", f"/organizations/{ORG}/projects/{PROJECT}/containers/{slot}/start")
         SLOT_LAST_PATCH[slot] = time.time()
+        record_slot_action_state(slot, "started", reason)
         clear_no_credits_state("slot_start_requested", slot=slot, start_reason=reason)
         log("slot_start_requested", slot=slot, reason=reason)
     except requests.HTTPError as exc:

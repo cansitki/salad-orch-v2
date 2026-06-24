@@ -7,7 +7,7 @@ import os
 import pathlib
 import sys
 import time
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import fleet_scheduler
@@ -258,6 +258,15 @@ def planned_action(
     elif counts["running"] + counts["creating"] + counts["allocating"] <= 0:
         action = "start"
         reason = "target_stopped_or_empty"
+    elif counts["creating"] + counts["allocating"] > 0:
+        pending_age = age_seconds(target.get("observed_status_since_utc"))
+        if pending_age is not None and pending_age >= pending_retarget_after_seconds:
+            action = "cooldown_pending"
+            reason = f"stale_pending_same_profile:{current or 'unknown'}:age_{pending_age:.1f}"
+        else:
+            action = "observe"
+            age_text = "unknown" if pending_age is None else f"{pending_age:.1f}"
+            reason = f"target_pending_wait:age_{age_text}_lt_{pending_retarget_after_seconds}"
     else:
         action = "observe"
         reason = "target_already_active_or_pending"
@@ -284,7 +293,7 @@ def candidate_from_target(watch: Any, target: dict[str, Any]) -> Any:
 
 
 def execute_action(watch: Any, target: dict[str, Any], plan: dict[str, Any], *, apply: bool) -> dict[str, Any]:
-    if not apply or plan["action"] == "observe":
+    if not apply or plan["action"] in {"observe", "cooldown_pending"}:
         return {"ok": True, "applied": False, **plan}
     candidate = candidate_from_target(watch, target)
     slot_name = str(target["slot_name"])
@@ -334,6 +343,8 @@ def run_once(
     results: list[dict[str, Any]] = []
     attempt_rows: list[dict[str, Any]] = []
     observation_rows: list[dict[str, Any]] = []
+    cooldown_rows: list[dict[str, Any]] = []
+    pending_profile_cooldown_seconds = env_int("PRL_PENDING_PROFILE_COOLDOWN_SECONDS", 600)
     for target in targets:
         started = time.monotonic()
         if should_skip_live_hashing_target(target, apply=apply, allow_live_retarget=allow_live_retarget):
@@ -357,6 +368,22 @@ def run_once(
                 result = {"ok": False, "applied": False, **plan, "error": type(exc).__name__}
                 ok = False
                 error = f"{type(exc).__name__}: {str(exc)[:180]}"
+        if apply and ok and result.get("action") == "cooldown_pending":
+            now = datetime.now(UTC)
+            cooldown_rows.append(
+                {
+                    "org_label": org_label,
+                    "slot_name": str(target["slot_name"]),
+                    "profile_key": str(target["profile_key"]),
+                    "no_gpu_since_utc": target.get("observed_status_since_utc") or utc_now(),
+                    "sleep_until_utc": (now + timedelta(seconds=max(60, pending_profile_cooldown_seconds))).isoformat(
+                        timespec="seconds"
+                    ),
+                    "attempts": 1,
+                    "reason": result.get("reason") or "stale_pending_same_profile",
+                    "updated_at_utc": now.isoformat(timespec="seconds"),
+                }
+            )
         attempt_rows.append(
             {
                 "at_utc": utc_now(),
@@ -386,6 +413,8 @@ def run_once(
             state_db.record_attempt(conn, attempt)
         for observation in observation_rows:
             state_db.update_slot_observation(conn, observation)
+        for cooldown in cooldown_rows:
+            state_db.record_search_state(conn, cooldown)
         action_counts: dict[str, int] = {}
         for result in results:
             action_counts[str(result["action"])] = action_counts.get(str(result["action"]), 0) + 1

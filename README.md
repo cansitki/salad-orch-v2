@@ -124,6 +124,9 @@ SALAD_API_KEY_2
 SALAD_API_KEY_KRY1
 ```
 
+No SafeTrade API key is needed. SafeTrade is used only through its public
+PRL/USDT ticker endpoint for price discovery.
+
 Start fill mode:
 
 ```bash
@@ -136,6 +139,114 @@ Generate a profit snapshot:
 ```bash
 python3 scripts/salad_prl_profit_snapshot.py --price 0.64
 ```
+
+## Mining, Pool, And Exchange
+
+### What We Mine
+
+The fleet mines PearlFortune PRL.
+
+The miner runs inside SaladCloud GPU container groups. Each container downloads
+the PearlFortune miner release and connects to the PearlFortune pool.
+
+### Pool
+
+Pool endpoint used by the miner:
+
+```text
+global.pearlfortune.org:443
+```
+
+Pool APIs used by the automation:
+
+| Endpoint | Used for |
+| --- | --- |
+| `https://pearlfortune.org/api/v1/miners/<PRL_WALLET>/connections` | Maps live pool workers back to Salad slots and reads worker hashrate. |
+| `https://pearlfortune.org/api/v1/stats/pool-fee-rate` | Reads pool fee so revenue uses net PRL, not gross PRL. |
+| `https://pearlfortune.org/api/v1/summary?hours=24` | Calculates recent PRL per TH per day from hourly pool rewards and pool hashrate. |
+| `https://pearlfortune.org/api/v1/market/price` | One public PRL/USD market price source. |
+
+`PRL_WALLET` is required because the pool worker endpoint is wallet-scoped.
+The public repo does not include the live wallet value.
+
+### Miner
+
+Current miner source:
+
+```text
+https://github.com/pearlfortune/pearl-miner/releases/tag/v.1.1.8
+```
+
+Current package downloaded by the container:
+
+```text
+pearlfortune-v1.1.8.tar.gz
+```
+
+Current binary:
+
+```text
+miner-cuda12
+```
+
+Current miner command shape:
+
+```bash
+miner-cuda12 --proxy global.pearlfortune.org:443 --address "$PRL_WALLET" --worker "$WORKER" -gpu
+```
+
+The container bootstrap installs basic Linux packages, downloads the miner
+tarball, extracts it under `/opt/pearlfortune`, and restarts the miner loop if
+the miner exits.
+
+### Exchange / Price Source
+
+SafeTrade is the exchange reference currently used for PRL/USDT price checks.
+
+Public ticker endpoint:
+
+```text
+https://safe.trade/api/v2/peatio/public/markets/prlusdt/tickers
+```
+
+The code reads these SafeTrade fields:
+
+```text
+last
+buy
+sell
+```
+
+It uses the lowest positive SafeTrade value as the SafeTrade-side price. That
+keeps the estimate conservative.
+
+SafeTrade is not used for trading by these scripts. It is used for public price
+data only.
+
+### Price Selection
+
+The live PRL price report uses two sources:
+
+1. PearlFortune market price API.
+2. SafeTrade PRL/USDT ticker.
+
+When a live market price is needed, the code takes the lowest positive value
+available across those sources.
+
+During fill mode, live price does not control purchases. Fill mode uses a fixed
+decision price:
+
+```text
+0.64 USD per PRL
+```
+
+During optimize mode, the current configured decision price is:
+
+```text
+0.62 USD per PRL
+```
+
+This avoids overbuying based on a short-lived live price spike.
 
 ## Main Components
 
@@ -199,6 +310,18 @@ cost_day    = Salad hourly GPU price * 24
 profit_day  = revenue_day - cost_day
 ```
 
+The net PRL per TH per day is derived from recent PearlFortune pool stats:
+
+```text
+gross_prl_per_th = hourly_pool_reward / (hourly_pool_hashrate / 1e12)
+net_prl_per_th   = gross_prl_per_th * (1 - pool_fee_rate)
+```
+
+The pool worker list is matched to Salad slots through the worker name pattern.
+If Salad shows a billable running slot but the matching PearlFortune worker is
+missing or has zero fresh hashrate, the guard treats it as no-hash after the
+grace period.
+
 ### Nonstop Supervisor
 
 The supervisor keeps the tmux sessions alive. It also switches modes:
@@ -218,6 +341,10 @@ pearl-miner v1.1.8
 binary: miner-cuda12
 proxy: global.pearlfortune.org:443
 ```
+
+The miner is downloaded from the PearlFortune GitHub release at container start.
+The automation does not bake a custom image; it uses a CUDA runtime image and
+bootstraps the miner on startup.
 
 The worker naming pattern includes:
 
@@ -414,6 +541,16 @@ SafeTrade PRL/USDT ticker
 
 Live price is useful for reporting current profit, but not for fill decisions.
 Fill decisions use the fixed conservative price.
+
+Source details:
+
+| Source | Endpoint | Fields |
+| --- | --- | --- |
+| PearlFortune market | `https://pearlfortune.org/api/v1/market/price` | `data.price_usd` |
+| SafeTrade PRL/USDT | `https://safe.trade/api/v2/peatio/public/markets/prlusdt/tickers` | `ticker.last`, `ticker.buy`, `ticker.sell` |
+
+The reported live price uses the lowest positive available value from the source
+set, so it is conservative when sources disagree.
 
 Example live check output from 2026-06-24:
 

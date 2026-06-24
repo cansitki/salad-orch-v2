@@ -223,6 +223,30 @@ class RolloutTest(unittest.TestCase):
         self.assertEqual(payload["workers"][0]["action_counts"], {"cooldown_pending": 1})
         self.assertEqual(payload["workers"][1]["action_counts"], {"patch": 1})
 
+    def test_parallel_org_workers_return_large_payloads_without_pool_deadlock(self) -> None:
+        def fake_run_once(**kwargs):
+            return {
+                "org": kwargs["org_label"],
+                "apply": kwargs["apply"],
+                "targets": 10,
+                "action_counts": {"observe": 1},
+                "results": [{"slot_name": "roi01", "action": "observe", "blob": "x" * 1_000_000}],
+            }
+
+        with mock.patch.object(rollout.org_worker, "run_once", side_effect=fake_run_once):
+            payloads = rollout._run_org_workers(
+                ["kry1", "kray"],
+                db_path=self.db_path,
+                apply_workers=False,
+                allow_live_retarget=False,
+                allow_pending_retarget=False,
+                pending_retarget_after_seconds=60,
+                worker_parallelism=2,
+            )
+
+        self.assertEqual([payload["org"] for payload in payloads], ["kry1", "kray"])
+        self.assertEqual(len(payloads[0]["results"][0]["blob"]), 1_000_000)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -2,8 +2,9 @@
 from __future__ import annotations
 
 import argparse
-from concurrent.futures import ProcessPoolExecutor
+import multiprocessing
 import os
+import queue
 import sys
 from typing import Any
 
@@ -199,6 +200,52 @@ def _run_org_worker_task(kwargs: dict[str, Any]) -> dict[str, Any]:
     return org_worker.run_once(**kwargs)
 
 
+def _run_org_worker_process(kwargs: dict[str, Any], result_queue: Any) -> None:
+    try:
+        result_queue.put(("ok", _run_org_worker_task(kwargs)))
+    except BaseException as exc:
+        result_queue.put(("error", type(exc).__name__, str(exc)[:500]))
+
+
+def _join_worker_process(process: Any) -> None:
+    process.join(5)
+    if process.is_alive():
+        process.terminate()
+        process.join(5)
+    if process.is_alive():
+        process.kill()
+        process.join(5)
+
+
+def _run_org_worker_batch(tasks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    ctx = multiprocessing.get_context("fork")
+    workers = []
+    for task in tasks:
+        result_queue = ctx.Queue(maxsize=1)
+        process = ctx.Process(target=_run_org_worker_process, args=(task, result_queue))
+        process.start()
+        workers.append((task, process, result_queue))
+
+    results: list[dict[str, Any]] = []
+    for task, process, result_queue in workers:
+        while True:
+            try:
+                item = result_queue.get(timeout=0.5)
+                break
+            except queue.Empty:
+                if not process.is_alive():
+                    process.join(5)
+                    raise RuntimeError(
+                        f"org worker {task['org_label']} exited without result rc={process.exitcode}"
+                    )
+        _join_worker_process(process)
+        if item[0] == "ok":
+            results.append(item[1])
+        else:
+            raise RuntimeError(f"org worker {task['org_label']} failed: {item[1]}: {item[2]}")
+    return results
+
+
 def _run_org_workers(
     orgs: list[str],
     *,
@@ -226,8 +273,10 @@ def _run_org_workers(
     max_workers = min(worker_parallelism, len(tasks))
     # org_worker loads the legacy watcher through process-global environment
     # variables. Processes keep each organization isolated; threads would not.
-    with ProcessPoolExecutor(max_workers=max_workers) as executor:
-        return list(executor.map(_run_org_worker_task, tasks))
+    results: list[dict[str, Any]] = []
+    for index in range(0, len(tasks), max_workers):
+        results.extend(_run_org_worker_batch(tasks[index : index + max_workers]))
+    return results
 
 
 def run_rollout(

@@ -248,6 +248,21 @@ class RolloutTest(unittest.TestCase):
         self.assertNotIn("blob", payloads[0]["results"][0])
         self.assertEqual(payloads[0]["results"][0]["action"], "observe")
 
+    def test_parallel_org_worker_batches_do_not_share_api_key(self) -> None:
+        tasks = [
+            {"org_label": "kray", "_api_key_env": "SALAD_API_KEY_2"},
+            {"org_label": "kry1", "_api_key_env": "SALAD_API_KEY_KRY1"},
+            {"org_label": "kray2", "_api_key_env": "SALAD_API_KEY_2"},
+            {"org_label": "kray3", "_api_key_env": "SALAD_API_KEY_2"},
+        ]
+
+        batches = rollout._batch_org_worker_tasks(tasks, max_workers=4)
+
+        self.assertEqual(
+            [[task["org_label"] for task in batch] for batch in batches],
+            [["kray", "kry1"], ["kray2"], ["kray3"]],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

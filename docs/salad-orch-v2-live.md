@@ -153,7 +153,9 @@ startup, then runs guard on every third cycle when DB state reports no-hash or
 negative slots.
 `--worker-parallelism 4` runs each organization in an isolated process, which is
 faster than the old sequential all-org scan without sharing watcher environment
-between orgs.
+between orgs. The rollout layer only runs one organization per Salad API key in
+the same worker batch, so orgs sharing one key do not exhaust the same
+per-minute request budget at once.
 
 Stop it:
 

@@ -326,7 +326,9 @@ unless `--apply-workers` or `--apply-guard` is passed.
    or negative slots.
    `--worker-parallelism 4` runs each organization in an isolated process so
    the legacy watcher environment cannot leak between orgs while the fill scan
-   finishes faster.
+   finishes faster. The rollout layer only runs one organization per Salad API
+   key in the same worker batch, so orgs sharing one key do not exhaust the
+   same per-minute request budget at once.
 
 3. Apply one org only:
 

@@ -197,7 +197,8 @@ def _worker_orgs_for_stage(stage: str, org_label: str | None) -> list[str]:
 
 
 def _run_org_worker_task(kwargs: dict[str, Any]) -> dict[str, Any]:
-    return _rollout_worker_payload(org_worker.run_once(**kwargs))
+    worker_kwargs = {key: value for key, value in kwargs.items() if key != "_api_key_env"}
+    return _rollout_worker_payload(org_worker.run_once(**worker_kwargs))
 
 
 def _rollout_worker_payload(payload: dict[str, Any]) -> dict[str, Any]:
@@ -266,6 +267,25 @@ def _run_org_worker_batch(tasks: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return results
 
 
+def _batch_org_worker_tasks(tasks: list[dict[str, Any]], max_workers: int) -> list[list[dict[str, Any]]]:
+    batches: list[list[dict[str, Any]]] = []
+    remaining = list(tasks)
+    while remaining:
+        batch: list[dict[str, Any]] = []
+        used_api_keys: set[str] = set()
+        next_remaining: list[dict[str, Any]] = []
+        for task in remaining:
+            api_key_env = str(task.get("_api_key_env") or task["org_label"])
+            if len(batch) < max_workers and api_key_env not in used_api_keys:
+                batch.append(task)
+                used_api_keys.add(api_key_env)
+            else:
+                next_remaining.append(task)
+        batches.append(batch)
+        remaining = next_remaining
+    return batches
+
+
 def _run_org_workers(
     orgs: list[str],
     *,
@@ -276,9 +296,12 @@ def _run_org_workers(
     pending_retarget_after_seconds: int,
     worker_parallelism: int,
 ) -> list[dict[str, Any]]:
+    config = load_config()
+    api_key_env_by_org = {org.label: org.api_key_env for org in config.enabled_orgs()}
     tasks = [
         {
             "org_label": org,
+            "_api_key_env": api_key_env_by_org.get(org),
             "db_path": db_path,
             "apply": apply_workers,
             "allow_live_retarget": allow_live_retarget,
@@ -293,9 +316,11 @@ def _run_org_workers(
     max_workers = min(worker_parallelism, len(tasks))
     # org_worker loads the legacy watcher through process-global environment
     # variables. Processes keep each organization isolated; threads would not.
+    # Organizations sharing one Salad API key are also kept out of the same
+    # process batch so they do not consume the same per-minute budget at once.
     results: list[dict[str, Any]] = []
-    for index in range(0, len(tasks), max_workers):
-        results.extend(_run_org_worker_batch(tasks[index : index + max_workers]))
+    for batch in _batch_org_worker_tasks(tasks, max_workers):
+        results.extend(_run_org_worker_batch(batch))
     return results
 
 

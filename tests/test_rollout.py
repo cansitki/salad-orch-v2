@@ -1,0 +1,90 @@
+from __future__ import annotations
+
+import pathlib
+import sys
+import tempfile
+import unittest
+
+
+ROOT = pathlib.Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "scripts"))
+
+import rollout
+import state_db
+
+
+class RolloutTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.db_path = str(pathlib.Path(self.tmpdir.name) / "fleet.db")
+
+    def tearDown(self) -> None:
+        self.tmpdir.cleanup()
+
+    def test_shadow_db_only_rollout_builds_safe_targets(self) -> None:
+        payload = rollout.run_rollout(
+            stage="shadow",
+            db_path=self.db_path,
+            price=0.64,
+            fee=0.01,
+            skip_workers=True,
+            skip_guard=True,
+        )
+        self.assertTrue(payload["gates"]["ok"])
+        self.assertEqual(payload["gates"]["coverage"], {"assigned_targets": 40, "target_slots": 40})
+        self.assertEqual(payload["health"]["health"], "healthy")
+        self.assertEqual(payload["report"]["assigned_targets"], 40)
+
+    def test_gate_fails_when_runtime_failure_exists(self) -> None:
+        scheduler_payload = {
+            "mode": "base_fill",
+            "assigned_targets": 40,
+            "target_slots": 40,
+        }
+        report_payload = {
+            "running_no_live_billable_slots": [],
+            "negative_slots": [],
+        }
+        health_payload = {
+            "health": "degraded",
+            "runtime_failures": [{"component": "guard"}],
+            "stale_heartbeats": [],
+        }
+        gates = rollout.evaluate_gates(
+            db_path=self.db_path,
+            scheduler_payload=scheduler_payload,
+            worker_payloads=[],
+            guard_payload=None,
+            report_payload=report_payload,
+            health_payload=health_payload,
+            allow_degraded=False,
+        )
+        self.assertFalse(gates["ok"])
+        self.assertEqual(gates["failed"][0]["gate"], "runtime_failures")
+
+    def test_gate_fails_when_target_coverage_is_incomplete(self) -> None:
+        gates = rollout.evaluate_gates(
+            db_path=self.db_path,
+            scheduler_payload={"mode": "base_fill", "assigned_targets": 39, "target_slots": 40},
+            worker_payloads=[],
+            guard_payload=None,
+            report_payload={"running_no_live_billable_slots": [], "negative_slots": []},
+            health_payload={"health": "healthy", "runtime_failures": [], "stale_heartbeats": []},
+            allow_degraded=False,
+        )
+        self.assertFalse(gates["ok"])
+        self.assertEqual(gates["failed"][0]["gate"], "target_coverage")
+
+    def test_all_org_live_apply_requires_confirmation(self) -> None:
+        with self.assertRaises(SystemExit):
+            rollout.run_rollout(
+                stage="all-orgs",
+                db_path=self.db_path,
+                apply_workers=True,
+                skip_workers=True,
+                skip_guard=True,
+            )
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -107,6 +107,7 @@ The runnable code lives in `scripts/`.
 | `scripts/supervisor.py` | Scheduler control tick and tmux process plan for the new stack. |
 | `scripts/reporter.py` | CLI/JSON status report from the scheduler DB. |
 | `scripts/health.py` | Read-only health check for targets, stale heartbeats, guard issues, and runtime failures. |
+| `scripts/rollout.py` | Controlled shadow/one-org/all-org/guard rollout runner with safety gates. |
 | `.env.example` | Safe template for local secrets and runtime settings. |
 
 The current operating plan is documented in `docs/current-operations.md`.
@@ -217,30 +218,34 @@ state with `refresh_error=...` instead of blocking indefinitely.
 
 Use this path when moving from shadow mode to live control.
 
-1. Shadow all orgs:
+The recommended entrypoint is `scripts/rollout.py`. It is read-only by default
+unless `--apply-workers` or `--apply-guard` is passed.
+
+1. DB-only smoke test:
 
    ```bash
-   PRL_PEARL_FEE_RATE=0.01 python3 scripts/fleet_scheduler.py --price 0.64 --fee 0.01
-   python3 scripts/org_worker.py --org kry1
-   python3 scripts/guard.py --once
-   python3 scripts/health.py
+   PRL_PEARL_FEE_RATE=0.01 python3 scripts/rollout.py --stage shadow --price 0.64 --fee 0.01 --skip-workers --skip-guard
    ```
 
-2. Apply one org only:
+2. Shadow all orgs with live read-only worker observations:
 
    ```bash
-   python3 scripts/org_worker.py --org kry1 --apply
-   python3 scripts/reporter.py --refresh --refresh-timeout 45
-   python3 scripts/health.py
+   PRL_PEARL_FEE_RATE=0.01 python3 scripts/rollout.py --stage shadow --price 0.64 --fee 0.01 --require-secrets
    ```
 
-3. Enable guard v2 live actions only after the dry-run decisions look correct:
+3. Apply one org only:
 
    ```bash
-   python3 scripts/guard.py --once --apply
+   PRL_PEARL_FEE_RATE=0.01 python3 scripts/rollout.py --stage one-org --org kry1 --price 0.64 --fee 0.01 --apply-workers --require-secrets
    ```
 
-4. Start tmux supervision for the full new stack:
+4. Enable guard v2 live actions only after the dry-run decisions look correct:
+
+   ```bash
+   python3 scripts/rollout.py --stage guard-apply --apply-guard --require-secrets
+   ```
+
+5. Start tmux supervision for the full new stack:
 
    ```bash
    python3 scripts/supervisor.py --print-plan
@@ -250,6 +255,12 @@ Use this path when moving from shadow mode to live control.
 The live rule is staged: fill empty/stopped slots first, keep profitable hashing
 slots protected, rotate no-hash after 60 seconds, rotate negative slots after 90
 seconds, then optimize only after the enabled orgs are full or manually approved.
+
+Full-org live worker apply requires an explicit confirmation flag:
+
+```bash
+PRL_PEARL_FEE_RATE=0.01 python3 scripts/rollout.py --stage all-orgs --price 0.64 --fee 0.01 --apply-workers --confirm-all-orgs --require-secrets
+```
 
 Start fill mode:
 

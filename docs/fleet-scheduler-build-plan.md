@@ -431,6 +431,22 @@ Required output:
 This script must not call live Salad APIs. It reads the scheduler DB only, so it
 can be used frequently by `/goal` supervision without triggering API churn.
 
+### `rollout.py`
+
+Controlled rollout runner for live testing.
+
+Responsibilities:
+
+- run scheduler target assignment
+- optionally run org workers in shadow or apply mode
+- optionally run guard v2 in dry-run or apply mode
+- collect reporter and health output
+- enforce safety gates before the operator expands scope
+- require explicit all-org confirmation before full live worker apply
+
+Default behavior must stay non-destructive. Live actions require
+`--apply-workers` or `--apply-guard`.
+
 ## GPU Risk Tiers
 
 Use conservative 5% Pearl fee for tiers.
@@ -704,6 +720,7 @@ Implemented files:
 - `scripts/supervisor.py`
 - `scripts/reporter.py`
 - `scripts/health.py`
+- `scripts/rollout.py`
 
 Current behavior:
 
@@ -712,6 +729,7 @@ Current behavior:
 - `scripts/reporter.py --refresh` records fresh guard snapshots at `0.64` and `0.70`
 - `scripts/reporter.py --refresh --refresh-timeout N` fails fast and reports stale DB data with `refresh_error` if live APIs hang
 - `scripts/health.py --json` shows target coverage, stale heartbeats, runtime failures, and active guard issues from SQLite
+- `scripts/rollout.py` provides DB-only smoke, shadow, one-org apply, full-org apply with confirmation, and guard apply gates
 
 ### Phase 8: Shadow Mode
 
@@ -732,12 +750,8 @@ Acceptance:
 Current shadow-mode commands:
 
 ```bash
-python3 scripts/state_db.py --init --sync-config --status
-PRL_PEARL_FEE_RATE=0.01 python3 scripts/fleet_scheduler.py --price 0.64 --fee 0.01
-python3 scripts/reporter.py
-python3 scripts/org_worker.py --org kry1
-python3 scripts/guard.py --once
-python3 scripts/health.py
+PRL_PEARL_FEE_RATE=0.01 python3 scripts/rollout.py --stage shadow --price 0.64 --fee 0.01 --skip-workers --skip-guard
+PRL_PEARL_FEE_RATE=0.01 python3 scripts/rollout.py --stage shadow --price 0.64 --fee 0.01 --require-secrets
 ```
 
 ### Phase 9: Controlled Rollout
@@ -760,17 +774,14 @@ Acceptance:
 Recommended live sequence:
 
 ```bash
-PRL_PEARL_FEE_RATE=0.01 python3 scripts/fleet_scheduler.py --price 0.64 --fee 0.01
-python3 scripts/org_worker.py --org kry1 --apply
-python3 scripts/guard.py --once
-python3 scripts/reporter.py --refresh --refresh-timeout 45
-python3 scripts/health.py
+PRL_PEARL_FEE_RATE=0.01 python3 scripts/rollout.py --stage one-org --org kry1 --price 0.64 --fee 0.01 --apply-workers --require-secrets
 ```
 
 Only after the one-org apply is stable:
 
 ```bash
-python3 scripts/guard.py --once --apply
+python3 scripts/rollout.py --stage guard-apply --apply-guard --require-secrets
+PRL_PEARL_FEE_RATE=0.01 python3 scripts/rollout.py --stage all-orgs --price 0.64 --fee 0.01 --apply-workers --confirm-all-orgs --require-secrets
 python3 scripts/supervisor.py --print-plan
 python3 scripts/supervisor.py --ensure
 ```
@@ -810,6 +821,7 @@ rg -n 'salad_cloud_user_|cf_clearance|Cookie:|Authorization: Bearer|SALAD_API_KE
 Runtime verification must include:
 
 ```text
+rollout.py gates
 process health
 fresh heartbeats
 health.py status
@@ -873,8 +885,8 @@ After the infrastructure exists and is deployed, use a separate nonstop runtime/
 Continuously monitor, live-test, debug, and improve the Salad PRL fleet scheduler.
 
 Start in controlled rollout:
-- verify scheduler targets, health.py, reporter.py, guard.py dry-run decisions, and org_worker.py output
-- apply one org first, then expand to all enabled orgs only if health stays safe
+- verify rollout.py gates, scheduler targets, health.py, reporter.py, guard.py dry-run decisions, and org_worker.py output
+- apply one org first through rollout.py, then expand to all enabled orgs only if health stays safe
 - use PRL_PEARL_FEE_RATE=0.01 while the next-24h Pearl fee window is active
 
 Runtime goal:

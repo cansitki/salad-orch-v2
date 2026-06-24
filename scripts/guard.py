@@ -6,7 +6,7 @@ import os
 import pathlib
 import sys
 import time
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import org_worker
@@ -163,6 +163,31 @@ def org_by_label() -> dict[str, Any]:
 
 def guard_failure_component(org_label: str, slot_name: str, issue_type: str) -> str:
     return f"guard:{org_label}:{slot_name}:{issue_type}"
+
+
+def guard_patch_cooldown_seconds() -> int:
+    try:
+        value = int(os.environ.get("PRL_PENDING_PROFILE_COOLDOWN_SECONDS", "600"))
+    except ValueError:
+        value = 600
+    return max(60, value)
+
+
+def record_guard_patch_cooldown(conn, target: dict[str, Any], *, reason: str) -> None:
+    now = datetime.now(UTC)
+    state_db.record_search_state(
+        conn,
+        {
+            "org_label": str(target["org_label"]),
+            "slot_name": str(target["slot_name"]),
+            "profile_key": str(target["profile_key"]),
+            "no_gpu_since_utc": now.isoformat(timespec="seconds"),
+            "sleep_until_utc": (now + timedelta(seconds=guard_patch_cooldown_seconds())).isoformat(timespec="seconds"),
+            "attempts": 1,
+            "reason": reason,
+            "updated_at_utc": now.isoformat(timespec="seconds"),
+        },
+    )
 
 
 def instance_ids_from_rows(rows: list[dict[str, Any]]) -> list[str]:
@@ -358,6 +383,10 @@ def enforce_issues(
                             )
                         except Exception as exc:
                             decision["apply_error"] = f"{type(exc).__name__}: {str(exc)[:180]}"
+                            if target is not None and "patch_slot returned false" in str(exc):
+                                record_guard_patch_cooldown(conn, target, reason=decision["apply_error"])
+                                decision["cooldown_profile_key"] = target.get("profile_key")
+                                decision["cooldown_seconds"] = guard_patch_cooldown_seconds()
                             state_db.record_failure(
                                 conn,
                                 guard_failure_component(org_label, slot_name, issue_type),

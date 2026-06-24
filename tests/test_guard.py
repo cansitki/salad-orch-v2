@@ -143,6 +143,47 @@ class GuardDecisionTest(unittest.TestCase):
         self.assertEqual(failures, 0)
         self.assertEqual(attempt["ok"], 1)
 
+    def test_failed_guard_patch_cooldowns_target_profile(self) -> None:
+        self.make_issue_old("negative")
+        analysis = {
+            "fresh_workers": 3,
+            "running_no_live_billable_slots": [],
+            "negative_slots": [
+                {
+                    "org": "kray",
+                    "slot": "prl-kray-roi-01",
+                    "gpu": "3090",
+                    "priority": "batch",
+                    "profit_day": -1.0,
+                }
+            ],
+        }
+
+        with patch("guard.apply_guard_target", side_effect=RuntimeError("patch_slot returned false")):
+            decisions = guard.enforce_issues(
+                db_path=self.db_path,
+                decision_price=0.64,
+                apply=True,
+                analysis=analysis,
+            )
+
+        failed_profile = decisions[0]["target_profile_key"]
+        self.assertEqual(decisions[0]["action"], "retarget")
+        self.assertEqual(decisions[0]["cooldown_profile_key"], failed_profile)
+        self.assertGreaterEqual(decisions[0]["cooldown_seconds"], 60)
+        with state_db.connect(self.db_path) as conn:
+            cooldowns = state_db.active_search_cooldowns(conn)
+        self.assertIn(("kray", "prl-kray-roi-01", failed_profile), cooldowns)
+
+        retry_decisions = guard.enforce_issues(
+            db_path=self.db_path,
+            decision_price=0.64,
+            apply=False,
+            analysis=analysis,
+        )
+        self.assertEqual(retry_decisions[0]["action"], "retarget")
+        self.assertNotEqual(retry_decisions[0]["target_profile_key"], failed_profile)
+
     def test_guard_applies_once_when_same_slot_has_multiple_issues(self) -> None:
         self.make_issue_old("no_hash")
         self.make_issue_old("negative")

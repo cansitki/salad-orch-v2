@@ -447,6 +447,21 @@ Generate a profit snapshot:
 python3 scripts/salad_prl_profit_snapshot.py --price 0.64
 ```
 
+Each snapshot appends one row to `state/prl_profit_snapshots.csv` by default.
+Use `PRL_SNAPSHOT_CSV_PATH=/path/to/file.csv` to choose another file, or
+`PRL_SNAPSHOT_CSV_DISABLE=1` to disable CSV history writes.
+
+Snapshots include Salad slot age, stale pool workers, billable no-hash slots,
+stuck non-live slots, and per-org Salad-vs-pool discrepancy counts.
+`PRL_STUCK_NON_LIVE_SECONDS` controls how old a non-live
+allocating/creating/running slot must be before it is eligible for cleanup.
+Zero-running starts also wait `PRL_STUCK_RUNNING_ZERO_DEFER_SECONDS` beyond
+that grace so slow Salad allocations are not cut off while they are still
+starting;
+`PRL_STUCK_NON_LIVE_MAX_ACTIONS` caps those rotations per guard tick, and
+`PRL_STUCK_NON_LIVE_TICK_BUDGET_SECONDS` keeps that cleanup from delaying the
+next stale/no-hash check for too long.
+
 ## Mining, Pool, And Exchange
 
 ### What We Mine

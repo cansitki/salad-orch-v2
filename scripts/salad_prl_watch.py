@@ -19,6 +19,9 @@ SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parent
 STATE_DIR = pathlib.Path(os.environ.get("SALAD_PRL_STATE_DIR", str(REPO_ROOT / "state")))
 ENV = pathlib.Path(os.environ.get("SALAD_PRL_ENV", str(REPO_ROOT / ".env")))
+SLOT_ACTION_STATE_PATH = pathlib.Path(
+    os.environ.get("PRL_SLOT_ACTION_STATE_PATH", str(STATE_DIR / "prl_slot_actions.json"))
+)
 
 
 def load_env_file() -> None:
@@ -55,13 +58,41 @@ EMPTY_CREATING_SECONDS = int(
     os.environ.get("KRAY2_PRL_EMPTY_CREATING_SECONDS", str(min(CREATE_PROGRESS_SECONDS, TRY_SECONDS)))
 )
 PROFILE_MISMATCH_GRACE_SECONDS = int(os.environ.get("KRAY2_PRL_PROFILE_MISMATCH_GRACE_SECONDS", "300"))
+ALLOCATING_RETARGET_AVAILABLE_SECONDS = int(
+    os.environ.get("KRAY2_PRL_ALLOCATING_RETARGET_AVAILABLE_SECONDS", "180")
+)
+LOW_LIVE_MIN_LIVE_WORKERS = int(
+    os.environ.get("KRAY2_PRL_LOW_LIVE_MIN_LIVE_WORKERS", str(max(1, len(SLOTS) - 2)))
+)
+LOW_LIVE_ALLOCATING_RETARGET_AVAILABLE_SECONDS = int(
+    os.environ.get("KRAY2_PRL_LOW_LIVE_ALLOCATING_RETARGET_AVAILABLE_SECONDS", str(TRY_SECONDS))
+)
+LOW_LIVE_IGNORE_PENDING_CAPACITY = os.environ.get(
+    "KRAY2_PRL_LOW_LIVE_IGNORE_PENDING_CAPACITY",
+    "1",
+).lower() in {"1", "true", "yes"}
+STOPPED_RESTART_COOLDOWN_SECONDS = int(os.environ.get("KRAY2_PRL_STOPPED_RESTART_COOLDOWN_SECONDS", "300"))
 UPGRADE_TO_BEST_SECONDS = int(os.environ.get("KRAY2_PRL_UPGRADE_TO_BEST_SECONDS", "999999"))
 OPTIMIZE_LIVE_SECONDS = int(os.environ.get("KRAY2_PRL_OPTIMIZE_LIVE_SECONDS", "999999"))
 OPTIMIZE_LIVE_MIN_PROFIT_DELTA = float(os.environ.get("KRAY2_PRL_OPTIMIZE_LIVE_MIN_PROFIT_DELTA", "0.25"))
+OPTIMIZE_LIVE_MIN_TH_DELTA = float(os.environ.get("KRAY2_PRL_OPTIMIZE_LIVE_MIN_TH_DELTA", "10"))
 OPTIMIZE_LIVE_INTERVAL_SECONDS = int(os.environ.get("KRAY2_PRL_OPTIMIZE_LIVE_INTERVAL_SECONDS", "600"))
 OPTIMIZE_LIVE_MIN_LIVE_WORKERS = int(
     os.environ.get("KRAY2_PRL_OPTIMIZE_LIVE_MIN_LIVE_WORKERS", str(max(1, len(SLOTS) - 2)))
 )
+OPTIMIZE_LIVE_REQUIRE_FULL_SLOTS = os.environ.get("KRAY2_PRL_OPTIMIZE_LIVE_REQUIRE_FULL_SLOTS", "0").lower() in {
+    "1",
+    "true",
+    "yes",
+}
+OPTIMIZE_LIVE_REQUIRE_REPORTED_AVAILABLE = os.environ.get(
+    "KRAY2_PRL_OPTIMIZE_LIVE_REQUIRE_REPORTED_AVAILABLE",
+    "1",
+).lower() in {
+    "1",
+    "true",
+    "yes",
+}
 NO_GPU_SLEEP_AFTER_SECONDS = int(os.environ.get("KRAY2_PRL_NO_GPU_SLEEP_AFTER_SECONDS", "3600"))
 NO_GPU_SLEEP_SECONDS = int(os.environ.get("KRAY2_PRL_NO_GPU_SLEEP_SECONDS", "900"))
 NO_GPU_STATE_PATH = pathlib.Path(
@@ -98,10 +129,19 @@ MINER_PACKAGE_URL = os.environ.get(
     f"https://github.com/pearlfortune/pearl-miner/releases/download/{MINER_RELEASE_TAG}/pearlfortune-{MINER_PACKAGE_VERSION}.tar.gz",
 )
 TARGET_OFFSET = int(os.environ.get("PRL_WATCH_TARGET_OFFSET", "0"))
+COORDINATED_TARGET_OFFSETS = os.environ.get("PRL_WATCH_COORDINATED_TARGET_OFFSETS", "0").lower() in {
+    "1",
+    "true",
+    "yes",
+}
 ALLOWED_PRIORITIES = tuple(
     priority.strip().lower()
     for priority in os.environ.get("PRL_WATCH_ALLOWED_PRIORITIES", "batch,low").split(",")
     if priority.strip()
+)
+CAPACITY_ZERO_AVAILABLE_PROBE_BUDGET = int(os.environ.get("PRL_WATCH_ZERO_AVAILABLE_PROBE_BUDGET", "0"))
+CAPACITY_ZERO_AVAILABLE_PROBE_MAX_LIVE_WORKERS = int(
+    os.environ.get("PRL_WATCH_ZERO_AVAILABLE_PROBE_MAX_LIVE_WORKERS", "0")
 )
 BLOCKED_PROFILES = {
     tuple(part.strip().lower() for part in item.split(":", 1))
@@ -251,20 +291,26 @@ SLOT_RUNNING_WITHOUT_POOL_SINCE: dict[str, float] = {}
 SLOT_EMPTY_DEPLOYING_SINCE: dict[str, float] = {}
 SLOT_EMPTY_CREATING_SINCE: dict[str, float] = {}
 SLOT_ALLOCATING_SINCE: dict[str, float] = {}
+SLOT_ALLOCATING_RETARGET_SINCE: dict[str, float] = {}
 SLOT_CREATING_SINCE: dict[str, float] = {}
 SLOT_CREATING_PROGRESS: dict[str, float] = {}
 SLOT_PROFILE_MISMATCH_SINCE: dict[str, float] = {}
 NO_CREDITS_UNTIL = 0.0
 NO_CREDITS_TARGETS_UNTIL = 0.0
 LAST_NO_CREDITS_AT = 0.0
+STOPPED_SLOT_STATE_PATH = pathlib.Path(
+    os.environ.get("PRL_STOPPED_SLOT_STATE_PATH", str(STATE_DIR / "prl_stopped_slots.json"))
+)
 BEST_UPGRADE_REMAINING = 0
 CANDIDATE_BUDGET_REMAINING: dict[tuple[str, tuple[str, ...], int], int] = {}
+CANDIDATE_REPORTED_AVAILABLE: dict[tuple[str, tuple[str, ...], int], int] = {}
 SLOT_TARGETS: dict[str, Candidate] = {}
 SLOT_TARGETS_OFFSET = -1
 NO_GPU_SINCE = 0.0
 NO_GPU_UNTIL = 0.0
 LAST_LIVE_UPGRADE_AT = 0.0
 ALLOW_LIVE_UPGRADES_THIS_TICK = False
+LOW_LIVE_THIS_TICK = False
 PRICE_GUARD_CACHE: dict[str, float] = {}
 PRICE_CATALOG_CACHE: dict[str, Any] = {}
 ORG_BALANCE_CACHE: dict[str, Any] = {}
@@ -337,6 +383,54 @@ def save_no_gpu_state() -> None:
     NO_GPU_STATE_PATH.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
 
 
+def safe_slot_action_token(org: str, slot: str) -> str:
+    text = f"{org}__{slot}"
+    return "".join(char if char.isalnum() or char in {"-", "_"} else "_" for char in text)
+
+
+def slot_action_detail_path(org: str, slot: str) -> pathlib.Path:
+    return SLOT_ACTION_STATE_PATH.parent / f"{SLOT_ACTION_STATE_PATH.stem}.d" / f"{safe_slot_action_token(org, slot)}.json"
+
+
+def write_slot_action_detail(org: str, slot: str, payload: dict[str, Any]) -> None:
+    path = slot_action_detail_path(org, slot)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(f"{path.suffix}.tmp")
+    tmp.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
+    tmp.replace(path)
+
+
+def record_slot_action_state(slot: str, action: str, reason: str = "", candidate: str = "") -> None:
+    try:
+        SLOT_ACTION_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            state = json.loads(SLOT_ACTION_STATE_PATH.read_text(encoding="utf-8"))
+        except Exception:
+            state = {}
+        if not isinstance(state, dict):
+            state = {}
+        now_ts = time.time()
+        payload = {
+            "at": now_ts,
+            "at_utc": now().isoformat(timespec="seconds"),
+            "org": PUBLIC_ORG,
+            "slot": slot,
+            "action": action,
+            "reason": reason,
+            "candidate": candidate,
+        }
+        state[f"{PUBLIC_ORG}/{slot}"] = payload
+        write_slot_action_detail(PUBLIC_ORG, slot, payload)
+        if ORG != PUBLIC_ORG:
+            state[f"{ORG}/{slot}"] = payload
+            write_slot_action_detail(ORG, slot, payload)
+        tmp = SLOT_ACTION_STATE_PATH.with_suffix(f"{SLOT_ACTION_STATE_PATH.suffix}.tmp")
+        tmp.write_text(json.dumps(state, sort_keys=True) + "\n", encoding="utf-8")
+        tmp.replace(SLOT_ACTION_STATE_PATH)
+    except Exception as exc:
+        log("slot_action_state_write_failed", slot=slot, action=action, error=type(exc).__name__, detail=str(exc)[:180])
+
+
 def remove_no_gpu_state() -> None:
     try:
         NO_GPU_STATE_PATH.unlink()
@@ -397,6 +491,10 @@ def clear_no_credits_state(reason: str, **fields: Any) -> None:
 
 def note_no_gpu_available(reason: str, **fields: Any) -> None:
     global NO_GPU_SINCE, NO_GPU_UNTIL
+    if NO_GPU_SLEEP_AFTER_SECONDS <= 0 or NO_GPU_SLEEP_SECONDS <= 0:
+        clear_no_gpu_state("no_gpu_sleep_disabled", reason=reason, **fields)
+        log("no_gpu_available_no_backoff", reason=reason, **fields)
+        return
     now_ts = time.time()
     if NO_GPU_SINCE <= 0:
         NO_GPU_SINCE = now_ts
@@ -576,6 +674,40 @@ def external_json(url: str) -> dict[str, Any]:
     req = urllib.request.Request(url, headers={"User-Agent": f"{WATCH_NAME}/1.0", "accept": "application/json"})
     with urllib.request.urlopen(req, timeout=20) as response:
         return json.loads(response.read().decode() or "{}")
+
+
+def timestamp_age_seconds(value: Any, now_ts: float) -> float | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return max(0.0, now_ts - parsed.astimezone(UTC).timestamp())
+
+
+def state_since_timestamp(current_state: dict[str, Any], now_ts: float) -> float:
+    age = timestamp_age_seconds(current_state.get("start_time") or current_state.get("finish_time"), now_ts)
+    if age is None:
+        return now_ts
+    return max(0.0, now_ts - age)
+
+
+def recent_guard_stop_age_seconds(slot: str, now_ts: float) -> float | None:
+    try:
+        state = json.loads(STOPPED_SLOT_STATE_PATH.read_text())
+    except Exception:
+        return None
+    entry = state.get(f"{ORG}/{slot}") or state.get(f"{PUBLIC_ORG}/{slot}")
+    if not isinstance(entry, dict):
+        return None
+    try:
+        stopped_at = float(entry.get("stopped_at") or 0)
+    except (TypeError, ValueError):
+        return None
+    if stopped_at <= 0:
+        return None
+    return max(0.0, now_ts - stopped_at)
 
 
 def safetrade_prl_price_usd() -> float | None:
@@ -985,7 +1117,15 @@ def active_or_pending_slot_count() -> int:
 
 def refresh_candidate_budgets(workers: list[dict[str, Any]]) -> None:
     CANDIDATE_BUDGET_REMAINING.clear()
+    CANDIDATE_REPORTED_AVAILABLE.clear()
     active = active_single_profile_counts(workers)
+    live_worker_count = sum(
+        1 for worker in workers if not worker.get("stale") and float(worker.get("reported_hashrate_th") or 0) > 0
+    )
+    under_probe_threshold = (
+        CAPACITY_ZERO_AVAILABLE_PROBE_MAX_LIVE_WORKERS > 0
+        and live_worker_count < CAPACITY_ZERO_AVAILABLE_PROBE_MAX_LIVE_WORKERS
+    )
     unique: dict[tuple[str, tuple[str, ...], int], Candidate] = {}
     for slot in SLOTS:
         for candidate in candidates_for(slot):
@@ -996,15 +1136,28 @@ def refresh_candidate_budgets(workers: list[dict[str, Any]]) -> None:
         available = candidate_availability("__capacity_budget__", candidate)
         if available is None:
             continue
-        pending = active.get(key, 0)
-        CANDIDATE_BUDGET_REMAINING[key] = max(0, available - pending)
-        if pending or available:
+        CANDIDATE_REPORTED_AVAILABLE[key] = max(0, available)
+        observed_pending = active.get(key, 0)
+        pending = 0 if LOW_LIVE_THIS_TICK and LOW_LIVE_IGNORE_PENDING_CAPACITY else observed_pending
+        remaining = max(0, available - pending)
+        probe_remaining = 0
+        if available <= 0 and under_probe_threshold and CAPACITY_ZERO_AVAILABLE_PROBE_BUDGET > 0:
+            probe_remaining = max(0, CAPACITY_ZERO_AVAILABLE_PROBE_BUDGET - pending)
+            remaining = max(remaining, probe_remaining)
+        CANDIDATE_BUDGET_REMAINING[key] = remaining
+        if observed_pending or available or probe_remaining:
             log(
                 "candidate_capacity_budget",
                 candidate=candidate.label,
                 available=available,
                 pending=pending,
-                remaining=CANDIDATE_BUDGET_REMAINING[key],
+                observed_pending=observed_pending,
+                low_live_pending_capacity_ignored=LOW_LIVE_THIS_TICK and LOW_LIVE_IGNORE_PENDING_CAPACITY,
+                probe_budget=CAPACITY_ZERO_AVAILABLE_PROBE_BUDGET if under_probe_threshold else 0,
+                probe_remaining=probe_remaining,
+                live_workers=live_worker_count,
+                probe_max_live_workers=CAPACITY_ZERO_AVAILABLE_PROBE_MAX_LIVE_WORKERS,
+                remaining=remaining,
             )
 
 
@@ -1015,6 +1168,12 @@ def candidate_profit_day(candidate: Candidate) -> float | None:
     return float(estimate["profit_day"])
 
 
+def candidate_expected_th(candidate: Candidate) -> float | None:
+    if len(candidate.gpu_keys) != 1:
+        return None
+    return EXPECTED_TH_BY_PROFILE.get((candidate.gpu_keys[0], candidate.priority))
+
+
 def recent_no_credits_age_seconds(now_ts: float | None = None) -> float | None:
     if LAST_NO_CREDITS_AT <= 0:
         return None
@@ -1022,12 +1181,24 @@ def recent_no_credits_age_seconds(now_ts: float | None = None) -> float | None:
     return max(0.0, now_ts - LAST_NO_CREDITS_AT)
 
 
+def no_credits_backoff_active(now_ts: float | None = None) -> bool:
+    now_ts = time.time() if now_ts is None else now_ts
+    if now_ts >= NO_CREDITS_UNTIL:
+        return False
+    age = recent_no_credits_age_seconds(now_ts)
+    return age is not None and age <= NO_CREDITS_BACKOFF_SECONDS
+
+
 def effective_target_offset(now_ts: float | None = None) -> int:
     if TARGET_OFFSET <= 0:
+        if COORDINATED_TARGET_OFFSETS and ORG in COORDINATED_ORGS:
+            return COORDINATED_ORGS.index(ORG) * len(SLOTS)
         return 0
     funded_offset = funded_org_target_offset(now_ts)
     if funded_offset is not None:
         return funded_offset
+    if COORDINATED_TARGET_OFFSETS and ORG in COORDINATED_ORGS:
+        return COORDINATED_ORGS.index(ORG) * len(SLOTS)
     age = recent_no_credits_age_seconds(now_ts)
     if age is None:
         return 0
@@ -1040,7 +1211,8 @@ def refresh_slot_targets() -> None:
     requested_target_offset = effective_target_offset(now_ts)
     recent_age = recent_no_credits_age_seconds(now_ts)
     org_balance_cents, org_balance_age_seconds = latest_org_balance_cents(now_ts)
-    ranked: list[tuple[float, str, Candidate, int]] = []
+    ranked_real: list[tuple[float, str, Candidate, int]] = []
+    ranked_probe: list[tuple[float, str, Candidate, int]] = []
     unique: dict[tuple[str, tuple[str, ...], int], Candidate] = {}
     for slot in SLOTS:
         for candidate in candidates_for(slot):
@@ -1055,17 +1227,42 @@ def refresh_slot_targets() -> None:
         profit_day = candidate_profit_day(candidate)
         if profit_day is None or profit_day < PRICE_GUARD_MIN_PROFIT_DAY:
             continue
-        ranked.append((profit_day, candidate.label, candidate, remaining))
+        reported_available = CANDIDATE_REPORTED_AVAILABLE.get(key, 0)
+        if reported_available > 0:
+            ranked_real.append((profit_day, candidate.label, candidate, min(remaining, reported_available)))
+            probe_remaining = max(0, remaining - reported_available)
+            if probe_remaining > 0:
+                ranked_probe.append((profit_day, candidate.label, candidate, probe_remaining))
+        else:
+            ranked_probe.append((profit_day, candidate.label, candidate, remaining))
 
-    ranked.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    ranked_real.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    ranked_probe.sort(key=lambda item: (item[0], item[1]), reverse=True)
     ranked_targets: list[Candidate] = []
-    for _profit_day, _label, candidate, remaining in ranked:
-        for _ in range(remaining):
-            if len(ranked_targets) >= requested_target_offset + len(SLOTS):
+
+    def append_rank_rounds(items: list[tuple[float, str, Candidate, int]]) -> None:
+        # Fill targets in rank rounds instead of exhausting the top profile first.
+        # Reported Salad capacity is tried before zero-availability probes.
+        remaining_by_candidate = [(candidate, remaining) for _profit_day, _label, candidate, remaining in items]
+        while len(ranked_targets) < requested_target_offset + len(SLOTS):
+            appended = False
+            next_remaining: list[tuple[Candidate, int]] = []
+            for candidate, remaining in remaining_by_candidate:
+                if remaining <= 0:
+                    continue
+                ranked_targets.append(candidate)
+                appended = True
+                remaining -= 1
+                if remaining > 0:
+                    next_remaining.append((candidate, remaining))
+                if len(ranked_targets) >= requested_target_offset + len(SLOTS):
+                    break
+            if not appended:
                 break
-            ranked_targets.append(candidate)
-        if len(ranked_targets) >= requested_target_offset + len(SLOTS):
-            break
+            remaining_by_candidate = next_remaining
+
+    append_rank_rounds(ranked_real)
+    append_rank_rounds(ranked_probe)
 
     target_offset = requested_target_offset
     if ranked_targets:
@@ -1092,6 +1289,8 @@ def refresh_slot_targets() -> None:
             target_offset=target_offset,
             recent_no_credits_age_seconds=round(recent_age, 1) if recent_age is not None else None,
             ranked_targets=len(ranked_targets),
+            ranked_real_targets=sum(item[3] for item in ranked_real),
+            ranked_probe_targets=sum(item[3] for item in ranked_probe),
         )
         return
     if len(targets) < len(SLOTS):
@@ -1106,6 +1305,8 @@ def refresh_slot_targets() -> None:
             target_count=len(targets),
             slot_count=len(SLOTS),
             ranked_targets=len(ranked_targets),
+            ranked_real_targets=sum(item[3] for item in ranked_real),
+            ranked_probe_targets=sum(item[3] for item in ranked_probe),
         )
 
     SLOT_TARGETS.clear()
@@ -1122,6 +1323,9 @@ def refresh_slot_targets() -> None:
         org_balance_cents=org_balance_cents,
         target_offset=target_offset,
         recent_no_credits_age_seconds=round(recent_age, 1) if recent_age is not None else None,
+        ranked_targets=len(ranked_targets),
+        ranked_real_targets=sum(item[3] for item in ranked_real),
+        ranked_probe_targets=sum(item[3] for item in ranked_probe),
         targets_until=round(NO_CREDITS_TARGETS_UNTIL, 3),
         targets=[{"slot": slot, "candidate": candidate.label} for slot, candidate in SLOT_TARGETS.items()],
     )
@@ -1155,6 +1359,13 @@ def candidate_is_available(slot: str, candidate: Candidate) -> bool:
         )
         return False
     return True
+
+
+def candidate_has_reported_availability(candidate: Candidate) -> bool:
+    key = candidate_key(candidate)
+    if key is None:
+        return False
+    return CANDIDATE_REPORTED_AVAILABLE.get(key, 0) > 0
 
 
 def available_candidate_from(slot: str, start_index: int) -> Candidate | None:
@@ -1314,6 +1525,7 @@ def create_slot(slot: str, candidate: Candidate, *, start_after: bool = True) ->
     try:
         request("POST", f"/organizations/{ORG}/projects/{PROJECT}/containers", payload)
         SLOT_LAST_PATCH[slot] = time.time()
+        record_slot_action_state(slot, "created", "create_slot", candidate.label)
         log("slot_created", slot=slot, candidate=candidate.label, gpu_ids=candidate.gpu_ids, memory=candidate.memory)
         if start_after:
             start_slot(slot, "after_create")
@@ -1335,11 +1547,12 @@ def patch_slot(slot: str, candidate: Candidate, reason: str, *, start_after: boo
             patch=True,
         )
         SLOT_LAST_PATCH[slot] = time.time()
+        record_slot_action_state(slot, "patched", reason, candidate.label)
         log("slot_patched", slot=slot, candidate=candidate.label, gpu_ids=candidate.gpu_ids, memory=candidate.memory, reason=reason)
         if start_after:
             start_slot(slot, f"after_patch:{reason}")
         else:
-            log("slot_start_deferred_no_credits", slot=slot, candidate=candidate.label, reason=f"after_patch:{reason}")
+            log("slot_start_deferred_after_patch", slot=slot, candidate=candidate.label, reason=f"after_patch:{reason}")
         return True
     except requests.HTTPError as exc:
         log("slot_patch_failed", slot=slot, candidate=candidate.label, status=exc.response.status_code, error=exc.response.text[:180])
@@ -1373,6 +1586,7 @@ def start_slot(slot: str, reason: str) -> None:
     try:
         request("POST", f"/organizations/{ORG}/projects/{PROJECT}/containers/{slot}/start")
         SLOT_LAST_PATCH[slot] = time.time()
+        record_slot_action_state(slot, "started", reason)
         clear_no_credits_state("slot_start_requested", slot=slot, start_reason=reason)
         log("slot_start_requested", slot=slot, reason=reason)
     except requests.HTTPError as exc:
@@ -1466,25 +1680,36 @@ def existing_candidate_matching_group(slot: str, group: dict[str, Any]) -> Candi
     return None
 
 
-def best_available_upgrade(slot: str, current: Candidate) -> tuple[Candidate, float, float] | None:
+def best_available_upgrade(slot: str, current: Candidate) -> tuple[Candidate, float, float, float, float] | None:
     current_profit = candidate_profit_day(current)
-    if current_profit is None:
+    current_th = candidate_expected_th(current)
+    if current_profit is None or current_th is None:
         return None
-    ranked: list[tuple[float, str, Candidate]] = []
+    ranked: list[tuple[float, float, str, Candidate]] = []
     for candidate in candidates_for(slot):
-        if candidate.priority != "batch" or candidate == current:
+        if candidate == current:
             continue
         profit_day = candidate_profit_day(candidate)
         if profit_day is None or profit_day < current_profit + OPTIMIZE_LIVE_MIN_PROFIT_DELTA:
             continue
+        expected_th = candidate_expected_th(candidate)
+        if expected_th is None or expected_th < current_th + OPTIMIZE_LIVE_MIN_TH_DELTA:
+            continue
         key = candidate_key(candidate)
         if key is not None and key in CANDIDATE_BUDGET_REMAINING and CANDIDATE_BUDGET_REMAINING[key] <= 0:
             continue
-        ranked.append((profit_day, candidate.label, candidate))
+        if OPTIMIZE_LIVE_REQUIRE_REPORTED_AVAILABLE and not candidate_has_reported_availability(candidate):
+            log(
+                "live_upgrade_skipped_no_reported_availability",
+                slot=slot,
+                candidate=candidate.label,
+            )
+            continue
+        ranked.append((profit_day, expected_th, candidate.label, candidate))
     ranked.sort(key=lambda item: (item[0], item[1]), reverse=True)
-    for profit_day, _label, candidate in ranked:
+    for profit_day, expected_th, _label, candidate in ranked:
         if candidate_is_available(slot, candidate):
-            return candidate, profit_day, current_profit
+            return candidate, profit_day, current_profit, expected_th, current_th
     return None
 
 
@@ -1493,14 +1718,15 @@ def reconcile_slot(slot: str, workers: list[dict[str, Any]]) -> dict[str, Any]:
     group, instances = slot_state(slot)
     if group is None:
         now_ts = time.time()
+        no_credits_active = no_credits_backoff_active(now_ts)
         candidate = SLOT_TARGETS.get(slot) or current_candidate(slot)
         candidate = select_available_candidate(slot, candidate)
         if candidate is None:
             return {"slot": slot, "state": "no_viable_candidate"}
-        create_slot(slot, candidate, start_after=now_ts >= NO_CREDITS_UNTIL)
-        state = "created" if now_ts >= NO_CREDITS_UNTIL else "created_no_credits_backoff"
+        create_slot(slot, candidate, start_after=not no_credits_active)
+        state = "created" if not no_credits_active else "created_no_credits_backoff"
         result = {"slot": slot, "state": state, "candidate": candidate.label}
-        if now_ts < NO_CREDITS_UNTIL:
+        if no_credits_active:
             result["backoff_remaining_seconds"] = round(NO_CREDITS_UNTIL - now_ts, 1)
         return result
     actual_candidate = candidate_matching_group(slot, group)
@@ -1510,14 +1736,16 @@ def reconcile_slot(slot: str, workers: list[dict[str, Any]]) -> dict[str, Any]:
 
     instance_ids = {str(item.get("id")) for item in instances if item.get("ready") or item.get("started")}
     live = live_worker_for_slot(slot, workers, instance_ids)
-    counts = (group.get("current_state") or {}).get("instance_status_counts") or {}
+    current_state = group.get("current_state") or {}
+    counts = current_state.get("instance_status_counts") or {}
     running = int(counts.get("running_count") or 0)
     creating = int(counts.get("creating_count") or 0)
     allocating = int(counts.get("allocating_count") or 0)
-    status = str((group.get("current_state") or {}).get("status") or "")
+    status = str(current_state.get("status") or "")
     now_ts = time.time()
+    no_credits_active = no_credits_backoff_active(now_ts)
 
-    if status != "stopped" and running == 0 and creating == 0 and allocating == 0 and now_ts < NO_CREDITS_UNTIL:
+    if status != "stopped" and running == 0 and creating == 0 and allocating == 0 and no_credits_active:
         return {
             "slot": slot,
             "state": "no_credits_backoff",
@@ -1527,6 +1755,25 @@ def reconcile_slot(slot: str, workers: list[dict[str, Any]]) -> dict[str, Any]:
         }
 
     if status == "stopped":
+        stopped_age = recent_guard_stop_age_seconds(slot, now_ts)
+        stopped_age = (
+            stopped_age
+            if stopped_age is not None
+            else timestamp_age_seconds(current_state.get("finish_time") or current_state.get("start_time"), now_ts)
+        )
+        if (
+            STOPPED_RESTART_COOLDOWN_SECONDS > 0
+            and stopped_age is not None
+            and stopped_age < STOPPED_RESTART_COOLDOWN_SECONDS
+        ):
+            return {
+                "slot": slot,
+                "state": "stopped_restart_cooldown",
+                "candidate": candidate.label,
+                "counts": counts,
+                "stopped_age_seconds": round(stopped_age, 1),
+                "cooldown_seconds": STOPPED_RESTART_COOLDOWN_SECONDS,
+            }
         candidate = SLOT_TARGETS.get(slot) or actual_candidate or initial_candidate(slot)
         set_current_candidate(slot, candidate)
         SLOT_ALLOCATING_SINCE.pop(slot, None)
@@ -1537,22 +1784,54 @@ def reconcile_slot(slot: str, workers: list[dict[str, Any]]) -> dict[str, Any]:
         if not desired_matches(group, candidate):
             if not candidate_is_profitable(slot, candidate):
                 return {"slot": slot, "state": "stopped_no_viable_candidate", "counts": counts}
-            patch_slot(slot, candidate, "stopped_profile_mismatch", start_after=now_ts >= NO_CREDITS_UNTIL)
-            state = "patched_stopped_profile" if now_ts >= NO_CREDITS_UNTIL else "patched_stopped_profile_no_credits_backoff"
+            patched = patch_slot(slot, candidate, "stopped_profile_mismatch", start_after=not no_credits_active)
+            if not patched:
+                existing = actual_candidate or existing_candidate_matching_group(slot, group)
+                if existing is not None and candidate_is_profitable(slot, existing) and not no_credits_active:
+                    start_slot(slot, "after_failed_patch:stopped_profile_mismatch_existing_profitable")
+                    return {
+                        "slot": slot,
+                        "state": "started_existing_after_patch_failed",
+                        "candidate": existing.label,
+                        "wanted_candidate": candidate.label,
+                        "counts": counts,
+                    }
+                return {
+                    "slot": slot,
+                    "state": "stopped_profile_patch_failed",
+                    "candidate": candidate.label,
+                    "counts": counts,
+                }
+            state = "patched_stopped_profile" if not no_credits_active else "patched_stopped_profile_no_credits_backoff"
             result = {"slot": slot, "state": state, "candidate": candidate.label, "counts": counts}
-            if now_ts < NO_CREDITS_UNTIL:
+            if no_credits_active:
                 result["backoff_remaining_seconds"] = round(NO_CREDITS_UNTIL - now_ts, 1)
             return result
         if not display_matches(slot, group, candidate):
-            patch_slot(slot, candidate, "stopped_display_mismatch", start_after=now_ts >= NO_CREDITS_UNTIL)
-            state = "patched_stopped_display" if now_ts >= NO_CREDITS_UNTIL else "patched_stopped_display_no_credits_backoff"
+            patched = patch_slot(slot, candidate, "stopped_display_mismatch", start_after=not no_credits_active)
+            if not patched:
+                if candidate_is_profitable(slot, candidate) and not no_credits_active:
+                    start_slot(slot, "after_failed_patch:stopped_display_mismatch_existing_profitable")
+                    return {
+                        "slot": slot,
+                        "state": "started_existing_after_display_patch_failed",
+                        "candidate": candidate.label,
+                        "counts": counts,
+                    }
+                return {
+                    "slot": slot,
+                    "state": "stopped_display_patch_failed",
+                    "candidate": candidate.label,
+                    "counts": counts,
+                }
+            state = "patched_stopped_display" if not no_credits_active else "patched_stopped_display_no_credits_backoff"
             result = {"slot": slot, "state": state, "candidate": candidate.label, "counts": counts}
-            if now_ts < NO_CREDITS_UNTIL:
+            if no_credits_active:
                 result["backoff_remaining_seconds"] = round(NO_CREDITS_UNTIL - now_ts, 1)
             return result
         if not candidate_is_profitable(slot, candidate):
             return {"slot": slot, "state": "stopped_no_viable_candidate", "candidate": candidate.label, "counts": counts}
-        if now_ts < NO_CREDITS_UNTIL:
+        if no_credits_active:
             return {
                 "slot": slot,
                 "state": "no_credits_backoff",
@@ -1581,7 +1860,7 @@ def reconcile_slot(slot: str, workers: list[dict[str, Any]]) -> dict[str, Any]:
         ):
             upgrade = best_available_upgrade(slot, current_for_profit)
             if upgrade is not None:
-                upgrade_candidate, upgrade_profit_day, current_profit_day = upgrade
+                upgrade_candidate, upgrade_profit_day, current_profit_day, upgrade_expected_th, current_expected_th = upgrade
                 patch_slot(slot, upgrade_candidate, "live_profit_upgrade", start_after=False)
                 reserve_candidate(upgrade_candidate)
                 LAST_LIVE_UPGRADE_AT = now_ts
@@ -1601,6 +1880,9 @@ def reconcile_slot(slot: str, workers: list[dict[str, Any]]) -> dict[str, Any]:
                     "previous_candidate": current_for_profit.label,
                     "expected_profit_day": round(upgrade_profit_day, 6),
                     "previous_expected_profit_day": round(current_profit_day, 6),
+                    "expected_th": round(upgrade_expected_th, 6),
+                    "previous_expected_th": round(current_expected_th, 6),
+                    "expected_th_delta": round(upgrade_expected_th - current_expected_th, 6),
                     "reallocated_instances": reallocated,
                     "counts": counts,
                 }
@@ -1631,7 +1913,7 @@ def reconcile_slot(slot: str, workers: list[dict[str, Any]]) -> dict[str, Any]:
             SLOT_EMPTY_CREATING_SINCE.pop(slot, None)
             SLOT_CREATING_SINCE.pop(slot, None)
             SLOT_CREATING_PROGRESS.pop(slot, None)
-            patch_slot(slot, best_candidate, "upgrade_to_available_4090")
+            patch_slot(slot, best_candidate, "upgrade_to_available_4090", start_after=allocating == 0 and status != "deploying")
             BEST_UPGRADE_REMAINING -= 1
             reserve_candidate(best_candidate)
             return {
@@ -1660,7 +1942,7 @@ def reconcile_slot(slot: str, workers: list[dict[str, Any]]) -> dict[str, Any]:
         candidate = select_available_candidate(slot, candidate)
         if candidate is None:
             return {"slot": slot, "state": "profile_mismatch_no_viable_candidate", "counts": counts}
-        patched = patch_slot(slot, candidate, "desired_profile_mismatch", start_after=allocating == 0)
+        patched = patch_slot(slot, candidate, "desired_profile_mismatch", start_after=allocating == 0 and status != "deploying")
         reallocated = reallocate_pending_instances(slot, instances, "desired_profile_mismatch") if patched and allocating > 0 else []
         return {
             "slot": slot,
@@ -1693,7 +1975,7 @@ def reconcile_slot(slot: str, workers: list[dict[str, Any]]) -> dict[str, Any]:
         SLOT_ALLOCATING_SINCE.pop(slot, None)
         SLOT_PROFILE_MISMATCH_SINCE.pop(slot, None)
         if not instances:
-            since = SLOT_EMPTY_CREATING_SINCE.setdefault(slot, now_ts)
+            since = SLOT_EMPTY_CREATING_SINCE.setdefault(slot, state_since_timestamp(current_state, now_ts))
             if now_ts - since >= EMPTY_CREATING_SECONDS:
                 SLOT_EMPTY_CREATING_SINCE[slot] = now_ts
                 SLOT_CREATING_SINCE.pop(slot, None)
@@ -1710,7 +1992,7 @@ def reconcile_slot(slot: str, workers: list[dict[str, Any]]) -> dict[str, Any]:
                         "candidate": candidate.label,
                         "counts": counts,
                     }
-                patch_slot(slot, next_candidate, f"creating_empty_{EMPTY_CREATING_SECONDS}s")
+                patch_slot(slot, next_candidate, f"creating_empty_{EMPTY_CREATING_SECONDS}s", start_after=False)
                 return {
                     "slot": slot,
                     "state": "rotated_empty_creating",
@@ -1725,7 +2007,7 @@ def reconcile_slot(slot: str, workers: list[dict[str, Any]]) -> dict[str, Any]:
                 "grace_remaining_seconds": round(EMPTY_CREATING_SECONDS - (now_ts - since), 1),
             }
         SLOT_EMPTY_CREATING_SINCE.pop(slot, None)
-        since = SLOT_CREATING_SINCE.setdefault(slot, now_ts)
+        since = SLOT_CREATING_SINCE.setdefault(slot, state_since_timestamp(current_state, now_ts))
         max_progress = max((float(instance.get("pulling_progress") or 0) for instance in instances), default=0.0)
         previous_progress = SLOT_CREATING_PROGRESS.get(slot, -1.0)
         if max_progress > previous_progress + 0.001:
@@ -1740,7 +2022,12 @@ def reconcile_slot(slot: str, workers: list[dict[str, Any]]) -> dict[str, Any]:
             )
             if next_candidate is None:
                 return {"slot": slot, "state": "creating_no_viable_rotation_candidate", "candidate": candidate.label, "counts": counts}
-            patched = patch_slot(slot, next_candidate, f"creating_no_progress_{CREATE_PROGRESS_SECONDS}s", start_after=False)
+            patched = patch_slot(
+                slot,
+                next_candidate,
+                f"creating_no_progress_{CREATE_PROGRESS_SECONDS}s",
+                start_after=False,
+            )
             reallocated = reallocate_pending_instances(slot, instances, f"creating_no_progress_{CREATE_PROGRESS_SECONDS}s") if patched else []
             return {
                 "slot": slot,
@@ -1757,7 +2044,67 @@ def reconcile_slot(slot: str, workers: list[dict[str, Any]]) -> dict[str, Any]:
         SLOT_CREATING_SINCE.pop(slot, None)
         SLOT_CREATING_PROGRESS.pop(slot, None)
         SLOT_PROFILE_MISMATCH_SINCE.pop(slot, None)
-        since = SLOT_ALLOCATING_SINCE.setdefault(slot, now_ts)
+        since = SLOT_ALLOCATING_SINCE.setdefault(slot, state_since_timestamp(current_state, now_ts))
+        target = SLOT_TARGETS.get(slot)
+        retarget_grace_seconds = (
+            LOW_LIVE_ALLOCATING_RETARGET_AVAILABLE_SECONDS
+            if LOW_LIVE_THIS_TICK and LOW_LIVE_ALLOCATING_RETARGET_AVAILABLE_SECONDS >= 0
+            else ALLOCATING_RETARGET_AVAILABLE_SECONDS
+        )
+        if (
+            target is not None
+            and target != candidate
+            and retarget_grace_seconds < 999999
+            and candidate_has_reported_availability(target)
+            and candidate_is_profitable(slot, target)
+            and candidate_is_available(slot, target)
+        ):
+            retarget_since = SLOT_ALLOCATING_RETARGET_SINCE.setdefault(slot, state_since_timestamp(current_state, now_ts))
+            if now_ts - retarget_since >= retarget_grace_seconds:
+                SLOT_ALLOCATING_RETARGET_SINCE[slot] = now_ts
+                SLOT_ALLOCATING_SINCE[slot] = now_ts
+                set_current_candidate(slot, target)
+                patched = patch_slot(
+                    slot,
+                    target,
+                    f"allocating_retarget_reported_available_{retarget_grace_seconds}s",
+                    start_after=False,
+                )
+                reallocated = (
+                    reallocate_pending_instances(
+                        slot,
+                        instances,
+                        f"allocating_retarget_reported_available_{retarget_grace_seconds}s",
+                    )
+                    if patched
+                    else []
+                )
+                if patched:
+                    reserve_candidate(target)
+                return {
+                    "slot": slot,
+                    "state": "retargeted_allocating_reported_available",
+                    "candidate": target.label,
+                    "previous_candidate": candidate.label,
+                    "low_live": LOW_LIVE_THIS_TICK,
+                    "retarget_grace_seconds": retarget_grace_seconds,
+                    "reallocated_instances": reallocated,
+                    "counts": counts,
+                }
+            return {
+                "slot": slot,
+                "state": "allocating_retarget_available_grace",
+                "candidate": candidate.label,
+                "target_candidate": target.label,
+                "low_live": LOW_LIVE_THIS_TICK,
+                "retarget_grace_seconds": retarget_grace_seconds,
+                "counts": counts,
+                "grace_remaining_seconds": round(
+                    retarget_grace_seconds - (now_ts - retarget_since),
+                    1,
+                ),
+            }
+        SLOT_ALLOCATING_RETARGET_SINCE.pop(slot, None)
         if now_ts - since >= TRY_SECONDS:
             SLOT_ALLOCATING_SINCE[slot] = now_ts
             next_candidate = coordinated_rotation_candidate(
@@ -1767,7 +2114,12 @@ def reconcile_slot(slot: str, workers: list[dict[str, Any]]) -> dict[str, Any]:
             )
             if next_candidate is None:
                 return {"slot": slot, "state": "allocating_no_viable_rotation_candidate", "candidate": candidate.label, "counts": counts}
-            patched = patch_slot(slot, next_candidate, f"allocating_timeout_{TRY_SECONDS}s", start_after=False)
+            patched = patch_slot(
+                slot,
+                next_candidate,
+                f"allocating_timeout_{TRY_SECONDS}s",
+                start_after=False,
+            )
             reallocated = reallocate_pending_instances(slot, instances, f"allocating_timeout_{TRY_SECONDS}s") if patched else []
             return {
                 "slot": slot,
@@ -1784,7 +2136,7 @@ def reconcile_slot(slot: str, workers: list[dict[str, Any]]) -> dict[str, Any]:
         SLOT_CREATING_SINCE.pop(slot, None)
         SLOT_CREATING_PROGRESS.pop(slot, None)
         SLOT_PROFILE_MISMATCH_SINCE.pop(slot, None)
-        since = SLOT_EMPTY_DEPLOYING_SINCE.setdefault(slot, now_ts)
+        since = SLOT_EMPTY_DEPLOYING_SINCE.setdefault(slot, state_since_timestamp(current_state, now_ts))
         if now_ts - since >= TRY_SECONDS:
             next_candidate = coordinated_rotation_candidate(
                 slot,
@@ -1794,7 +2146,7 @@ def reconcile_slot(slot: str, workers: list[dict[str, Any]]) -> dict[str, Any]:
             if next_candidate is None:
                 return {"slot": slot, "state": "deploying_no_viable_rotation_candidate", "candidate": candidate.label, "counts": counts}
             SLOT_EMPTY_DEPLOYING_SINCE[slot] = now_ts
-            patch_slot(slot, next_candidate, f"empty_deploying_timeout_{TRY_SECONDS}s")
+            patch_slot(slot, next_candidate, f"empty_deploying_timeout_{TRY_SECONDS}s", start_after=False)
             return {"slot": slot, "state": "rotated_empty_deploying", "candidate": next_candidate.label, "counts": counts}
         return {"slot": slot, "state": "deploying_empty", "candidate": candidate.label, "counts": counts}
 
@@ -1807,7 +2159,7 @@ def reconcile_slot(slot: str, workers: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def tick() -> None:
-    global BEST_UPGRADE_REMAINING, ALLOW_LIVE_UPGRADES_THIS_TICK
+    global BEST_UPGRADE_REMAINING, ALLOW_LIVE_UPGRADES_THIS_TICK, LOW_LIVE_THIS_TICK
     try:
         workers = fresh_workers()
     except Exception as exc:
@@ -1815,6 +2167,7 @@ def tick() -> None:
         return
     best_candidate = Candidate("RTX 4090 batch", "batch", ("4090",), 2048)
     live_workers = [w for w in workers if not w.get("stale") and float(w.get("reported_hashrate_th") or 0) > 0]
+    LOW_LIVE_THIS_TICK = len(live_workers) < LOW_LIVE_MIN_LIVE_WORKERS
     now_ts = time.time()
     if now_ts < NO_GPU_UNTIL:
         log(
@@ -1823,12 +2176,14 @@ def tick() -> None:
             live_workers=len(live_workers),
             total_th=round(sum(float(w.get("reported_hashrate_th") or 0) for w in live_workers), 3),
         )
-        return
     active_or_pending_slots = active_or_pending_slot_count()
-    ALLOW_LIVE_UPGRADES_THIS_TICK = len(live_workers) >= len(SLOTS) or (
-        active_or_pending_slots >= len(SLOTS)
-        and len(live_workers) >= OPTIMIZE_LIVE_MIN_LIVE_WORKERS
-    )
+    if OPTIMIZE_LIVE_REQUIRE_FULL_SLOTS:
+        ALLOW_LIVE_UPGRADES_THIS_TICK = len(live_workers) >= len(SLOTS) or (
+            active_or_pending_slots >= len(SLOTS)
+            and len(live_workers) >= OPTIMIZE_LIVE_MIN_LIVE_WORKERS
+        )
+    else:
+        ALLOW_LIVE_UPGRADES_THIS_TICK = len(live_workers) >= OPTIMIZE_LIVE_MIN_LIVE_WORKERS
     refresh_candidate_budgets(capacity_workers(workers))
     org_balance_cents, org_balance_age_seconds = latest_org_balance_cents()
     if org_balance_cents is not None and org_balance_cents > 0:
@@ -1859,7 +2214,15 @@ def tick() -> None:
         active_or_pending_slots=active_or_pending_slots,
         allow_live_upgrades=ALLOW_LIVE_UPGRADES_THIS_TICK,
         live_workers=len(live_workers),
+        low_live=LOW_LIVE_THIS_TICK,
+        low_live_min_live_workers=LOW_LIVE_MIN_LIVE_WORKERS,
+        low_live_allocating_retarget_available_seconds=LOW_LIVE_ALLOCATING_RETARGET_AVAILABLE_SECONDS,
+        low_live_ignore_pending_capacity=LOW_LIVE_IGNORE_PENDING_CAPACITY,
         live_upgrade_min_live_workers=OPTIMIZE_LIVE_MIN_LIVE_WORKERS,
+        live_upgrade_min_profit_delta=OPTIMIZE_LIVE_MIN_PROFIT_DELTA,
+        live_upgrade_min_th_delta=OPTIMIZE_LIVE_MIN_TH_DELTA,
+        live_upgrade_require_full_slots=OPTIMIZE_LIVE_REQUIRE_FULL_SLOTS,
+        live_upgrade_require_reported_available=OPTIMIZE_LIVE_REQUIRE_REPORTED_AVAILABLE,
         total_th=round(sum(float(w.get("reported_hashrate_th") or 0) for w in live_workers), 3),
         results=results,
     )
@@ -1878,6 +2241,12 @@ def main() -> int:
         org=ORG,
         slots=SLOTS,
         try_seconds=TRY_SECONDS,
+        allocating_retarget_available_seconds=ALLOCATING_RETARGET_AVAILABLE_SECONDS,
+        low_live_min_live_workers=LOW_LIVE_MIN_LIVE_WORKERS,
+        low_live_allocating_retarget_available_seconds=LOW_LIVE_ALLOCATING_RETARGET_AVAILABLE_SECONDS,
+        low_live_ignore_pending_capacity=LOW_LIVE_IGNORE_PENDING_CAPACITY,
+        allowed_priorities=ALLOWED_PRIORITIES,
+        blocked_profiles=sorted(f"{gpu}:{priority}" for gpu, priority in BLOCKED_PROFILES),
         miner_release_tag=MINER_RELEASE_TAG,
         miner_package_version=MINER_PACKAGE_VERSION,
         miner_binary=MINER_BINARY,

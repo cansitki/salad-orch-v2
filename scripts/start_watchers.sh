@@ -1,0 +1,182 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+REPO_ROOT=$(cd -- "$SCRIPT_DIR/.." && pwd)
+STATE_DIR=${SALAD_PRL_STATE_DIR:-"$REPO_ROOT/state"}
+LOG_DIR="$STATE_DIR/logs"
+mkdir -p "$LOG_DIR"
+
+SCRIPT="$SCRIPT_DIR/salad_prl_watch.py"
+GUARD="$SCRIPT_DIR/salad_prl_guard.py"
+KRY1_ORG_ID=kry1
+COMMON_ORGS=kray,kry1,kray2,kray3
+FLEET_MODE=${PRL_FLEET_MODE:-fill}
+TARGET_OFFSET=1
+ALLOWED_PRIORITIES=batch
+BLOCKED_PROFILES=4080:low,4070tis:low,5070:low,5090:low
+POLL_SECONDS=30
+HTTP_TIMEOUT_SECONDS=15
+NOHASH_GRACE_SECONDS=60
+UNDERPERFORM_GRACE_SECONDS=120
+UNDERPERFORM_RATIO=0.85
+UNDERPERFORM_MIN_DEFICIT_TH=10
+ALLOCATING_ROTATE_SECONDS=90
+PROFILE_MISMATCH_GRACE_SECONDS=120
+CREATE_PROGRESS_SECONDS=300
+EMPTY_CREATING_SECONDS=120
+UPGRADE_TO_BEST_SECONDS=999999
+LIVE_UPGRADE_INTERVAL_SECONDS=300
+LIVE_UPGRADE_MIN_PROFIT_DAY=0.25
+LIVE_UPGRADE_MIN_LIVE_WORKERS=8
+NO_CREDITS_BACKOFF_SECONDS=3600
+ORG_BALANCE_MAX_AGE_SECONDS=10800
+NO_GPU_SLEEP_AFTER_SECONDS=3600
+NO_GPU_SLEEP_SECONDS=900
+FILL_FIXED_DECISION_PRICE_USD=${PRL_FILL_FIXED_DECISION_PRICE_USD:-0.64}
+OPTIMIZE_FIXED_DECISION_PRICE_USD=${PRL_OPTIMIZE_FIXED_DECISION_PRICE_USD:-0.62}
+FILL_MIN_PROFIT_DAY=${PRL_FILL_MIN_PROFIT_USD_DAY:-0}
+OPTIMIZE_MIN_PROFIT_DAY=${PRL_OPTIMIZE_MIN_PROFIT_USD_DAY:-0.01}
+MINER_RELEASE_TAG=v.1.1.8
+MINER_PACKAGE_VERSION=v1.1.8
+MINER_BINARY=miner-cuda12
+
+case "$FLEET_MODE" in
+  fill)
+    FIXED_DECISION_PRICE_USD=$FILL_FIXED_DECISION_PRICE_USD
+    MIN_PROFIT_DAY=$FILL_MIN_PROFIT_DAY
+    NEGATIVE_SLOT_PROFIT_DAY=0
+    UNDERPERFORM_GRACE_SECONDS=999999
+    LIVE_UPGRADE_SECONDS=999999
+    ;;
+  optimize)
+    FIXED_DECISION_PRICE_USD=$OPTIMIZE_FIXED_DECISION_PRICE_USD
+    MIN_PROFIT_DAY=$OPTIMIZE_MIN_PROFIT_DAY
+    NEGATIVE_SLOT_PROFIT_DAY=0.01
+    UNDERPERFORM_GRACE_SECONDS=120
+    LIVE_UPGRADE_SECONDS=300
+    ;;
+  *)
+    echo "unknown PRL_FLEET_MODE: $FLEET_MODE" >&2
+    exit 2
+    ;;
+esac
+DECISION_PRICE_CAP_USD=$FIXED_DECISION_PRICE_USD
+
+slots() {
+  local prefix=$1
+  local out=""
+  local i
+  for i in $(seq -w 1 10); do
+    if [[ -n "$out" ]]; then
+      out+=","
+    fi
+    out+="${prefix}-${i}"
+  done
+  printf '%s' "$out"
+}
+
+restart_tmux() {
+  local session=$1
+  shift
+  tmux has-session -t "$session" 2>/dev/null && tmux kill-session -t "$session"
+  tmux new-session -d -s "$session" "$*"
+}
+
+watch_cmd() {
+  local watch_name=$1
+  local log_path=$2
+  local org=$3
+  local public_org=$4
+  local slot_list=$5
+  local pool_prefix=$6
+  local worker_prefix=$7
+  local worker_slot_prefix=$8
+  local display_prefix=$9
+  local api_key_env=${10:-SALAD_API_KEY_2}
+
+  printf 'cd %q && env' "$REPO_ROOT"
+  printf ' PRL_FLEET_MODE=%q' "$FLEET_MODE"
+  printf ' PRL_WATCH_NAME=%q' "$watch_name"
+  printf ' PRL_WATCH_LOG=%q' "$log_path"
+  printf ' PRL_WATCH_ORG=%q' "$org"
+  printf ' PRL_WATCH_PUBLIC_ORG=%q' "$public_org"
+  printf ' PRL_WATCH_API_KEY_ENV=%q' "$api_key_env"
+  printf ' PRL_WATCH_SLOTS=%q' "$slot_list"
+  printf ' PRL_WATCH_POOL_WORKER_PREFIX=%q' "$pool_prefix"
+  printf ' PRL_WATCH_WORKER_PREFIX=%q' "$worker_prefix"
+  printf ' PRL_WATCH_WORKER_SLOT_PREFIX=%q' "$worker_slot_prefix"
+  printf ' PRL_WATCH_DISPLAY_PREFIX=%q' "$display_prefix"
+  printf ' KRAY2_PRL_POLL_SECONDS=%q' "$POLL_SECONDS"
+  printf ' KRAY2_PRL_TRY_SECONDS=%q' "$ALLOCATING_ROTATE_SECONDS"
+  printf ' KRAY2_PRL_PROFILE_MISMATCH_GRACE_SECONDS=%q' "$PROFILE_MISMATCH_GRACE_SECONDS"
+  printf ' KRAY2_PRL_CREATE_PROGRESS_SECONDS=%q' "$CREATE_PROGRESS_SECONDS"
+  printf ' KRAY2_PRL_EMPTY_CREATING_SECONDS=%q' "$EMPTY_CREATING_SECONDS"
+  printf ' KRAY2_PRL_RUNNING_WITHOUT_POOL_SECONDS=%q' "$NOHASH_GRACE_SECONDS"
+  printf ' KRAY2_PRL_UPGRADE_TO_BEST_SECONDS=%q' "$UPGRADE_TO_BEST_SECONDS"
+  printf ' KRAY2_PRL_OPTIMIZE_LIVE_SECONDS=%q' "$LIVE_UPGRADE_SECONDS"
+  printf ' KRAY2_PRL_OPTIMIZE_LIVE_INTERVAL_SECONDS=%q' "$LIVE_UPGRADE_INTERVAL_SECONDS"
+  printf ' KRAY2_PRL_OPTIMIZE_LIVE_MIN_PROFIT_DELTA=%q' "$LIVE_UPGRADE_MIN_PROFIT_DAY"
+  printf ' KRAY2_PRL_OPTIMIZE_LIVE_MIN_LIVE_WORKERS=%q' "$LIVE_UPGRADE_MIN_LIVE_WORKERS"
+  printf ' KRAY2_PRL_NO_CREDITS_BACKOFF_SECONDS=%q' "$NO_CREDITS_BACKOFF_SECONDS"
+  printf ' KRAY2_PRL_NO_GPU_SLEEP_AFTER_SECONDS=%q' "$NO_GPU_SLEEP_AFTER_SECONDS"
+  printf ' KRAY2_PRL_NO_GPU_SLEEP_SECONDS=%q' "$NO_GPU_SLEEP_SECONDS"
+  printf ' PRL_WATCH_HTTP_TIMEOUT_SECONDS=%q' "$HTTP_TIMEOUT_SECONDS"
+  printf ' PRL_WATCH_ORG_BALANCE_MAX_AGE_SECONDS=%q' "$ORG_BALANCE_MAX_AGE_SECONDS"
+  printf ' PRL_WATCH_TARGET_OFFSET=%q' "$TARGET_OFFSET"
+  printf ' PRL_WATCH_ALLOWED_PRIORITIES=%q' "$ALLOWED_PRIORITIES"
+  printf ' PRL_WATCH_BLOCKED_PROFILES=%q' "$BLOCKED_PROFILES"
+  printf ' PRL_WATCH_MIN_PROFIT_USD_DAY=%q' "$MIN_PROFIT_DAY"
+  printf ' PRL_WATCH_PRICE_BAND_USD=%q' "0.02"
+  printf ' PRL_WATCH_DECISION_PRICE_CAP_USD=%q' "$DECISION_PRICE_CAP_USD"
+  printf ' PRL_WATCH_FIXED_DECISION_PRICE_USD=%q' "$FIXED_DECISION_PRICE_USD"
+  printf ' PRL_WATCH_MINER_RELEASE_TAG=%q' "$MINER_RELEASE_TAG"
+  printf ' PRL_WATCH_MINER_PACKAGE_VERSION=%q' "$MINER_PACKAGE_VERSION"
+  printf ' PRL_WATCH_MINER_BINARY=%q' "$MINER_BINARY"
+  printf ' PRL_WATCH_COORDINATED_ORGS=%q' "$COMMON_ORGS"
+  printf ' python3 %q >> %q 2>&1' "$SCRIPT" "$log_path"
+}
+
+guard_cmd() {
+  printf 'cd %q && env' "$REPO_ROOT"
+  printf ' PRL_FLEET_MODE=%q' "$FLEET_MODE"
+  printf ' PRL_GUARD_ORGS=%q' "$COMMON_ORGS"
+  printf ' PRL_PRICE_BAND_USD=%q' "0.02"
+  printf ' PRL_DECISION_PRICE_CAP_USD=%q' "$DECISION_PRICE_CAP_USD"
+  printf ' PRL_FIXED_DECISION_PRICE_USD=%q' "$FIXED_DECISION_PRICE_USD"
+  printf ' PRL_NEGATIVE_SLOT_PROFIT_DAY=%q' "$NEGATIVE_SLOT_PROFIT_DAY"
+  printf ' PRL_NEGATIVE_SLOT_GRACE_SECONDS=%q' "120"
+  printf ' PRL_UNDERPERFORM_GRACE_SECONDS=%q' "$UNDERPERFORM_GRACE_SECONDS"
+  printf ' PRL_UNDERPERFORM_RATIO=%q' "$UNDERPERFORM_RATIO"
+  printf ' PRL_UNDERPERFORM_MIN_DEFICIT_TH=%q' "$UNDERPERFORM_MIN_DEFICIT_TH"
+  printf ' PRL_NOHASH_GRACE_SECONDS=%q' "$NOHASH_GRACE_SECONDS"
+  printf ' PRL_NOHASH_FORCE_GRACE_SECONDS=%q' "$NOHASH_GRACE_SECONDS"
+  printf ' PRL_NOHASH_NEGATIVE_GRACE_SECONDS=%q' "$NOHASH_GRACE_SECONDS"
+  printf ' PRL_NOHASH_FALLBACK_PRICE=%q' "$FIXED_DECISION_PRICE_USD"
+  printf ' KRAY2_PRL_POLL_SECONDS=%q' "$POLL_SECONDS"
+  printf ' KRAY2_PRL_TRY_SECONDS=%q' "$ALLOCATING_ROTATE_SECONDS"
+  printf ' PRL_WATCH_HTTP_TIMEOUT_SECONDS=%q' "$HTTP_TIMEOUT_SECONDS"
+  printf ' PRL_WATCH_TARGET_OFFSET=%q' "$TARGET_OFFSET"
+  printf ' PRL_WATCH_ALLOWED_PRIORITIES=%q' "$ALLOWED_PRIORITIES"
+  printf ' PRL_WATCH_BLOCKED_PROFILES=%q' "$BLOCKED_PROFILES"
+  printf ' PRL_WATCH_MIN_PROFIT_USD_DAY=%q' "$MIN_PROFIT_DAY"
+  printf ' PRL_WATCH_PRICE_BAND_USD=%q' "0.02"
+  printf ' PRL_WATCH_DECISION_PRICE_CAP_USD=%q' "$DECISION_PRICE_CAP_USD"
+  printf ' PRL_WATCH_FIXED_DECISION_PRICE_USD=%q' "$FIXED_DECISION_PRICE_USD"
+  printf ' PRL_WATCH_MINER_RELEASE_TAG=%q' "$MINER_RELEASE_TAG"
+  printf ' PRL_WATCH_MINER_PACKAGE_VERSION=%q' "$MINER_PACKAGE_VERSION"
+  printf ' PRL_WATCH_MINER_BINARY=%q' "$MINER_BINARY"
+  printf ' PRL_WATCH_COORDINATED_ORGS=%q' "$COMMON_ORGS"
+  printf ' python3 %q >> %q 2>&1' "$GUARD" "$LOG_DIR/prl_nohash_guard.log"
+}
+
+pkill -f '[s]alad_prl_watch.py' || true
+pkill -f '[s]alad_prl_guard.py' || true
+
+restart_tmux kray-prl-watch "$(watch_cmd kray-prl-watch "$LOG_DIR/kray_prl_watch.log" kray kray "$(slots prl-kray-roi)" kray-prl-kray kray-prl kray-roi- "PearlFortune KRAY" SALAD_API_KEY_2)"
+restart_tmux kry1-prl-watch "$(watch_cmd kry1-prl-watch "$LOG_DIR/kry1_prl_watch.log" "$KRY1_ORG_ID" kry1 "$(slots prl-kry1-roi)" kry1-prl-kry1 kry1-prl kry1-roi- "PearlFortune KRY1" SALAD_API_KEY_KRY1)"
+restart_tmux kray2-prl-watch "$(watch_cmd kray2-prl-watch "$LOG_DIR/kray2_prl_watch.log" kray2 kray2 "$(slots prl-kray2-roi)" kray2-prl-kray2 kray2-prl kray2-roi- "PearlFortune KRAY2" SALAD_API_KEY_2)"
+restart_tmux kray3-prl-watch "$(watch_cmd kray3-prl-watch "$LOG_DIR/kray3_prl_watch.log" kray3 kray3 "$(slots prl-kray3-roi)" kray3-prl-kray3 kray3-prl kray3-roi- "PearlFortune KRAY3" SALAD_API_KEY_2)"
+restart_tmux kray-prl-guard "$(guard_cmd)"
+
+tmux list-sessions | rg '(kray|kry1|kray2|kray3)-prl-(watch|guard)'

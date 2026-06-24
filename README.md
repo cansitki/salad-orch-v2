@@ -2,9 +2,10 @@
 
 Public runbook for running a SaladCloud GPU fleet that mines PearlFortune PRL.
 
-This repository is documentation only. It explains the operating model, thresholds,
-environment variables, monitoring flow, and safety rules. It intentionally does
-not include live API keys, cookies, private logs, or the exact local scripts.
+This repository includes the public, sanitized version of the automation code.
+It explains the operating model, thresholds, environment variables, monitoring
+flow, and safety rules. It intentionally does not include live API keys, cookies,
+private logs, or machine-local secrets.
 
 ## Reader And Goal
 
@@ -80,6 +81,60 @@ Example private environment:
 SALAD_API_KEY_2=<private key for kray/kray2/kray3>
 SALAD_API_KEY_KRY1=<private key for kry1>
 PRL_WALLET=<public PearlFortune wallet address>
+```
+
+## Repository Layout
+
+The runnable code lives in `scripts/`.
+
+| File | Purpose |
+| --- | --- |
+| `scripts/salad_prl_watch.py` | Per-org Salad watcher. Creates, starts, rotates, and protects slots. |
+| `scripts/salad_prl_profit_snapshot.py` | Combines Salad state, pool stats, PRL price, costs, and profit. |
+| `scripts/salad_prl_guard.py` | Stops or reallocates no-hash, negative-profit, and underperforming slots. |
+| `scripts/salad_prl_nonstop_supervisor.py` | Keeps tmux sessions alive and switches fill/optimize mode. |
+| `scripts/start_watchers.sh` | Starts all org watchers and the guard. |
+| `scripts/start_supervisor.sh` | Starts the nonstop supervisor. |
+| `.env.example` | Safe template for local secrets and runtime settings. |
+
+The public scripts are intentionally parameterized. Secrets are read from env
+vars or `.env`, not from source code.
+
+## Setup
+
+Install dependencies:
+
+```bash
+python3 -m venv .venv
+. .venv/bin/activate
+pip install -r requirements.txt
+```
+
+Create a private env file:
+
+```bash
+cp .env.example .env
+```
+
+Fill in:
+
+```text
+PRL_WALLET
+SALAD_API_KEY_2
+SALAD_API_KEY_KRY1
+```
+
+Start fill mode:
+
+```bash
+PRL_FLEET_MODE=fill bash scripts/start_watchers.sh
+PRL_FLEET_MODE=fill bash scripts/start_supervisor.sh
+```
+
+Generate a profit snapshot:
+
+```bash
+python3 scripts/salad_prl_profit_snapshot.py --price 0.64
 ```
 
 ## Main Components

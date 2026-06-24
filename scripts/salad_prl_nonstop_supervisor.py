@@ -13,32 +13,35 @@ from typing import Any
 
 SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parent
+ENV = pathlib.Path(os.environ.get("SALAD_PRL_ENV", str(REPO_ROOT / ".env")))
+
+
+def load_env_file() -> None:
+    if not ENV.exists():
+        return
+    for line in ENV.read_text().splitlines():
+        if not line or line.lstrip().startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
+
+
+load_env_file()
 STATE_DIR = pathlib.Path(os.environ.get("SALAD_PRL_STATE_DIR", str(REPO_ROOT / "state")))
 LOG_DIR = STATE_DIR / "logs"
 LOG = pathlib.Path(os.environ.get("PRL_SUPERVISOR_LOG", str(LOG_DIR / "kray_prl_nonstop_supervisor.log")))
 START_SCRIPT = pathlib.Path(os.environ.get("PRL_START_WATCHERS_SCRIPT", str(SCRIPT_DIR / "start_watchers.sh")))
-REQUIRED_SESSIONS = (
-    "kray-prl-watch",
-    "kry1-prl-watch",
-    "kray2-prl-watch",
-    "kray3-prl-watch",
-    "kray-prl-guard",
+SUPERVISED_ORGS = tuple(
+    org.strip()
+    for org in os.environ.get("PRL_SUPERVISOR_ORGS", os.environ.get("PRL_FLEET_ORGS", "kray,kry1,kray2,kray3")).split(",")
+    if org.strip()
 )
+REQUIRED_SESSIONS = tuple(f"{org}-prl-watch" for org in SUPERVISED_ORGS) + ("kray-prl-guard",)
 FORBIDDEN_SESSIONS: tuple[str, ...] = ()
 FULL_LIVE_WORKERS_PER_ORG = 10
-HEARTBEAT_LOGS = {
-    "kray-prl-watch": LOG_DIR / "kray_prl_watch.log",
-    "kry1-prl-watch": LOG_DIR / "kry1_prl_watch.log",
-    "kray2-prl-watch": LOG_DIR / "kray2_prl_watch.log",
-    "kray3-prl-watch": LOG_DIR / "kray3_prl_watch.log",
-    "kray-prl-guard": LOG_DIR / "prl_nohash_guard.log",
-}
-WATCHER_LOGS = {
-    "kray": LOG_DIR / "kray_prl_watch.log",
-    "kry1": LOG_DIR / "kry1_prl_watch.log",
-    "kray2": LOG_DIR / "kray2_prl_watch.log",
-    "kray3": LOG_DIR / "kray3_prl_watch.log",
-}
+HEARTBEAT_LOGS = {f"{org}-prl-watch": LOG_DIR / f"{org}_prl_watch.log" for org in SUPERVISED_ORGS}
+HEARTBEAT_LOGS["kray-prl-guard"] = LOG_DIR / "prl_nohash_guard.log"
+WATCHER_LOGS = {org: LOG_DIR / f"{org}_prl_watch.log" for org in SUPERVISED_ORGS}
 
 
 def utc_now() -> str:

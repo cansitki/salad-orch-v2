@@ -17,29 +17,60 @@ STATE_DIR = pathlib.Path(os.environ.get("SALAD_PRL_STATE_DIR", str(REPO_ROOT / "
 SNAPSHOT_PATH = pathlib.Path(os.environ.get("PRL_SNAPSHOT_PATH", str(SCRIPT_DIR / "salad_prl_profit_snapshot.py")))
 KRAY2_PATH = pathlib.Path(os.environ.get("PRL_WATCH_SCRIPT_PATH", str(SCRIPT_DIR / "salad_prl_watch.py")))
 LOG = pathlib.Path(os.environ.get("PRL_GUARD_LOG", str(STATE_DIR / "logs" / "prl_nohash_guard.log")))
+STOPPED_SLOT_STATE_PATH = pathlib.Path(
+    os.environ.get("PRL_STOPPED_SLOT_STATE_PATH", str(STATE_DIR / "prl_stopped_slots.json"))
+)
+OBSERVATION_STATE_PATH = pathlib.Path(
+    os.environ.get("PRL_GUARD_OBSERVATION_STATE_PATH", str(STATE_DIR / "prl_guard_observations.json"))
+)
 FALLBACK_PRL_PRICE = float(os.environ.get("PRL_NOHASH_FALLBACK_PRICE", "0.62"))
 PRICE_BAND_USD = float(os.environ.get("PRL_PRICE_BAND_USD", "0.02"))
 DECISION_PRICE_CAP_USD = float(os.environ.get("PRL_DECISION_PRICE_CAP_USD", "0.63"))
 FIXED_DECISION_PRICE_USD = float(os.environ.get("PRL_FIXED_DECISION_PRICE_USD", "0.62"))
 POLL_SECONDS = int(os.environ.get("PRL_NOHASH_POLL_SECONDS", "20"))
-NO_HASH_GRACE_SECONDS = int(os.environ.get("PRL_NOHASH_GRACE_SECONDS", "120"))
-FORCE_NO_HASH_GRACE_SECONDS = int(os.environ.get("PRL_NOHASH_FORCE_GRACE_SECONDS", "90"))
-NEGATIVE_PROFIT_GRACE_SECONDS = int(os.environ.get("PRL_NOHASH_NEGATIVE_GRACE_SECONDS", "60"))
-NEGATIVE_SLOT_GRACE_SECONDS = int(os.environ.get("PRL_NEGATIVE_SLOT_GRACE_SECONDS", "120"))
+NO_HASH_GRACE_SECONDS = int(os.environ.get("PRL_NOHASH_GRACE_SECONDS", "900"))
+FORCE_NO_HASH_GRACE_SECONDS = int(os.environ.get("PRL_NOHASH_FORCE_GRACE_SECONDS", "900"))
+NEGATIVE_PROFIT_GRACE_SECONDS = int(os.environ.get("PRL_NOHASH_NEGATIVE_GRACE_SECONDS", "900"))
+NEGATIVE_SLOT_GRACE_SECONDS = int(os.environ.get("PRL_NEGATIVE_SLOT_GRACE_SECONDS", "900"))
 NEGATIVE_SLOT_PROFIT_DAY = float(os.environ.get("PRL_NEGATIVE_SLOT_PROFIT_DAY", "0.01"))
 UNDERPERFORM_GRACE_SECONDS = int(os.environ.get("PRL_UNDERPERFORM_GRACE_SECONDS", "120"))
 UNDERPERFORM_RATIO = float(os.environ.get("PRL_UNDERPERFORM_RATIO", "0.85"))
 UNDERPERFORM_MIN_DEFICIT_TH = float(os.environ.get("PRL_UNDERPERFORM_MIN_DEFICIT_TH", "10"))
+STALE_WORKER_GRACE_SECONDS = int(os.environ.get("PRL_STALE_WORKER_GRACE_SECONDS", "900"))
+STUCK_NON_LIVE_GRACE_SECONDS = int(os.environ.get("PRL_STUCK_NON_LIVE_SECONDS", "3600"))
+EMPTY_STUCK_NON_LIVE_GRACE_SECONDS = int(
+    os.environ.get("PRL_EMPTY_STUCK_NON_LIVE_SECONDS", str(STUCK_NON_LIVE_GRACE_SECONDS))
+)
+STUCK_NON_LIVE_MAX_ACTIONS = int(os.environ.get("PRL_STUCK_NON_LIVE_MAX_ACTIONS", "1"))
+STUCK_NON_LIVE_MIN_ACTIVE_SLOTS = int(os.environ.get("PRL_STUCK_NON_LIVE_MIN_ACTIVE_SLOTS", "28"))
+STUCK_NON_LIVE_RETARGET_COOLDOWN_SECONDS = int(os.environ.get("PRL_STUCK_NON_LIVE_RETARGET_COOLDOWN_SECONDS", "1800"))
+STUCK_NON_LIVE_TICK_BUDGET_SECONDS = float(os.environ.get("PRL_STUCK_NON_LIVE_TICK_BUDGET_SECONDS", "20"))
+STUCK_RUNNING_ZERO_DEFER_SECONDS = int(os.environ.get("PRL_STUCK_RUNNING_ZERO_DEFER_SECONDS", "3600"))
 GLOBAL_POOL_MIN_FRESH_WORKERS = 3
 SEEN_SINCE: dict[tuple[str, str], float] = {}
 NEGATIVE_SLOT_SEEN_SINCE: dict[tuple[str, str], float] = {}
 UNDERPERFORM_SLOT_SEEN_SINCE: dict[tuple[str, str], float] = {}
+STALE_WORKER_SEEN_SINCE: dict[tuple[str, str], float] = {}
+STUCK_NON_LIVE_RETARGETED_AT: dict[tuple[str, str], float] = {}
 INCLUDE_BMU = os.environ.get("PRL_INCLUDE_BMU", "").lower() in {"1", "true", "yes"}
 ENABLED_ORGS = tuple(
     org.strip()
     for org in os.environ.get("PRL_GUARD_ORGS", "kray,kray2,kray3").split(",")
     if org.strip()
 )
+DEFAULT_API_KEY_ENV = os.environ.get("PRL_WATCH_DEFAULT_API_KEY_ENV", "SALAD_API_KEY")
+OBSERVATION_STORES: dict[str, dict[tuple[str, str], float]] = {
+    "no_hash": SEEN_SINCE,
+    "negative": NEGATIVE_SLOT_SEEN_SINCE,
+    "underperform": UNDERPERFORM_SLOT_SEEN_SINCE,
+    "stale": STALE_WORKER_SEEN_SINCE,
+}
+OBSERVATION_EVENTS = {
+    "no_hash_observed": "no_hash",
+    "negative_slot_observed": "negative",
+    "underperform_slot_observed": "underperform",
+    "stale_worker_observed": "stale",
+}
 
 
 WATCH_COMMON_ENV = {
@@ -119,6 +150,151 @@ def log(event: str, **fields: Any) -> None:
         fh.write(json.dumps({"at": now(), "event": event, **fields}, sort_keys=True) + "\n")
 
 
+def parse_log_timestamp(value: Any) -> float | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = f"{text[:-1]}+00:00"
+    try:
+        return datetime.fromisoformat(text).astimezone(UTC).timestamp()
+    except ValueError:
+        return None
+
+
+def observation_key_text(key: tuple[str, str]) -> str:
+    org, slot = key
+    return f"{org}/{slot}"
+
+
+def observation_key_from_text(text: str) -> tuple[str, str] | None:
+    if "/" not in text:
+        return None
+    org, slot = text.split("/", 1)
+    org = org.strip()
+    slot = slot.strip()
+    if not org or not slot:
+        return None
+    return org, slot
+
+
+def load_observation_section(payload: dict[str, Any], name: str, store: dict[tuple[str, str], float]) -> None:
+    rows = payload.get(name) or {}
+    if not isinstance(rows, dict):
+        return
+    for raw_key, raw_ts in rows.items():
+        key = observation_key_from_text(str(raw_key))
+        if key is None:
+            continue
+        try:
+            first_seen = float(raw_ts)
+        except (TypeError, ValueError):
+            continue
+        if first_seen > 0:
+            store[key] = min(store.get(key, first_seen), first_seen)
+
+
+def seed_observations_from_log(max_lines: int = 5000) -> None:
+    if not LOG.exists():
+        return
+    try:
+        lines = LOG.read_text(errors="ignore").splitlines()[-max_lines:]
+    except OSError as exc:
+        log("guard_observation_log_seed_failed", error=type(exc).__name__, detail=str(exc)[:180])
+        return
+    seeded = 0
+    for line in lines:
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        section = OBSERVATION_EVENTS.get(str(row.get("event") or ""))
+        if section is None:
+            continue
+        org = str(row.get("org") or "").strip()
+        slot = str(row.get("slot") or "").strip()
+        if not org or not slot:
+            continue
+        seen_at = parse_log_timestamp(row.get("at"))
+        if seen_at is None:
+            continue
+        key = (org, slot)
+        store = OBSERVATION_STORES[section]
+        previous = store.get(key)
+        if previous is None or seen_at < previous:
+            store[key] = seen_at
+            seeded += 1
+    if seeded:
+        log("guard_observation_state_seeded_from_log", seeded=seeded, max_lines=max_lines)
+
+
+def load_guard_observation_state() -> None:
+    try:
+        payload = json.loads(OBSERVATION_STATE_PATH.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        seed_observations_from_log()
+        return
+    except (OSError, json.JSONDecodeError) as exc:
+        log("guard_observation_state_load_failed", error=type(exc).__name__, detail=str(exc)[:180])
+        seed_observations_from_log()
+        return
+    if not isinstance(payload, dict):
+        seed_observations_from_log()
+        return
+    for name, store in OBSERVATION_STORES.items():
+        load_observation_section(payload, name, store)
+    seed_observations_from_log()
+
+
+def save_guard_observation_state() -> None:
+    try:
+        OBSERVATION_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "updated_at": now(),
+            **{
+                name: {observation_key_text(key): first_seen for key, first_seen in sorted(store.items())}
+                for name, store in OBSERVATION_STORES.items()
+            },
+        }
+        tmp = OBSERVATION_STATE_PATH.with_suffix(f"{OBSERVATION_STATE_PATH.suffix}.tmp")
+        tmp.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
+        tmp.replace(OBSERVATION_STATE_PATH)
+    except Exception as exc:
+        log("guard_observation_state_write_failed", error=type(exc).__name__, detail=str(exc)[:180])
+
+
+def record_stopped_slot(org: str, slot: str, reason: str) -> None:
+    try:
+        STOPPED_SLOT_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            state = json.loads(STOPPED_SLOT_STATE_PATH.read_text())
+        except Exception:
+            state = {}
+        state[f"{org}/{slot}"] = {"stopped_at": time.time(), "reason": reason}
+        tmp = STOPPED_SLOT_STATE_PATH.with_suffix(f"{STOPPED_SLOT_STATE_PATH.suffix}.tmp")
+        tmp.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
+        tmp.replace(STOPPED_SLOT_STATE_PATH)
+    except Exception as exc:
+        log("stopped_slot_state_write_failed", org=org, slot=slot, error=type(exc).__name__, detail=str(exc)[:180])
+
+
+def recent_stopped_slot_age_seconds(org: str, slot: str) -> float | None:
+    try:
+        state = json.loads(STOPPED_SLOT_STATE_PATH.read_text())
+    except Exception:
+        return None
+    entry = state.get(f"{org}/{slot}")
+    if not isinstance(entry, dict):
+        return None
+    try:
+        stopped_at = float(entry.get("stopped_at") or 0)
+    except (TypeError, ValueError):
+        return None
+    if stopped_at <= 0:
+        return None
+    return max(0.0, time.time() - stopped_at)
+
+
 BMU_WATCH_ENV = {
     "PRL_WATCH_NAME": "bmu-prl-watch",
     "PRL_WATCH_LOG": str(STATE_DIR / "logs" / "bmu_prl_watch.log"),
@@ -153,6 +329,23 @@ def bmu_extra_watch_env(org: str) -> dict[str, str]:
         "PRL_WATCH_LOG": str(STATE_DIR / "logs" / f"{org}_prl_watch.log"),
         "PRL_WATCH_ORG": org,
         "PRL_WATCH_API_KEY_ENV": "SALAD_API_KEY",
+        "PRL_WATCH_SLOTS": ",".join(f"prl-{org}-roi-{index:02d}" for index in range(1, 11)),
+        "PRL_WATCH_WORKER_PREFIX": f"{org}-prl",
+        "PRL_WATCH_WORKER_SLOT_PREFIX": f"{org}-roi-",
+        "PRL_WATCH_POOL_WORKER_PREFIX": f"{org}-prl-{org}",
+        "PRL_WATCH_DISPLAY_PREFIX": f"PearlFortune {org.upper()}",
+    }
+
+
+def generic_watch_env(org: str) -> dict[str, str]:
+    key_env = os.environ.get(f"PRL_WATCH_API_KEY_ENV_{org.upper()}", DEFAULT_API_KEY_ENV)
+    return {
+        **WATCH_COMMON_ENV,
+        "PRL_WATCH_NAME": f"{org}-prl-watch",
+        "PRL_WATCH_LOG": str(STATE_DIR / "logs" / f"{org}_prl_watch.log"),
+        "PRL_WATCH_ORG": org,
+        "PRL_WATCH_PUBLIC_ORG": org,
+        "PRL_WATCH_API_KEY_ENV": key_env,
         "PRL_WATCH_SLOTS": ",".join(f"prl-{org}-roi-{index:02d}" for index in range(1, 11)),
         "PRL_WATCH_WORKER_PREFIX": f"{org}-prl",
         "PRL_WATCH_WORKER_SLOT_PREFIX": f"{org}-roi-",
@@ -198,6 +391,9 @@ if INCLUDE_BMU:
         watchers[bmu_org] = load_module(KRAY2_PATH, f"{bmu_org}_prl_watch_guard", bmu_extra_watch_env(bmu_org))
 
 watchers = {org: module for org, module in watchers.items() if org in ENABLED_ORGS}
+for org in ENABLED_ORGS:
+    if org not in watchers:
+        watchers[org] = load_module(KRAY2_PATH, f"{org}_prl_watch_guard", generic_watch_env(org))
 snapshot.ACCOUNTS = [
     account
     for account in snapshot.ACCOUNTS
@@ -295,6 +491,12 @@ def retarget_slot(org: str, slot: str, reason: str) -> dict[str, Any] | None:
         else:
             module.SLOT_CANDIDATE_INDEX[slot] = -1
         candidate = module.advance_candidate(slot)
+        if candidate is None:
+            candidate = module.best_available_candidate(
+                slot,
+                exclude=actual,
+                reason=f"{reason}_fallback_best",
+            )
     except Exception as exc:
         log("slot_retarget_candidate_failed", org=org, slot=slot, reason=reason, error=type(exc).__name__, detail=str(exc)[:180])
         return None
@@ -335,32 +537,26 @@ def retarget_slot(org: str, slot: str, reason: str) -> dict[str, Any] | None:
         log("slot_retarget_failed", org=org, slot=slot, candidate=candidate.label, reason=reason, error=type(exc).__name__, detail=str(exc)[:180])
         return None
 
-
-def stop_slot(module: Any, org: str, slot: str, reason: str, instance_ids: list[str]) -> dict[str, Any]:
+def stop_slot(org: str, slot: str, reason: str) -> dict[str, Any] | None:
+    module = watchers.get(org)
+    if module is None:
+        return None
     try:
         module.request("POST", f"/organizations/{module.ORG}/projects/{module.PROJECT}/containers/{slot}/stop")
-        module.log("slot_stop_requested", slot=slot, reason=reason)
-        log("slot_stop_requested", org=org, slot=slot, reason=reason, instance_ids=instance_ids)
-        return {
-            "org": org,
-            "slot": slot,
-            "instance_ids": instance_ids,
-            "retargeted": None,
-            "stopped": True,
-            "reason": reason,
-        }
+        module.log("slot_stopped", slot=slot, reason=reason)
+        record_stopped_slot(org, slot, reason)
+        log("slot_stopped", org=org, slot=slot, reason=reason)
+        return {"org": org, "slot": slot, "state": "stopped", "retargeted": None}
     except Exception as exc:
-        module.log("slot_stop_failed", slot=slot, reason=reason, error=type(exc).__name__)
-        log("slot_stop_failed", org=org, slot=slot, reason=reason, error=type(exc).__name__, detail=str(exc)[:180])
-        return {
-            "org": org,
-            "slot": slot,
-            "instance_ids": instance_ids,
-            "retargeted": None,
-            "stopped": False,
-            "reason": reason,
-            "error": type(exc).__name__,
-        }
+        log(
+            "slot_stop_failed",
+            org=org,
+            slot=slot,
+            reason=reason,
+            error=type(exc).__name__,
+            detail=str(exc)[:180],
+        )
+        return None
 
 
 def reallocate_slot(org: str, slot: str, reason: str, *, retarget: bool = True) -> list[dict[str, Any]]:
@@ -370,11 +566,11 @@ def reallocate_slot(org: str, slot: str, reason: str, *, retarget: bool = True) 
     pre_retarget_instances = running_instances(module, slot)
     pre_retarget_ids = {str(instance.get("id") or "") for instance in pre_retarget_instances}
     retargeted = retarget_slot(org, slot, reason) if retarget else None
-    actions: list[dict[str, Any]] = []
     if retarget and retargeted is None:
-        instance_ids = [instance_id for instance_id in pre_retarget_ids if instance_id]
-        actions.append(stop_slot(module, org, slot, reason, instance_ids))
-        return actions
+        stopped = stop_slot(org, slot, f"{reason}:no_retarget_candidate")
+        if stopped is not None:
+            return [stopped]
+    actions: list[dict[str, Any]] = []
     instances_by_id: dict[str, dict[str, Any]] = {}
     for instance in pre_retarget_instances + running_instances(module, slot):
         instance_id = str(instance.get("id") or "")
@@ -395,10 +591,22 @@ def reallocate_slot(org: str, slot: str, reason: str, *, retarget: bool = True) 
                 "retargeted": retargeted,
             }
         )
+    if not actions and retargeted is not None:
+        actions.append(
+            {
+                "org": org,
+                "slot": slot,
+                "state": "retargeted_no_running_instances",
+                "retargeted": retargeted,
+            }
+        )
     return actions
 
 
 def org_for_slot(slot: str) -> str:
+    for org in ENABLED_ORGS:
+        if slot.startswith(f"prl-{org}-roi-"):
+            return org
     if slot.startswith("prl-kry1-roi-"):
         return "kry1"
     if slot.startswith("prl-kray2-roi-"):
@@ -428,36 +636,88 @@ def expected_th_for_slot(org: str, row: dict[str, Any]) -> float | None:
     return expected if expected > 0 else None
 
 
+def seen_since_from_state_age(store: dict[tuple[str, str], float], key: tuple[str, str], item: dict[str, Any]) -> float:
+    now_ts = time.time()
+    if key in store:
+        return store[key]
+    try:
+        state_age_seconds = float(item.get("state_age_seconds") or 0)
+    except (TypeError, ValueError):
+        state_age_seconds = 0.0
+    if state_age_seconds > 0:
+        store[key] = max(0.0, now_ts - state_age_seconds)
+    else:
+        store[key] = now_ts
+    return store[key]
+
+
 def tick() -> None:
     price = decision_prl_price()
     snap = snapshot.build_snapshot(price)
     no_hash = list(snap.get("running_no_live_billable_slots") or [])
+    stale_current_workers = list(snap.get("stale_current_workers") or [])
+    stuck_non_live = list(snap.get("stuck_non_live_slots") or [])
+    org_discrepancies = list(snap.get("org_discrepancies") or [])
     totals = snap.get("totals") or {}
     observed_keys = {(str(item.get("org")), str(item.get("slot"))) for item in no_hash}
     for key in list(SEEN_SINCE):
         if key not in observed_keys:
             SEEN_SINCE.pop(key, None)
     no_hash_slots = {slot for _org, slot in observed_keys}
+    stale_keys = {(org_for_slot(str(item.get("slot") or "")), str(item.get("slot") or "")) for item in stale_current_workers}
+    stale_keys = {(org, slot) for org, slot in stale_keys if org and slot}
+    for key in list(STALE_WORKER_SEEN_SINCE):
+        if key not in stale_keys:
+            STALE_WORKER_SEEN_SINCE.pop(key, None)
 
-    if int(snap.get("fresh_workers") or 0) < GLOBAL_POOL_MIN_FRESH_WORKERS:
+    low_fresh_pool_sample = int(snap.get("fresh_workers") or 0) < GLOBAL_POOL_MIN_FRESH_WORKERS
+    if low_fresh_pool_sample:
         log(
-            "global_pool_guard_skip",
+            "global_pool_profit_guard_skip",
             fresh_workers=snap.get("fresh_workers"),
+            min_fresh_workers=GLOBAL_POOL_MIN_FRESH_WORKERS,
             no_hash=no_hash,
+            stuck_non_live_slots=stuck_non_live,
             profit_day=totals.get("profit_day"),
         )
-        return
 
     actions: list[dict[str, Any]] = []
+    if low_fresh_pool_sample:
+        stale_current_workers = []
+
+    for item in stale_current_workers:
+        slot = str(item.get("slot") or "")
+        org = org_for_slot(slot)
+        if not org or org not in watchers or slot in no_hash_slots:
+            continue
+        key = (org, slot)
+        first_seen = STALE_WORKER_SEEN_SINCE.setdefault(key, time.time())
+        age = time.time() - first_seen
+        if age < STALE_WORKER_GRACE_SECONDS:
+            log(
+                "stale_worker_observed",
+                org=org,
+                slot=slot,
+                age_seconds=round(age, 1),
+                grace_seconds=STALE_WORKER_GRACE_SECONDS,
+                worker=item.get("worker"),
+                last_stats_at=item.get("last_stats_at"),
+                th=item.get("th"),
+                gpu=item.get("gpu"),
+            )
+            continue
+        actions.extend(reallocate_slot(org, slot, f"auto_stale_worker_guard_{STALE_WORKER_GRACE_SECONDS}s", retarget=False))
+        STALE_WORKER_SEEN_SINCE.pop(key, None)
+
     total_no_hash_cost_day = sum(float(item.get("cost_day") or 0) for item in no_hash)
     for item in no_hash:
         org = str(item.get("org") or "")
         slot = str(item.get("slot") or "")
         key = (org, slot)
-        first_seen = SEEN_SINCE.setdefault(key, time.time())
+        first_seen = seen_since_from_state_age(SEEN_SINCE, key, item)
         age = time.time() - first_seen
         profit_day = float(totals.get("profit_day") or 0)
-        force_now = profit_day < 0 or total_no_hash_cost_day > max(0.0, profit_day)
+        force_now = False if low_fresh_pool_sample else profit_day < 0 or total_no_hash_cost_day > max(0.0, profit_day)
         grace_seconds = (
             NEGATIVE_PROFIT_GRACE_SECONDS
             if profit_day < 0
@@ -474,6 +734,7 @@ def tick() -> None:
                 grace_seconds=grace_seconds,
                 force_pending=force_now,
                 cost_day=item.get("cost_day"),
+                state_age_seconds=item.get("state_age_seconds"),
                 market_profit_day=totals.get("market_profit_day"),
                 profit_day=totals.get("profit_day"),
                 decision_price_usd=price,
@@ -486,11 +747,15 @@ def tick() -> None:
             if force_now
             else f"auto_nohash_guard_{NO_HASH_GRACE_SECONDS}s"
         )
-        actions.extend(reallocate_slot(org, slot, reason))
+        actions.extend(reallocate_slot(org, slot, reason, retarget=False))
         SEEN_SINCE.pop(key, None)
 
     negative_rows = []
-    for row in snap.get("slots") or []:
+    if low_fresh_pool_sample:
+        candidate_rows = []
+    else:
+        candidate_rows = list(snap.get("slots") or [])
+    for row in candidate_rows:
         slot = str(row.get("slot") or "")
         if not slot or slot in no_hash_slots or str(row.get("gpu") or "") == "requested":
             continue
@@ -528,11 +793,11 @@ def tick() -> None:
                 priority=item.get("priority"),
             )
             continue
-        actions.extend(reallocate_slot(org, slot, f"auto_negative_slot_guard_{NEGATIVE_SLOT_GRACE_SECONDS}s"))
+        actions.extend(reallocate_slot(org, slot, f"auto_negative_slot_guard_{NEGATIVE_SLOT_GRACE_SECONDS}s", retarget=False))
         NEGATIVE_SLOT_SEEN_SINCE.pop(key, None)
 
     underperform_rows = []
-    for row in snap.get("slots") or []:
+    for row in candidate_rows:
         slot = str(row.get("slot") or "")
         if not slot or slot in no_hash_slots or str(row.get("gpu") or "") == "requested":
             continue
@@ -585,8 +850,157 @@ def tick() -> None:
                 priority=item.get("priority"),
             )
             continue
-        actions.extend(reallocate_slot(org, slot, f"auto_underperform_slot_guard_{UNDERPERFORM_GRACE_SECONDS}s"))
+        actions.extend(reallocate_slot(org, slot, f"auto_underperform_slot_guard_{UNDERPERFORM_GRACE_SECONDS}s", retarget=False))
         UNDERPERFORM_SLOT_SEEN_SINCE.pop(key, None)
+
+    stuck_keys = {(str(item.get("org") or ""), str(item.get("slot") or "")) for item in stuck_non_live}
+    for key in list(STUCK_NON_LIVE_RETARGETED_AT):
+        if key not in stuck_keys:
+            STUCK_NON_LIVE_RETARGETED_AT.pop(key, None)
+
+    stuck_actions = 0
+    urgent_observations = len(stale_current_workers) + len(no_hash) + len(negative_rows)
+    active_slots = 0
+    for row in org_discrepancies:
+        try:
+            active_slots += int(row.get("active_salad_slots") or 0)
+        except (TypeError, ValueError):
+            continue
+    if actions or urgent_observations:
+        log(
+            "stuck_non_live_cleanup_limited",
+            reason="urgent_slots_first_zero_running_only",
+            urgent_observations=urgent_observations,
+            pending=len(stuck_non_live),
+            actions=actions,
+        )
+    if STUCK_NON_LIVE_MIN_ACTIVE_SLOTS > 0 and active_slots < STUCK_NON_LIVE_MIN_ACTIVE_SLOTS:
+        log(
+            "stuck_non_live_cleanup_limited",
+            reason="active_slots_below_floor",
+            active_slots=active_slots,
+            min_active_slots=STUCK_NON_LIVE_MIN_ACTIVE_SLOTS,
+            pending=len(stuck_non_live),
+            actions=actions,
+        )
+        stuck_non_live = []
+
+    stuck_started_at = time.monotonic()
+    for item in stuck_non_live:
+        elapsed = time.monotonic() - stuck_started_at
+        if elapsed >= STUCK_NON_LIVE_TICK_BUDGET_SECONDS:
+            log(
+                "stuck_non_live_cleanup_budget_exhausted",
+                elapsed_seconds=round(elapsed, 1),
+                budget_seconds=STUCK_NON_LIVE_TICK_BUDGET_SECONDS,
+                pending=len(stuck_non_live),
+                actions=actions,
+            )
+            break
+        org = str(item.get("org") or "")
+        slot = str(item.get("slot") or "")
+        if not org or org not in watchers or slot in no_hash_slots:
+            continue
+        if stuck_actions >= STUCK_NON_LIVE_MAX_ACTIONS:
+            continue
+        zero_running = int(item.get("running") or 0) <= 0
+        status = str(item.get("status") or "").lower()
+        if zero_running:
+            cleanup_grace = (
+                EMPTY_STUCK_NON_LIVE_GRACE_SECONDS if item.get("empty_pending") else STUCK_NON_LIVE_GRACE_SECONDS
+            )
+            try:
+                state_age_seconds = float(item.get("state_age_seconds") or 0)
+            except (TypeError, ValueError):
+                state_age_seconds = 0.0
+            empty_pending = bool(item.get("empty_pending"))
+            defer_until_seconds = cleanup_grace
+            if not empty_pending:
+                defer_until_seconds += STUCK_RUNNING_ZERO_DEFER_SECONDS
+            if state_age_seconds < defer_until_seconds:
+                log(
+                    "stuck_non_live_zero_running_deferred",
+                    org=org,
+                    slot=slot,
+                    state_age_seconds=item.get("state_age_seconds"),
+                    grace_seconds=cleanup_grace,
+                    running_zero_defer_seconds=0 if empty_pending else STUCK_RUNNING_ZERO_DEFER_SECONDS,
+                    defer_until_seconds=defer_until_seconds,
+                    empty_pending=empty_pending,
+                    status=item.get("status"),
+                    running=item.get("running"),
+                    creating=item.get("creating"),
+                    allocating=item.get("allocating"),
+                    requested_gpus=item.get("requested_gpus"),
+                )
+                continue
+        if (actions or urgent_observations) and not zero_running:
+            continue
+        key = (org, slot)
+        recent_stop_age = recent_stopped_slot_age_seconds(org, slot)
+        if recent_stop_age is not None and recent_stop_age < STUCK_NON_LIVE_RETARGET_COOLDOWN_SECONDS:
+            log(
+                "stuck_non_live_slot_recent_stop_cooldown",
+                org=org,
+                slot=slot,
+                stopped_age_seconds=round(recent_stop_age, 1),
+                cooldown_seconds=STUCK_NON_LIVE_RETARGET_COOLDOWN_SECONDS,
+                state_age_seconds=item.get("state_age_seconds"),
+                status=item.get("status"),
+                running=item.get("running"),
+                creating=item.get("creating"),
+                allocating=item.get("allocating"),
+                requested_gpus=item.get("requested_gpus"),
+            )
+            continue
+        last_retargeted_at = STUCK_NON_LIVE_RETARGETED_AT.get(key)
+        if last_retargeted_at is not None:
+            cooldown_age = time.time() - last_retargeted_at
+            if cooldown_age < STUCK_NON_LIVE_RETARGET_COOLDOWN_SECONDS:
+                log(
+                    "stuck_non_live_slot_cooldown",
+                    org=org,
+                    slot=slot,
+                    cooldown_age_seconds=round(cooldown_age, 1),
+                    cooldown_seconds=STUCK_NON_LIVE_RETARGET_COOLDOWN_SECONDS,
+                    state_age_seconds=item.get("state_age_seconds"),
+                    status=item.get("status"),
+                    running=item.get("running"),
+                    creating=item.get("creating"),
+                    allocating=item.get("allocating"),
+                    requested_gpus=item.get("requested_gpus"),
+                )
+                continue
+        log(
+            "stuck_non_live_slot_cleanup",
+            action="stop" if zero_running else "retarget",
+            org=org,
+            slot=slot,
+            state_age_seconds=item.get("state_age_seconds"),
+            grace_seconds=EMPTY_STUCK_NON_LIVE_GRACE_SECONDS
+            if item.get("empty_pending")
+            else STUCK_NON_LIVE_GRACE_SECONDS,
+            status=item.get("status"),
+            running=item.get("running"),
+            creating=item.get("creating"),
+            allocating=item.get("allocating"),
+            instance_count=item.get("instance_count"),
+            empty_pending=item.get("empty_pending"),
+            requested_gpus=item.get("requested_gpus"),
+        )
+        cleanup_grace = (
+            EMPTY_STUCK_NON_LIVE_GRACE_SECONDS if item.get("empty_pending") else STUCK_NON_LIVE_GRACE_SECONDS
+        )
+        reason = f"auto_stuck_non_live_{cleanup_grace}s"
+        if zero_running:
+            stopped = stop_slot(org, slot, f"{reason}:zero_running")
+            slot_actions = [stopped] if stopped is not None else []
+        else:
+            slot_actions = reallocate_slot(org, slot, reason)
+        if slot_actions:
+            STUCK_NON_LIVE_RETARGETED_AT[key] = time.time()
+            actions.extend(slot_actions)
+            stuck_actions += 1
 
     log(
         "snapshot",
@@ -596,13 +1010,18 @@ def tick() -> None:
         decision_price_usd=price,
         cost_day=totals.get("cost_day"),
         no_hash=no_hash,
+        stale_current_workers=stale_current_workers,
+        org_discrepancies=org_discrepancies,
+        stuck_non_live_slots=stuck_non_live,
         negative_slots=negative_rows,
         underperform_slots=underperform_rows,
         actions=actions,
     )
+    save_guard_observation_state()
 
 
 def main() -> int:
+    load_guard_observation_state()
     log(
         "started",
         poll_seconds=POLL_SECONDS,
@@ -617,6 +1036,12 @@ def main() -> int:
         underperform_grace_seconds=UNDERPERFORM_GRACE_SECONDS,
         underperform_ratio=UNDERPERFORM_RATIO,
         underperform_min_deficit_th=UNDERPERFORM_MIN_DEFICIT_TH,
+        stale_worker_grace_seconds=STALE_WORKER_GRACE_SECONDS,
+        empty_stuck_non_live_grace_seconds=EMPTY_STUCK_NON_LIVE_GRACE_SECONDS,
+        stuck_non_live_grace_seconds=STUCK_NON_LIVE_GRACE_SECONDS,
+        stuck_running_zero_defer_seconds=STUCK_RUNNING_ZERO_DEFER_SECONDS,
+        stuck_non_live_retarget_cooldown_seconds=STUCK_NON_LIVE_RETARGET_COOLDOWN_SECONDS,
+        stuck_non_live_tick_budget_seconds=STUCK_NON_LIVE_TICK_BUDGET_SECONDS,
         enabled_orgs=ENABLED_ORGS,
     )
     while True:

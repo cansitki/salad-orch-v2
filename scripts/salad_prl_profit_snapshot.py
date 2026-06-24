@@ -2,10 +2,13 @@
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
+import csv
 import json
 import os
 import pathlib
 import re
+import sys
 import time
 import urllib.error
 import urllib.request
@@ -16,6 +19,7 @@ from typing import Any
 SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parent
 ENV = pathlib.Path(os.environ.get("SALAD_PRL_ENV", str(REPO_ROOT / ".env")))
+DEFAULT_SNAPSHOT_CSV = REPO_ROOT / "state" / "prl_profit_snapshots.csv"
 
 
 def load_env_file() -> None:
@@ -34,13 +38,34 @@ WALLET = os.environ.get("PRL_WALLET", "")
 USER_AGENT = "kray-prl-profit-snapshot/1.0"
 HTTP_TIMEOUT_SECONDS = float(os.environ.get("PRL_SNAPSHOT_HTTP_TIMEOUT_SECONDS", "8"))
 HTTP_ATTEMPTS = max(1, int(os.environ.get("PRL_SNAPSHOT_HTTP_ATTEMPTS", "3")))
+STUCK_NON_LIVE_SECONDS = int(os.environ.get("PRL_STUCK_NON_LIVE_SECONDS", "3600"))
+EMPTY_STUCK_NON_LIVE_SECONDS = int(
+    os.environ.get("PRL_EMPTY_STUCK_NON_LIVE_SECONDS", str(STUCK_NON_LIVE_SECONDS))
+)
+SALAD_FETCH_WORKERS = int(os.environ.get("PRL_SNAPSHOT_SALAD_FETCH_WORKERS", "12"))
+RUNNING_NO_LIVE_GRACE_SECONDS = int(os.environ.get("PRL_NOHASH_GRACE_SECONDS", "900"))
 
-ACCOUNTS = [
+
+def default_snapshot_price() -> float:
+    for key in (
+        "PRL_SNAPSHOT_PRICE_USD",
+        "PRL_FIXED_DECISION_PRICE_USD",
+        "PRL_WATCH_FIXED_DECISION_PRICE_USD",
+        "PRL_FILL_FIXED_DECISION_PRICE_USD",
+        "PRL_NOHASH_FALLBACK_PRICE",
+    ):
+        value = os.environ.get(key)
+        if value:
+            return float(value)
+    return 0.62
+
+DEFAULT_ACCOUNTS = [
     ("kray", "kray", "SALAD_API_KEY_2", [f"prl-kray-roi-{index:02d}" for index in range(1, 11)]),
     ("kry1", "kry1", "SALAD_API_KEY_KRY1", [f"prl-kry1-roi-{index:02d}" for index in range(1, 11)]),
     ("kray2", "kray2", "SALAD_API_KEY_2", [f"prl-kray2-roi-{index:02d}" for index in range(1, 11)]),
     ("kray3", "kray3", "SALAD_API_KEY_2", [f"prl-kray3-roi-{index:02d}" for index in range(1, 11)]),
 ]
+ACCOUNTS = list(DEFAULT_ACCOUNTS)
 if os.environ.get("PRL_INCLUDE_BMU", "").lower() in {"1", "true", "yes"}:
     ACCOUNTS.insert(0, ("bmu", "bmu", "SALAD_API_KEY", [f"prl-roi-fresh-{index:02d}" for index in range(1, 7)]))
     for bmu_org in ("bmu2", "bmu3", "bmu4", "bmu5"):
@@ -52,6 +77,20 @@ if os.environ.get("PRL_INCLUDE_BMU", "").lower() in {"1", "true", "yes"}:
                 [f"prl-{bmu_org}-roi-{index:02d}" for index in range(1, 11)],
             )
         )
+
+
+def configured_accounts() -> list[tuple[str, str, str, list[str]]]:
+    fleet_orgs = [org.strip() for org in os.environ.get("PRL_FLEET_ORGS", "").split(",") if org.strip()]
+    if not fleet_orgs:
+        return list(ACCOUNTS)
+    default_key_env = os.environ.get("PRL_WATCH_DEFAULT_API_KEY_ENV", "SALAD_API_KEY")
+    accounts: list[tuple[str, str, str, list[str]]] = []
+    for org in fleet_orgs:
+        key_env = os.environ.get(f"PRL_WATCH_API_KEY_ENV_{org.upper()}", default_key_env)
+        prefix = os.environ.get(f"PRL_WATCH_SLOT_PREFIX_{org.upper()}", f"prl-{org}-roi")
+        count = int(os.environ.get(f"PRL_WATCH_SLOT_COUNT_{org.upper()}", "10"))
+        accounts.append((org, org, key_env, [f"{prefix}-{index:02d}" for index in range(1, count + 1)]))
+    return accounts
 
 GPU_IDS = {
     "3060ti": "cb6c1931-89b6-4f76-976f-54047320ccc6",
@@ -182,6 +221,14 @@ def worker_instance_id(worker_name: str) -> str | None:
     return worker_name.rsplit(marker, 1)[-1] or None
 
 
+def worker_named_slot(worker_name: str, accounts: list[tuple[str, str, str, list[str]]]) -> str | None:
+    for _label, _org, _key_env, slots in accounts:
+        for slot in slots:
+            if slot in worker_name:
+                return slot
+    return None
+
+
 def normalize(value: Any) -> str:
     return re.sub(r"[^a-z0-9]+", "", str(value or "").lower())
 
@@ -269,71 +316,239 @@ def fallback_hourly(
     return max(values, default=0.0)
 
 
+def parse_timestamp(value: Any) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def state_age_seconds(value: Any, now_dt: datetime) -> float | None:
+    parsed = parse_timestamp(value)
+    if parsed is None:
+        return None
+    return max(0.0, (now_dt - parsed.astimezone(UTC)).total_seconds())
+
+
 def parse_workers() -> list[dict[str, Any]]:
     payload = external_json(f"https://pearlfortune.org/api/v1/miners/{WALLET}/connections")
     workers = ((payload.get("data") or {}).get("workers") or [])
     rows: list[dict[str, Any]] = []
     for worker in workers:
-        if worker.get("stale"):
-            continue
         name = str(worker.get("worker") or "")
         th = float(worker.get("reported_hashrate") or 0) / 1e12
-        if th <= 0:
-            continue
         gpu = (((worker.get("client_info") or {}).get("gpus") or [{}])[0]).get("model") or ""
         gpu_id, gpu_token = gpu_from_model(gpu)
         rows.append(
             {
                 "worker": name,
                 "slot": None,
+                "named_slot": None,
                 "gpu": gpu,
                 "gpu_id": gpu_id,
                 "gpu_token": gpu_token,
                 "th": th,
+                "stale": bool(worker.get("stale")),
                 "last_stats_at": worker.get("last_stats_at"),
             }
         )
     return rows
 
 
+CSV_FIELDS = [
+    "at_utc",
+    "assumed_prl_price",
+    "live_market_prl_price",
+    "pool_fee_rate",
+    "hourly_points",
+    "prl_per_th_day_net",
+    "fresh_workers",
+    "slot_count",
+    "live_slot_count",
+    "pending_slot_count",
+    "running_no_live_count",
+    "running_no_live_slots",
+    "stuck_non_live_count",
+    "stuck_non_live_slots",
+    "pool_worker_count",
+    "pool_stale_worker_count",
+    "stale_current_worker_count",
+    "stale_current_workers",
+    "org_discrepancies",
+    "unmapped_live_worker_count",
+    "total_th",
+    "total_prl_day",
+    "total_revenue_day",
+    "total_cost_day",
+    "total_profit_day",
+    "market_revenue_day",
+    "market_profit_day",
+    "unmapped_th",
+    "unmapped_prl_day",
+    "unmapped_revenue_day",
+    "unmapped_market_revenue_day",
+    "by_gpu_priority",
+    "slots",
+]
+
+
+def snapshot_csv_path() -> pathlib.Path | None:
+    if os.environ.get("PRL_SNAPSHOT_CSV_DISABLE", "").lower() in {"1", "true", "yes"}:
+        return None
+    return pathlib.Path(os.environ.get("PRL_SNAPSHOT_CSV_PATH", str(DEFAULT_SNAPSHOT_CSV)))
+
+
+def append_snapshot_csv(snapshot: dict[str, Any]) -> None:
+    path = snapshot_csv_path()
+    if path is None:
+        return
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        totals = snapshot.get("totals") or {}
+        unmapped_totals = snapshot.get("unmapped_totals") or {}
+        pending_slots = snapshot.get("pending_slots") or []
+        live_slot_count = sum(1 for slot in pending_slots if slot.get("live"))
+        pending_slot_count = sum(
+            1
+            for slot in pending_slots
+            if int(slot.get("allocating") or 0) > 0 or int(slot.get("creating") or 0) > 0
+        )
+        row = {
+            "at_utc": snapshot.get("at_utc"),
+            "assumed_prl_price": snapshot.get("assumed_prl_price"),
+            "live_market_prl_price": snapshot.get("live_market_prl_price"),
+            "pool_fee_rate": snapshot.get("pool_fee_rate"),
+            "hourly_points": snapshot.get("hourly_points"),
+            "prl_per_th_day_net": snapshot.get("prl_per_th_day_net"),
+            "fresh_workers": snapshot.get("fresh_workers"),
+            "slot_count": len(pending_slots),
+            "live_slot_count": live_slot_count,
+            "pending_slot_count": pending_slot_count,
+            "running_no_live_count": len(snapshot.get("running_no_live_billable_slots") or []),
+            "running_no_live_slots": json.dumps(snapshot.get("running_no_live_billable_slots") or [], sort_keys=True),
+            "stuck_non_live_count": len(snapshot.get("stuck_non_live_slots") or []),
+            "stuck_non_live_slots": json.dumps(snapshot.get("stuck_non_live_slots") or [], sort_keys=True),
+            "pool_worker_count": snapshot.get("pool_worker_count"),
+            "pool_stale_worker_count": snapshot.get("pool_stale_worker_count"),
+            "stale_current_worker_count": len(snapshot.get("stale_current_workers") or []),
+            "stale_current_workers": json.dumps(snapshot.get("stale_current_workers") or [], sort_keys=True),
+            "org_discrepancies": json.dumps(snapshot.get("org_discrepancies") or [], sort_keys=True),
+            "unmapped_live_worker_count": len(snapshot.get("unmapped_live_workers") or []),
+            "total_th": totals.get("th"),
+            "total_prl_day": totals.get("prl_day"),
+            "total_revenue_day": totals.get("revenue_day"),
+            "total_cost_day": totals.get("cost_day"),
+            "total_profit_day": totals.get("profit_day"),
+            "market_revenue_day": totals.get("market_revenue_day"),
+            "market_profit_day": totals.get("market_profit_day"),
+            "unmapped_th": unmapped_totals.get("th"),
+            "unmapped_prl_day": unmapped_totals.get("prl_day"),
+            "unmapped_revenue_day": unmapped_totals.get("revenue_day"),
+            "unmapped_market_revenue_day": unmapped_totals.get("market_revenue_day"),
+            "by_gpu_priority": json.dumps(snapshot.get("by_gpu_priority") or [], sort_keys=True),
+            "slots": json.dumps(snapshot.get("slots") or [], sort_keys=True),
+        }
+        write_header = True
+        if path.exists() and path.stat().st_size > 0:
+            try:
+                with path.open(newline="") as existing:
+                    write_header = not any(line.strip() for line in existing)
+            except OSError:
+                write_header = True
+        with path.open("a", newline="") as handle:
+            writer = csv.DictWriter(handle, fieldnames=CSV_FIELDS)
+            if write_header:
+                writer.writeheader()
+            writer.writerow(row)
+    except Exception as exc:
+        print(f"warning: failed to append snapshot CSV {path}: {type(exc).__name__}: {exc}", file=sys.stderr)
+
+
 def build_snapshot(price: float) -> dict[str, Any]:
     load_env()
     if not WALLET or WALLET == "prl1...":
         raise RuntimeError("PRL_WALLET must be set in the environment or .env file")
+    accounts = configured_accounts()
+    snapshot_at = datetime.now(UTC)
     prl_per_th_day, hourly_points, pool_fee_rate = pool_prl_per_th_day()
     market_price = market_prl_price_usd()
 
     catalogs: dict[str, dict[str, dict[str, float]]] = {}
     groups: dict[str, tuple[str, str, dict[str, Any]]] = {}
     group_instance_ids: dict[str, set[str]] = {}
-    for label, org, key_env, slots in ACCOUNTS:
+    for label, org, key_env, slots in accounts:
         api_key = os.environ[key_env]
         catalogs[label] = price_catalog(org, api_key)
-        for slot in slots:
-            try:
-                groups[slot] = (label, org, salad_json(f"/organizations/{org}/projects/default/containers/{slot}", api_key))
-                instances_payload = salad_json(
-                    f"/organizations/{org}/projects/default/containers/{slot}/instances",
-                    api_key,
-                )
-                group_instance_ids[slot] = {
-                    str(item.get("id"))
-                    for item in (instances_payload.get("items") or instances_payload.get("instances") or [])
-                    if item.get("id")
-                }
-            except Exception:
-                continue
 
-    workers = parse_workers()
-    for row in workers:
+    def fetch_slot(label: str, org: str, key_env: str, slot: str) -> tuple[str, str, str, dict[str, Any], set[str]] | None:
+        api_key = os.environ[key_env]
+        try:
+            group = salad_json(f"/organizations/{org}/projects/default/containers/{slot}", api_key)
+            instances_payload = salad_json(
+                f"/organizations/{org}/projects/default/containers/{slot}/instances",
+                api_key,
+            )
+            instance_ids = {
+                str(item.get("id"))
+                for item in (instances_payload.get("items") or instances_payload.get("instances") or [])
+                if item.get("id")
+            }
+            return slot, label, org, group, instance_ids
+        except Exception:
+            return None
+
+    slot_jobs = [
+        (label, org, key_env, slot)
+        for label, org, key_env, slots in accounts
+        for slot in slots
+    ]
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, SALAD_FETCH_WORKERS)) as executor:
+        futures = [executor.submit(fetch_slot, *job) for job in slot_jobs]
+        for future in concurrent.futures.as_completed(futures):
+            result = future.result()
+            if result is None:
+                continue
+            slot, label, org, group, instance_ids = result
+            groups[slot] = (label, org, group)
+            group_instance_ids[slot] = instance_ids
+
+    pool_workers = parse_workers()
+    for row in pool_workers:
         worker_instance = worker_instance_id(str(row.get("worker") or ""))
-        for _label, _org, _key_env, slots in ACCOUNTS:
+        row["named_slot"] = worker_named_slot(str(row.get("worker") or ""), accounts)
+        for _label, _org, _key_env, slots in accounts:
             for slot in slots:
                 if slot in row["worker"] and worker_instance and worker_instance in group_instance_ids.get(slot, set()):
                     row["slot"] = slot
+                    row["slot_match"] = "instance"
                     break
             if row["slot"]:
                 break
+        if not row["slot"] and row["named_slot"] in groups:
+            named_slot = str(row["named_slot"])
+            _label, _org, group = groups[named_slot]
+            current = group.get("current_state") or {}
+            counts = current.get("instance_status_counts") or {}
+            active = any(int(counts.get(key) or 0) > 0 for key in ("running_count", "creating_count", "allocating_count"))
+            if not worker_instance or (active and not group_instance_ids.get(named_slot)):
+                row["slot"] = named_slot
+                row["slot_match"] = "worker_name"
+            elif not active:
+                row["inactive_named_slot"] = named_slot
+                row["slot_match"] = "worker_name_inactive"
+
+    workers = [
+        worker
+        for worker in pool_workers
+        if not worker.get("stale") and float(worker.get("th") or 0) > 0
+    ]
+    stale_current_workers = [
+        worker
+        for worker in pool_workers
+        if worker.get("slot") and (worker.get("stale") or float(worker.get("th") or 0) <= 0)
+    ]
 
     unmapped_workers = []
     for worker in workers:
@@ -381,15 +596,19 @@ def build_snapshot(price: float) -> dict[str, Any]:
     known_slots = {row.get("slot") for row in rows}
     pending_slots = []
     running_no_live = []
+    stuck_non_live = []
     for slot, (public_org, _api_org, group) in groups.items():
         current = group.get("current_state") or {}
         counts = current.get("instance_status_counts") or {}
         resources = ((group.get("container") or {}).get("resources") or {})
         status = str(current.get("status") or "").lower()
+        age = state_age_seconds(current.get("start_time") or current.get("finish_time"), snapshot_at)
         running = int(counts.get("running_count") or 0)
         creating = int(counts.get("creating_count") or 0)
         allocating = int(counts.get("allocating_count") or 0)
         stopping = int(counts.get("stopping_count") or 0)
+        instance_count = len(group_instance_ids.get(slot, set()))
+        empty_pending = instance_count == 0 and (creating > 0 or allocating > 0)
         priority = str(group.get("priority") or "").lower()
         pending_slots.append(
             {
@@ -402,13 +621,42 @@ def build_snapshot(price: float) -> dict[str, Any]:
                 "creating": creating,
                 "allocating": allocating,
                 "stopping": stopping,
+                "instance_count": instance_count,
+                "empty_pending": empty_pending,
                 "requested_gpus": gpu_names(resources.get("gpu_classes") or []),
                 "live": slot in known_slots,
+                "state_age_seconds": round(age, 1) if age is not None else None,
             }
         )
-        if running > 0 and slot not in known_slots:
+        if slot not in known_slots and (running > 0 or creating > 0 or allocating > 0):
+            stuck_item = {
+                "slot": slot,
+                "org": public_org,
+                "priority": priority,
+                "status": status,
+                "running": running,
+                "creating": creating,
+                "allocating": allocating,
+                "instance_count": instance_count,
+                "empty_pending": empty_pending,
+                "state_age_seconds": round(age, 1) if age is not None else None,
+                "requested_gpus": gpu_names(resources.get("gpu_classes") or []),
+            }
+            stuck_after = EMPTY_STUCK_NON_LIVE_SECONDS if empty_pending else STUCK_NON_LIVE_SECONDS
+            if age is not None and age >= stuck_after:
+                stuck_non_live.append(stuck_item)
+        if running > 0 and slot not in known_slots and age is not None and age >= RUNNING_NO_LIVE_GRACE_SECONDS:
             cost_day = 24 * fallback_hourly(group, public_org, catalogs) * running
-            running_no_live.append({"slot": slot, "org": public_org, "priority": priority, "cost_day": cost_day})
+            running_no_live.append(
+                {
+                    "slot": slot,
+                    "org": public_org,
+                    "priority": priority,
+                    "cost_day": cost_day,
+                    "state_age_seconds": round(age, 1),
+                    "grace_seconds": RUNNING_NO_LIVE_GRACE_SECONDS,
+                }
+            )
             rows.append(
                 {
                     "worker": "NO_POOL_HASHRATE",
@@ -426,6 +674,86 @@ def build_snapshot(price: float) -> dict[str, Any]:
                     "market_profit_day": -cost_day,
                 }
             )
+
+    fresh_slots_by_org: dict[str, set[str]] = {}
+    fresh_named_slots_by_org: dict[str, set[str]] = {}
+    fresh_unmapped_named_slots_by_org: dict[str, set[str]] = {}
+    for row in rows:
+        if str(row.get("worker") or "") == "NO_POOL_HASHRATE":
+            continue
+        org = str(row.get("org") or "")
+        slot = str(row.get("slot") or "")
+        if org and slot:
+            fresh_slots_by_org.setdefault(org, set()).add(slot)
+    for worker in workers:
+        named_slot = str(worker.get("named_slot") or "")
+        if not named_slot:
+            continue
+        for label, _org, _key_env, slots in accounts:
+            if named_slot in slots:
+                fresh_named_slots_by_org.setdefault(label, set()).add(named_slot)
+                if not worker.get("slot"):
+                    fresh_unmapped_named_slots_by_org.setdefault(label, set()).add(named_slot)
+                break
+    stale_slots_by_org: dict[str, set[str]] = {}
+    for worker in stale_current_workers:
+        slot = str(worker.get("slot") or "")
+        if not slot:
+            continue
+        for label, _org, _key_env, slots in accounts:
+            if slot in slots:
+                stale_slots_by_org.setdefault(label, set()).add(slot)
+                break
+    active_non_fresh_by_org: dict[str, list[str]] = {}
+    active_slots_by_org: dict[str, set[str]] = {}
+    for slot in pending_slots:
+        org = str(slot.get("org") or "")
+        name = str(slot.get("slot") or "")
+        if not org or not name:
+            continue
+        active = any(int(slot.get(key) or 0) > 0 for key in ("running", "creating", "allocating"))
+        if not active:
+            continue
+        active_slots_by_org.setdefault(org, set()).add(name)
+        if name not in fresh_slots_by_org.get(org, set()):
+            active_non_fresh_by_org.setdefault(org, []).append(name)
+
+    org_discrepancies = []
+    for label, _org, _key_env, slots in accounts:
+        fresh_slots = fresh_slots_by_org.get(label, set())
+        fresh_unmapped_named_slots = sorted(fresh_unmapped_named_slots_by_org.get(label, set()))
+        stale_slots = stale_slots_by_org.get(label, set())
+        active_slots = active_slots_by_org.get(label, set())
+        active_non_fresh_slots = sorted(active_non_fresh_by_org.get(label, []))
+        running_no_live_slots = sorted(
+            str(item.get("slot") or "")
+            for item in running_no_live
+            if str(item.get("org") or "") == label and item.get("slot")
+        )
+        stuck_non_live_slots = sorted(
+            str(item.get("slot") or "")
+            for item in stuck_non_live
+            if str(item.get("org") or "") == label and item.get("slot")
+        )
+        org_discrepancies.append(
+            {
+                "org": label,
+                "configured_slots": len(slots),
+                "salad_slots_seen": sum(1 for slot in slots if slot in groups),
+                "active_salad_slots": len(active_slots),
+                "fresh_pool_slots": len(fresh_slots),
+                "fresh_pool_mapped_slots": len(fresh_slots),
+                "fresh_pool_named_unmapped_slots": len(fresh_unmapped_named_slots),
+                "stale_pool_slots": len(stale_slots),
+                "active_without_fresh_pool": len(active_non_fresh_slots),
+                "running_no_live_slots": len(running_no_live_slots),
+                "stuck_non_live_slots": len(stuck_non_live_slots),
+                "active_without_fresh_pool_slots": active_non_fresh_slots,
+                "fresh_pool_named_unmapped_slot_names": fresh_unmapped_named_slots,
+                "billable_no_live_slots": running_no_live_slots,
+                "stuck_slots": stuck_non_live_slots,
+            }
+        )
 
     totals = {key: sum(float(row[key]) for row in rows) for key in ("th", "prl_day", "revenue_day", "cost_day", "profit_day")}
     market_revenue_day = totals["prl_day"] * market_price
@@ -446,15 +774,31 @@ def build_snapshot(price: float) -> dict[str, Any]:
         item["cost_day"] = float(item["cost_day"]) + float(row["cost_day"])
         item["profit_day"] = float(item["profit_day"]) + float(row["profit_day"])
 
-    return {
-        "at_utc": datetime.now(UTC).isoformat(timespec="seconds"),
+    result = {
+        "at_utc": snapshot_at.isoformat(timespec="seconds"),
         "assumed_prl_price": price,
         "live_market_prl_price": market_price,
         "pool_fee_rate": pool_fee_rate,
         "hourly_points": hourly_points,
         "prl_per_th_day_net": prl_per_th_day,
         "fresh_workers": len(workers),
+        "pool_worker_count": len(pool_workers),
+        "pool_stale_worker_count": sum(1 for worker in pool_workers if worker.get("stale")),
+        "stale_current_workers": [
+            {
+                "worker": row["worker"],
+                "slot": row.get("slot"),
+                "gpu": row.get("gpu_token") or row.get("gpu"),
+                "named_slot": row.get("named_slot"),
+                "inactive_named_slot": row.get("inactive_named_slot"),
+                "th": round(float(row["th"]), 3),
+                "last_stats_at": row.get("last_stats_at"),
+            }
+            for row in stale_current_workers
+        ],
+        "org_discrepancies": org_discrepancies,
         "running_no_live_billable_slots": running_no_live,
+        "stuck_non_live_slots": stuck_non_live,
         "totals": {
             **{key: round(value, 6) for key, value in totals.items()},
             "market_revenue_day": round(market_revenue_day, 6),
@@ -513,11 +857,13 @@ def build_snapshot(price: float) -> dict[str, Any]:
         ],
         "pending_slots": pending_slots,
     }
+    append_snapshot_csv(result)
+    return result
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--price", type=float, default=0.62)
+    parser.add_argument("--price", type=float, default=default_snapshot_price())
     args = parser.parse_args()
     print(json.dumps(build_snapshot(args.price), indent=2, sort_keys=True))
 

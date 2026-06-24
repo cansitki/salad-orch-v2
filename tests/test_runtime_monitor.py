@@ -174,16 +174,19 @@ class RuntimeMonitorTest(unittest.TestCase):
         self.assertEqual(calls[1]["pending_retarget_after_seconds"], 75)
         self.assertTrue(calls[1]["require_secrets"])
 
-    def test_pending_retarget_also_sets_scheduler_pending_protection(self) -> None:
+    def test_pending_retarget_sets_scheduler_protection_and_default_profile_cooldown(self) -> None:
         calls = []
-        original = os.environ.get("PRL_PENDING_TARGET_PROTECT_SECONDS")
+        original_protect = os.environ.get("PRL_PENDING_TARGET_PROTECT_SECONDS")
+        original_cooldown = os.environ.get("PRL_PENDING_PROFILE_COOLDOWN_SECONDS")
         os.environ["PRL_PENDING_TARGET_PROTECT_SECONDS"] = "999"
+        os.environ.pop("PRL_PENDING_PROFILE_COOLDOWN_SECONDS", None)
 
         def runner(**kwargs):
             calls.append(
                 {
                     "stage": kwargs["stage"],
                     "protect_seconds": os.environ.get("PRL_PENDING_TARGET_PROTECT_SECONDS"),
+                    "cooldown_seconds": os.environ.get("PRL_PENDING_PROFILE_COOLDOWN_SECONDS"),
                 }
             )
             return rollout_payload(stage=kwargs["stage"])
@@ -200,16 +203,66 @@ class RuntimeMonitorTest(unittest.TestCase):
             self.assertEqual(
                 calls,
                 [
-                    {"stage": "shadow", "protect_seconds": "60"},
-                    {"stage": "all-orgs", "protect_seconds": "60"},
+                    {"stage": "shadow", "protect_seconds": "60", "cooldown_seconds": "60"},
+                    {"stage": "all-orgs", "protect_seconds": "60", "cooldown_seconds": "60"},
                 ],
             )
             self.assertEqual(os.environ.get("PRL_PENDING_TARGET_PROTECT_SECONDS"), "999")
+            self.assertIsNone(os.environ.get("PRL_PENDING_PROFILE_COOLDOWN_SECONDS"))
         finally:
-            if original is None:
+            if original_protect is None:
                 os.environ.pop("PRL_PENDING_TARGET_PROTECT_SECONDS", None)
             else:
-                os.environ["PRL_PENDING_TARGET_PROTECT_SECONDS"] = original
+                os.environ["PRL_PENDING_TARGET_PROTECT_SECONDS"] = original_protect
+            if original_cooldown is None:
+                os.environ.pop("PRL_PENDING_PROFILE_COOLDOWN_SECONDS", None)
+            else:
+                os.environ["PRL_PENDING_PROFILE_COOLDOWN_SECONDS"] = original_cooldown
+
+    def test_pending_retarget_respects_explicit_profile_cooldown_override(self) -> None:
+        calls = []
+        original_protect = os.environ.get("PRL_PENDING_TARGET_PROTECT_SECONDS")
+        original_cooldown = os.environ.get("PRL_PENDING_PROFILE_COOLDOWN_SECONDS")
+        os.environ.pop("PRL_PENDING_TARGET_PROTECT_SECONDS", None)
+        os.environ["PRL_PENDING_PROFILE_COOLDOWN_SECONDS"] = "240"
+
+        def runner(**kwargs):
+            calls.append(
+                {
+                    "stage": kwargs["stage"],
+                    "protect_seconds": os.environ.get("PRL_PENDING_TARGET_PROTECT_SECONDS"),
+                    "cooldown_seconds": os.environ.get("PRL_PENDING_PROFILE_COOLDOWN_SECONDS"),
+                }
+            )
+            return rollout_payload(stage=kwargs["stage"])
+
+        try:
+            payload = runtime_monitor.run_monitor_tick(
+                apply_all_orgs_pending=True,
+                confirm_live_actions=True,
+                pending_retarget_after_seconds=60,
+                runner=runner,
+            )
+
+            self.assertTrue(payload["ok"])
+            self.assertEqual(
+                calls,
+                [
+                    {"stage": "shadow", "protect_seconds": "60", "cooldown_seconds": "240"},
+                    {"stage": "all-orgs", "protect_seconds": "60", "cooldown_seconds": "240"},
+                ],
+            )
+            self.assertIsNone(os.environ.get("PRL_PENDING_TARGET_PROTECT_SECONDS"))
+            self.assertEqual(os.environ.get("PRL_PENDING_PROFILE_COOLDOWN_SECONDS"), "240")
+        finally:
+            if original_protect is None:
+                os.environ.pop("PRL_PENDING_TARGET_PROTECT_SECONDS", None)
+            else:
+                os.environ["PRL_PENDING_TARGET_PROTECT_SECONDS"] = original_protect
+            if original_cooldown is None:
+                os.environ.pop("PRL_PENDING_PROFILE_COOLDOWN_SECONDS", None)
+            else:
+                os.environ["PRL_PENDING_PROFILE_COOLDOWN_SECONDS"] = original_cooldown
 
     def test_guard_on_issues_runs_guard_instead_of_fill_when_due(self) -> None:
         calls = []

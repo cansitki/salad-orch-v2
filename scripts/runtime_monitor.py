@@ -25,16 +25,24 @@ class RemoteRunnerError(RuntimeError):
 
 
 @contextmanager
-def _scheduler_pending_target_protection(seconds: int):
-    previous = os.environ.get("PRL_PENDING_TARGET_PROTECT_SECONDS")
+def _pending_retarget_environment(seconds: int):
+    pending_seconds = str(max(0, int(seconds)))
+    previous_target_protect = os.environ.get("PRL_PENDING_TARGET_PROTECT_SECONDS")
+    previous_profile_cooldown = os.environ.get("PRL_PENDING_PROFILE_COOLDOWN_SECONDS")
     os.environ["PRL_PENDING_TARGET_PROTECT_SECONDS"] = str(max(0, int(seconds)))
+    if previous_profile_cooldown is None:
+        os.environ["PRL_PENDING_PROFILE_COOLDOWN_SECONDS"] = pending_seconds
     try:
         yield
     finally:
-        if previous is None:
+        if previous_target_protect is None:
             os.environ.pop("PRL_PENDING_TARGET_PROTECT_SECONDS", None)
         else:
-            os.environ["PRL_PENDING_TARGET_PROTECT_SECONDS"] = previous
+            os.environ["PRL_PENDING_TARGET_PROTECT_SECONDS"] = previous_target_protect
+        if previous_profile_cooldown is None:
+            os.environ.pop("PRL_PENDING_PROFILE_COOLDOWN_SECONDS", None)
+        else:
+            os.environ["PRL_PENDING_PROFILE_COOLDOWN_SECONDS"] = previous_profile_cooldown
 
 
 def _process_timeout_entry(callback: Callable[[], dict[str, Any]], result_queue: Any) -> None:
@@ -235,7 +243,7 @@ def _run_shadow(
     skip_workers: bool,
     pending_retarget_after_seconds: int,
 ) -> dict[str, Any]:
-    with _scheduler_pending_target_protection(pending_retarget_after_seconds):
+    with _pending_retarget_environment(pending_retarget_after_seconds):
         return runner(
             stage="shadow",
             db_path=db_path,
@@ -265,7 +273,7 @@ def _run_action(
     pending_retarget_after_seconds: int,
     worker_parallelism: int,
 ) -> dict[str, Any]:
-    with _scheduler_pending_target_protection(pending_retarget_after_seconds):
+    with _pending_retarget_environment(pending_retarget_after_seconds):
         if action == "guard-apply":
             return runner(
                 stage="guard-apply",

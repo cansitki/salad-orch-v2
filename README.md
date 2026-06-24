@@ -339,7 +339,10 @@ unless `--apply-workers` or `--apply-guard` is passed.
    guard probe has a retarget/stop decision.
    `--pending-retarget-after-seconds` is also applied to the scheduler's
    pending-target protection window for that monitor tick, so target selection
-   and live patching use the same grace period.
+   and live patching use the same grace period. When
+   `PRL_PENDING_PROFILE_COOLDOWN_SECONDS` is not explicitly set, the monitor
+   also uses this value for stale pending profile cooldowns so failed searches
+   rotate again on the same cadence.
    `--worker-parallelism 4` runs each organization in an isolated process so
    the legacy watcher environment cannot leak between orgs while the fill scan
    finishes faster. Org worker heartbeats default to a 300 second stale window

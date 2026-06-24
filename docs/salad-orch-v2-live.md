@@ -153,7 +153,10 @@ still inside grace, but switches immediately to guard once the read-only guard
 probe has a retarget/stop decision.
 `--pending-retarget-after-seconds` is also applied to the scheduler's
 pending-target protection window for that monitor tick, so target selection and
-live patching use the same grace period.
+live patching use the same grace period. When
+`PRL_PENDING_PROFILE_COOLDOWN_SECONDS` is not explicitly set, the monitor also
+uses this value for stale pending profile cooldowns so failed searches rotate
+again on the same cadence.
 `--worker-parallelism 4` runs each organization in an isolated process, which is
 faster than the old sequential all-org scan without sharing watcher environment
 between orgs. The rollout layer only runs one organization per Salad API key in

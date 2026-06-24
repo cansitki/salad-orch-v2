@@ -57,6 +57,7 @@ def run_once(
     config = load_config()
     no_gpu_sleep_after_seconds = env_int("PRL_NO_GPU_SLEEP_AFTER_SECONDS", 3600)
     no_gpu_sleep_seconds = env_int("PRL_NO_GPU_SLEEP_SECONDS", 900)
+    heartbeat_stale_after_seconds = env_int("PRL_AVAILABILITY_STALE_AFTER_SECONDS", 1800)
     profiles = [profile for profile in profit_model.load_profiles() if profile.priority in priorities]
     profiles.sort(
         key=lambda item: profit_model.expected_profit(
@@ -75,6 +76,12 @@ def run_once(
         state_db.init_db(conn)
         state_db.sync_config(conn, config)
         state_db.upsert_gpu_profiles(conn, profiles)
+        state_db.write_heartbeat(
+            conn,
+            "availability_probe",
+            stale_after_seconds=heartbeat_stale_after_seconds,
+            payload={"running": True, "priorities": priorities, "profile_count": len(profiles)},
+        )
         conn.commit()
 
     for org in config.enabled_orgs():
@@ -175,7 +182,7 @@ def run_once(
         state_db.write_heartbeat(
             conn,
             "availability_probe",
-            stale_after_seconds=600,
+            stale_after_seconds=heartbeat_stale_after_seconds,
             payload={"probed": len(results), "priorities": priorities, "by_profile": by_profile},
         )
         state_db.record_event(

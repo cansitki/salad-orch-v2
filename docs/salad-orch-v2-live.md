@@ -174,7 +174,10 @@ PRL_PEARL_FEE_RATE=0.01 python3 scripts/availability_probe.py --loop --interval 
 ```
 
 The probe uses the same API budget limiter as live workers, so it should slow
-itself down instead of exhausting a shared Salad key.
+itself down instead of exhausting a shared Salad key. The default availability
+heartbeat stale window is 1800 seconds (`PRL_AVAILABILITY_STALE_AFTER_SECONDS`)
+because probing `batch,low` across multiple orgs can take longer than one
+monitor tick.
 
 Stop it:
 

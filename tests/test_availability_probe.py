@@ -12,6 +12,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 import availability_probe
 import profit_model
+import state_db
 from config_loader import FleetConfig, OrgConfig
 
 
@@ -69,6 +70,13 @@ class AvailabilityProbeTest(unittest.TestCase):
         install_limiter.assert_called_once_with(watch, config.organizations[0], db_path=self.db_path)
         self.assertEqual(payload["probed"], 1)
         self.assertEqual(payload["by_profile"], {"4090:batch:2048": 1})
+
+        with state_db.connect(self.db_path) as conn:
+            heartbeat = conn.execute(
+                "SELECT stale_after_seconds FROM heartbeats WHERE process_name = 'availability_probe'"
+            ).fetchone()
+        self.assertIsNotNone(heartbeat)
+        self.assertEqual(heartbeat["stale_after_seconds"], 1800)
 
 
 if __name__ == "__main__":

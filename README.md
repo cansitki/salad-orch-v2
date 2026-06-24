@@ -364,7 +364,10 @@ unless `--apply-workers` or `--apply-guard` is passed.
    ```
 
    The probe uses the same API budget limiter as live workers, so it should
-   slow itself down instead of exhausting a shared Salad key.
+   slow itself down instead of exhausting a shared Salad key. The default
+   availability heartbeat stale window is 1800 seconds
+   (`PRL_AVAILABILITY_STALE_AFTER_SECONDS`) because probing `batch,low` across
+   multiple orgs can take longer than one monitor tick.
 
 3. Apply one org only:
 

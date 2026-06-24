@@ -111,7 +111,8 @@ monitor ok=False ... shadow_failed=monitor_runner_error
 shadow_error=ReadTimeout: ...
 ```
 
-A timeout means Salad or pool APIs were slow. It should not hang the monitor.
+A timeout means Salad or pool APIs were slow. The monitor uses a subprocess hard
+timeout by default, so it should fail the tick instead of hanging indefinitely.
 Retry later or let the loop continue. When DB fallback is available, the timeout
 output also includes latest read-only target coverage, health, live hashing,
 no-hash, negative, and stuck counts plus `shadow_fallback=db`. That fallback is

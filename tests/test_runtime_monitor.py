@@ -155,6 +155,25 @@ class RuntimeMonitorTest(unittest.TestCase):
         self.assertIn("monitor_timeout", payload["shadow"]["failed_gates"])
         self.assertIn("TimeoutError", payload["shadow"]["error"])
 
+    def test_shadow_hard_timeout_returns_failed_tick(self) -> None:
+        def runner(**_kwargs):
+            time.sleep(1.0)
+            return rollout_payload(stage="shadow")
+
+        started = time.monotonic()
+        payload = runtime_monitor.run_monitor_tick(
+            runner=runner,
+            runner_timeout_seconds=0.05,
+            hard_runner_timeout=True,
+        )
+        elapsed = time.monotonic() - started
+
+        self.assertLess(elapsed, 0.8)
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["action"], "none")
+        self.assertIn("monitor_timeout", payload["shadow"]["failed_gates"])
+        self.assertIn("TimeoutError", payload["shadow"]["error"])
+
     def test_shadow_runner_error_uses_db_fallback_status(self) -> None:
         def runner(**_kwargs):
             raise RuntimeError("salad api timed out")

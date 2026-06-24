@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import argparse
+import multiprocessing
+import queue
 import signal
 import time
 from typing import Any, Callable
@@ -15,9 +17,49 @@ from fleet_common import json_dumps, utc_now
 RolloutRunner = Callable[..., dict[str, Any]]
 
 
-def _call_with_timeout(callback: Callable[[], dict[str, Any]], timeout_seconds: float) -> dict[str, Any]:
+class RemoteRunnerError(RuntimeError):
+    pass
+
+
+def _process_timeout_entry(callback: Callable[[], dict[str, Any]], result_queue: Any) -> None:
+    try:
+        result_queue.put(("ok", callback()))
+    except BaseException as exc:
+        result_queue.put(("error", type(exc).__name__, str(exc)[:500]))
+
+
+def _call_with_process_timeout(callback: Callable[[], dict[str, Any]], timeout_seconds: float) -> dict[str, Any]:
+    ctx = multiprocessing.get_context("fork")
+    result_queue = ctx.Queue(maxsize=1)
+    process = ctx.Process(target=_process_timeout_entry, args=(callback, result_queue))
+    process.start()
+    process.join(timeout_seconds)
+    if process.is_alive():
+        process.terminate()
+        process.join(5)
+        if process.is_alive():
+            process.kill()
+            process.join(5)
+        raise TimeoutError(f"monitor runner exceeded {timeout_seconds:.1f}s")
+    try:
+        item = result_queue.get_nowait()
+    except queue.Empty as exc:
+        raise RemoteRunnerError(f"monitor runner exited without result rc={process.exitcode}") from exc
+    if item[0] == "ok":
+        return item[1]
+    raise RemoteRunnerError(f"{item[1]}: {item[2]}")
+
+
+def _call_with_timeout(
+    callback: Callable[[], dict[str, Any]],
+    timeout_seconds: float,
+    *,
+    hard_timeout: bool = False,
+) -> dict[str, Any]:
     if timeout_seconds <= 0:
         return callback()
+    if hard_timeout:
+        return _call_with_process_timeout(callback, timeout_seconds)
 
     def timeout_handler(_signum: int, _frame: Any) -> None:
         raise TimeoutError(f"monitor runner exceeded {timeout_seconds:.1f}s")
@@ -177,6 +219,7 @@ def run_monitor_tick(
     pending_retarget_after_seconds: int = 45,
     confirm_live_actions: bool = False,
     runner_timeout_seconds: float = 90,
+    hard_runner_timeout: bool = False,
     runner: RolloutRunner = rollout.run_rollout,
 ) -> dict[str, Any]:
     if (apply_guard or apply_one_org) and not confirm_live_actions:
@@ -198,6 +241,7 @@ def run_monitor_tick(
                 allow_degraded=allow_degraded_shadow,
             ),
             runner_timeout_seconds,
+            hard_timeout=hard_runner_timeout,
         )
         shadow_summary = _summarize_rollout(shadow_payload)
     except Exception as exc:
@@ -226,6 +270,7 @@ def run_monitor_tick(
                         pending_retarget_after_seconds=pending_retarget_after_seconds,
                     ),
                     runner_timeout_seconds,
+                    hard_timeout=hard_runner_timeout,
                 )
                 action_summary = _summarize_rollout(action_payload)
             except Exception as exc:
@@ -305,6 +350,11 @@ def main() -> None:
     parser.add_argument("--interval", type=int, default=120)
     parser.add_argument("--max-ticks", type=int, default=0)
     parser.add_argument("--runner-timeout-seconds", type=float, default=90)
+    parser.add_argument(
+        "--soft-runner-timeout",
+        action="store_true",
+        help="Use in-process signal timeout instead of the default subprocess hard timeout.",
+    )
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
 
@@ -324,6 +374,7 @@ def main() -> None:
             pending_retarget_after_seconds=args.pending_retarget_after_seconds,
             confirm_live_actions=args.confirm_live_actions,
             runner_timeout_seconds=args.runner_timeout_seconds,
+            hard_runner_timeout=not args.soft_runner_timeout,
         )
         if args.json:
             print(json_dumps(payload))

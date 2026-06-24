@@ -505,7 +505,7 @@ Responsibilities:
 - require `--confirm-live-actions` before any live apply path
 - allow only one live action per tick so guard apply and worker apply do not collide
 - allow explicit degraded preflight retries with `--allow-degraded-shadow` while keeping the final live action gate strict
-- enforce `--runner-timeout-seconds` around each rollout stage so slow Salad API reads fail the tick instead of hanging the monitor
+- enforce `--runner-timeout-seconds` around each rollout stage with a subprocess hard timeout by default, so slow Salad API reads fail the tick instead of hanging the monitor
 - when a rollout runner fails or times out, fall back to read-only DB status from `reporter.py` and `health.py` so the monitor still reports target coverage, health, live hashing, no-hash, negative, and stuck counts
 
 Default behavior is read-only. Live action modes are:

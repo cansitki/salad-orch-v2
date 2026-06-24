@@ -475,6 +475,11 @@ def run_once(
                 "observed_profile_key": observed_profile_key_for_result(target, result, apply=apply),
                 "observed_status": result.get("observed_status"),
                 "protected": bool(result.get("protected")),
+                "reset_observed_age": bool(
+                    apply
+                    and result.get("applied")
+                    and str(result.get("action") or "") == "cooldown_pending"
+                ),
             }
         )
         results.append(result)

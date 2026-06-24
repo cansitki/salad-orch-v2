@@ -3,12 +3,13 @@ from __future__ import annotations
 
 import argparse
 import time
+from datetime import UTC, datetime
 from typing import Any
 
 import profile_scorer
 import state_db
 from config_loader import FleetConfig, load_config
-from fleet_common import json_dumps, utc_now
+from fleet_common import env_int, json_dumps, utc_now
 
 
 def _scheduler_mode(config: FleetConfig, db_mode: str | None) -> str:
@@ -23,6 +24,18 @@ def _top_eligible_profiles(scores: list[dict[str, Any]], *, width: int) -> list[
     eligible = [row for row in scores if row.get("eligible")]
     eligible.sort(key=lambda item: (float(item["score"]), float(item["expected_profit_day"])), reverse=True)
     return eligible[: max(1, min(width, len(eligible)))]
+
+
+def _age_seconds(value: Any) -> float | None:
+    if not value:
+        return None
+    try:
+        at = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if at.tzinfo is None:
+        at = at.replace(tzinfo=UTC)
+    return max(0.0, (datetime.now(UTC) - at).total_seconds())
 
 
 def build_targets(
@@ -45,6 +58,8 @@ def build_targets(
     cooldowns = cooldowns or set()
     guard_targets = guard_targets or {}
     scores_by_key = {str(score["profile_key"]): score for score in scores}
+    pending_target_protect_seconds = max(0, env_int("PRL_PENDING_TARGET_PROTECT_SECONDS", 180))
+    min_profit_day = config.risk.min_profit_for_mode("optimize" if mode == "optimize" else "fill")
     assigned_by_org_profile: dict[tuple[str, str], int] = {}
     targets: list[dict[str, Any]] = []
     assigned_at = utc_now()
@@ -186,10 +201,21 @@ def build_targets(
                 )
                 continue
             observed_profile = slot_row.get("observed_profile_key")
+            observed_status = str(slot_row.get("observed_status") or "")
             protected = int(slot_row.get("protected") or 0) > 0
             live_hashrate_th = float(slot_row.get("live_hashrate_th") or 0)
             protected_live_hashing = protected and live_hashrate_th > 0
-            if protected and observed_profile and observed_profile in scores_by_key:
+            pending_observed = observed_status in {"creating", "allocating", "deploying"}
+            pending_age = _age_seconds(
+                slot_row.get("observed_profile_since_utc") or slot_row.get("observed_status_since_utc")
+            )
+            pending_protect = (
+                pending_observed
+                and mode != "optimize"
+                and pending_target_protect_seconds > 0
+                and (pending_age is None or pending_age < pending_target_protect_seconds)
+            )
+            if (protected or pending_observed) and observed_profile and observed_profile in scores_by_key:
                 current = scores_by_key[str(observed_profile)]
                 selected = None
                 current_profit = float(current["expected_profit_day"])
@@ -211,6 +237,15 @@ def build_targets(
                         profile = current
                         profile_index = 0
                         reason = f"{mode}:negative_observed_profile_no_replacement"
+                elif pending_protect and current_profit >= min_profit_day:
+                    profile = current
+                    profile_index = 0
+                    protected = False
+                    age_text = "unknown" if pending_age is None else f"{pending_age:.1f}"
+                    reason = (
+                        f"{mode}:protected_pending_observed_profile:{observed_profile}:"
+                        f"age_{age_text}_lt_{pending_target_protect_seconds}"
+                    )
                 elif not protected_live_hashing:
                     selected = fill_candidate(
                         org.label,

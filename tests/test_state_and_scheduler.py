@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pathlib
+import os
 import sys
 import tempfile
 import unittest
@@ -144,6 +145,43 @@ class StateAndSchedulerTest(unittest.TestCase):
         self.assertEqual(row["observed_status_since_utc"], "2026-06-24T12:00:00+00:00")
         self.assertEqual(changed["observed_profile_since_utc"], "2026-06-24T12:02:00+00:00")
         self.assertEqual(changed["observed_status_since_utc"], "2026-06-24T12:02:00+00:00")
+
+    def test_slot_observation_can_reset_age_after_pending_recycle(self) -> None:
+        config = load_config()
+        with state_db.connect(self.db_path) as conn:
+            state_db.init_db(conn)
+            state_db.sync_config(conn, config)
+            state_db.update_slot_observation(
+                conn,
+                {
+                    "org_label": "kray",
+                    "slot_name": "prl-kray-roi-01",
+                    "observed_profile_key": "4090:batch:2048",
+                    "observed_status": "allocating",
+                    "updated_at_utc": "2026-06-24T12:00:00+00:00",
+                },
+            )
+            state_db.update_slot_observation(
+                conn,
+                {
+                    "org_label": "kray",
+                    "slot_name": "prl-kray-roi-01",
+                    "observed_profile_key": "4090:batch:2048",
+                    "observed_status": "allocating",
+                    "updated_at_utc": "2026-06-24T12:05:00+00:00",
+                    "reset_observed_age": True,
+                },
+            )
+            row = conn.execute(
+                """
+                SELECT observed_profile_since_utc, observed_status_since_utc
+                FROM slots
+                WHERE org_label = 'kray' AND slot_name = 'prl-kray-roi-01'
+                """
+            ).fetchone()
+
+        self.assertEqual(row["observed_profile_since_utc"], "2026-06-24T12:05:00+00:00")
+        self.assertEqual(row["observed_status_since_utc"], "2026-06-24T12:05:00+00:00")
 
     def test_worker_sync_marks_missing_workers_stale(self) -> None:
         with state_db.connect(self.db_path) as conn:
@@ -845,6 +883,45 @@ class StateAndSchedulerTest(unittest.TestCase):
         self.assertEqual(row["profile_key"], "3090:batch:2048")
         self.assertEqual(row["protected"], 1)
         self.assertIn("protected_observed_profile", row["reason"])
+
+    def test_scheduler_preserves_fresh_profitable_pending_slot_target(self) -> None:
+        config = load_config()
+        original = os.environ.get("PRL_PENDING_TARGET_PROTECT_SECONDS")
+        os.environ["PRL_PENDING_TARGET_PROTECT_SECONDS"] = "300"
+        try:
+            with state_db.connect(self.db_path) as conn:
+                state_db.init_db(conn)
+                state_db.sync_config(conn, config)
+                state_db.update_slot_observation(
+                    conn,
+                    {
+                        "org_label": "kray",
+                        "slot_name": "prl-kray-roi-01",
+                        "observed_profile_key": "4090:batch:2048",
+                        "observed_status": "allocating",
+                        "updated_at_utc": datetime.now(UTC).isoformat(timespec="seconds"),
+                    },
+                )
+                conn.commit()
+            fleet_scheduler.schedule_once(db_path=self.db_path, price=0.64, fee=0.01, dry_run=False)
+        finally:
+            if original is None:
+                os.environ.pop("PRL_PENDING_TARGET_PROTECT_SECONDS", None)
+            else:
+                os.environ["PRL_PENDING_TARGET_PROTECT_SECONDS"] = original
+
+        with state_db.connect(self.db_path) as conn:
+            row = conn.execute(
+                """
+                SELECT profile_key, protected, reason
+                FROM slot_targets
+                WHERE org_label = 'kray' AND slot_name = 'prl-kray-roi-01'
+                """
+            ).fetchone()
+
+        self.assertEqual(row["profile_key"], "4090:batch:2048")
+        self.assertEqual(row["protected"], 0)
+        self.assertIn("protected_pending_observed_profile", row["reason"])
 
     def test_scheduler_replaces_protected_running_slot_without_live_hashrate(self) -> None:
         config = load_config()

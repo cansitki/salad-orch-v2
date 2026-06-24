@@ -690,7 +690,11 @@ def update_slot_observation(conn: sqlite3.Connection, row: dict[str, Any]) -> No
     ).fetchone()
     observed_profile = row.get("observed_profile_key")
     observed_status = row.get("observed_status")
+    reset_observed_age = bool(row.get("reset_observed_age"))
     if existing is None:
+        profile_since = now if observed_profile else None
+        status_since = now if observed_status else None
+    elif reset_observed_age:
         profile_since = now if observed_profile else None
         status_since = now if observed_status else None
     else:

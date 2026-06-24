@@ -387,6 +387,7 @@ def run_once(
     observation_rows: list[dict[str, Any]] = []
     cooldown_rows: list[dict[str, Any]] = []
     pending_profile_cooldown_seconds = env_int("PRL_PENDING_PROFILE_COOLDOWN_SECONDS", 600)
+    heartbeat_stale_after_seconds = env_int("PRL_ORG_WORKER_STALE_AFTER_SECONDS", 300)
     for target in targets:
         started = time.monotonic()
         if should_skip_live_hashing_target(target, apply=apply, allow_live_retarget=allow_live_retarget):
@@ -463,6 +464,7 @@ def run_once(
         state_db.write_heartbeat(
             conn,
             f"org_worker:{org_label}",
+            stale_after_seconds=heartbeat_stale_after_seconds,
             payload={
                 "apply": apply,
                 "allow_live_retarget": allow_live_retarget,

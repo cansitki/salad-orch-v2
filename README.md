@@ -339,7 +339,10 @@ unless `--apply-workers` or `--apply-guard` is passed.
    guard probe has a retarget/stop decision.
    `--worker-parallelism 4` runs each organization in an isolated process so
    the legacy watcher environment cannot leak between orgs while the fill scan
-   finishes faster. The rollout layer only runs one organization per Salad API
+   finishes faster. Org worker heartbeats default to a 300 second stale window
+   (`PRL_ORG_WORKER_STALE_AFTER_SECONDS`) so long live API passes do not create
+   false degraded health while they are still progressing. The rollout layer
+   only runs one organization per Salad API
    key in the same worker batch, so orgs sharing one key do not exhaust the
    same per-minute request budget at once.
    Leave `--price` unset in this mode. The scheduler then uses

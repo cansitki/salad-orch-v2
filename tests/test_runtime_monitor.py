@@ -99,6 +99,27 @@ class RuntimeMonitorTest(unittest.TestCase):
                 runner=lambda **_: rollout_payload(stage="shadow"),
             )
 
+    def test_one_org_apply_can_allow_pending_retarget(self) -> None:
+        calls = []
+
+        def runner(**kwargs):
+            calls.append(kwargs)
+            return rollout_payload(stage=kwargs["stage"])
+
+        payload = runtime_monitor.run_monitor_tick(
+            apply_one_org=True,
+            org="kry1",
+            confirm_live_actions=True,
+            allow_pending_retarget=True,
+            pending_retarget_after_seconds=75,
+            runner=runner,
+        )
+
+        self.assertTrue(payload["ok"])
+        self.assertEqual([call["stage"] for call in calls], ["shadow", "one-org"])
+        self.assertTrue(calls[1]["allow_pending_retarget"])
+        self.assertEqual(calls[1]["pending_retarget_after_seconds"], 75)
+
     def test_live_action_is_skipped_when_shadow_fails(self) -> None:
         calls = []
 

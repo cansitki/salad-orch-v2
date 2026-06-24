@@ -300,6 +300,14 @@ unless `--apply-workers` or `--apply-guard` is passed.
    PRL_PEARL_FEE_RATE=0.01 python3 scripts/runtime_monitor.py --once --price 0.64 --fee 0.01 --require-secrets --apply-one-org --org kry1 --confirm-live-actions
    ```
 
+   To rotate stale creating/allocating slots after the configured grace, add
+   `--allow-pending-retarget`. Fresh pending slots are still protected until
+   `--pending-retarget-after-seconds` elapses:
+
+   ```bash
+   PRL_PEARL_FEE_RATE=0.01 python3 scripts/runtime_monitor.py --once --price 0.64 --fee 0.01 --require-secrets --apply-one-org --org kry1 --confirm-live-actions --allow-pending-retarget --pending-retarget-after-seconds 60
+   ```
+
    Live apply stages create a rollback checkpoint automatically before the
    scheduler writes new targets.
 

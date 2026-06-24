@@ -7,6 +7,7 @@ import os
 import pathlib
 import sys
 import time
+from datetime import UTC, datetime
 from typing import Any
 
 import fleet_scheduler
@@ -99,9 +100,11 @@ def install_rate_limited_request(watch: Any, org: OrgConfig, *, db_path: str | N
 def target_rows(conn, org_label: str) -> list[dict[str, Any]]:
     rows = conn.execute(
         """
-        SELECT t.*, p.gpu_key, p.priority, p.memory_mb, p.label
+        SELECT t.*, p.gpu_key, p.priority, p.memory_mb, p.label,
+               s.observed_status_since_utc, s.observed_profile_since_utc
         FROM slot_targets t
         JOIN gpu_profiles p ON p.profile_key = t.profile_key
+        LEFT JOIN slots s ON s.org_label = t.org_label AND s.slot_name = t.slot_name
         WHERE t.org_label = ?
         ORDER BY t.slot_name
         """,
@@ -150,6 +153,18 @@ def observed_status(group: dict[str, Any] | None, counts: dict[str, int]) -> str
     return status or "stopped"
 
 
+def age_seconds(value: str | None) -> float | None:
+    if not value:
+        return None
+    try:
+        at = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if at.tzinfo is None:
+        at = at.replace(tzinfo=UTC)
+    return max(0.0, (datetime.now(UTC) - at).total_seconds())
+
+
 def planned_action(
     watch: Any,
     slot_name: str,
@@ -157,6 +172,7 @@ def planned_action(
     *,
     protect_running: bool = True,
     protect_pending: bool = True,
+    pending_retarget_after_seconds: int = 45,
 ) -> dict[str, Any]:
     try:
         group, instances = watch.slot_state(slot_name)
@@ -172,9 +188,21 @@ def planned_action(
         if protect_running and counts["running"] > 0:
             action = "observe"
             reason = f"protected_running_profile_mismatch:{current or 'unknown'}"
-        elif protect_pending and counts["creating"] + counts["allocating"] > 0:
-            action = "observe"
-            reason = f"protected_pending_profile_mismatch:{current or 'unknown'}"
+        elif counts["creating"] + counts["allocating"] > 0:
+            pending_age = age_seconds(target.get("observed_status_since_utc"))
+            if protect_pending:
+                action = "observe"
+                reason = f"protected_pending_profile_mismatch:{current or 'unknown'}"
+            elif pending_age is None or pending_age < pending_retarget_after_seconds:
+                action = "observe"
+                age_text = "unknown" if pending_age is None else f"{pending_age:.1f}"
+                reason = (
+                    f"pending_profile_mismatch_wait:{current or 'unknown'}:"
+                    f"age_{age_text}_lt_{pending_retarget_after_seconds}"
+                )
+            else:
+                action = "patch"
+                reason = f"stale_pending_profile_mismatch:{current or 'unknown'}:age_{pending_age:.1f}"
         else:
             action = "patch"
             reason = f"profile_mismatch:{current or 'unknown'}"
@@ -232,6 +260,7 @@ def run_once(
     schedule_if_empty: bool = True,
     allow_live_retarget: bool = False,
     allow_pending_retarget: bool = False,
+    pending_retarget_after_seconds: int = 45,
 ) -> dict[str, Any]:
     config = load_config()
     orgs = {org.label: org for org in config.enabled_orgs()}
@@ -264,6 +293,7 @@ def run_once(
             target,
             protect_running=not allow_live_retarget,
             protect_pending=not allow_pending_retarget,
+            pending_retarget_after_seconds=pending_retarget_after_seconds,
         )
         try:
             result = execute_action(watch, target, plan, apply=apply)
@@ -313,6 +343,7 @@ def run_once(
                 "apply": apply,
                 "allow_live_retarget": allow_live_retarget,
                 "allow_pending_retarget": allow_pending_retarget,
+                "pending_retarget_after_seconds": pending_retarget_after_seconds,
                 "targets": len(targets),
                 "actions": action_counts,
             },
@@ -326,6 +357,7 @@ def run_once(
                 "apply": apply,
                 "allow_live_retarget": allow_live_retarget,
                 "allow_pending_retarget": allow_pending_retarget,
+                "pending_retarget_after_seconds": pending_retarget_after_seconds,
                 "targets": len(targets),
                 "results": results,
             },
@@ -336,6 +368,7 @@ def run_once(
         "apply": apply,
         "allow_live_retarget": allow_live_retarget,
         "allow_pending_retarget": allow_pending_retarget,
+        "pending_retarget_after_seconds": pending_retarget_after_seconds,
         "targets": len(targets),
         "action_counts": action_counts,
         "results": results,
@@ -349,6 +382,7 @@ def main() -> None:
     parser.add_argument("--apply", action="store_true", help="Perform live Salad create/patch/start actions.")
     parser.add_argument("--allow-live-retarget", action="store_true", help="Allow patching already running slots.")
     parser.add_argument("--allow-pending-retarget", action="store_true", help="Allow patching creating/allocating slots.")
+    parser.add_argument("--pending-retarget-after-seconds", type=int, default=45)
     parser.add_argument("--once", action="store_true")
     parser.add_argument("--loop", action="store_true")
     parser.add_argument("--interval", type=int, default=30)
@@ -370,6 +404,7 @@ def main() -> None:
                     apply=args.apply,
                     allow_live_retarget=args.allow_live_retarget,
                     allow_pending_retarget=args.allow_pending_retarget,
+                    pending_retarget_after_seconds=args.pending_retarget_after_seconds,
                 )
             )
             time.sleep(args.interval)
@@ -381,6 +416,7 @@ def main() -> None:
                 apply=args.apply,
                 allow_live_retarget=args.allow_live_retarget,
                 allow_pending_retarget=args.allow_pending_retarget,
+                pending_retarget_after_seconds=args.pending_retarget_after_seconds,
             )
         )
 

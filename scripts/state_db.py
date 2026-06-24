@@ -43,6 +43,8 @@ CREATE TABLE IF NOT EXISTS slots (
   desired_profile_key TEXT,
   observed_profile_key TEXT,
   observed_status TEXT,
+  observed_profile_since_utc TEXT,
+  observed_status_since_utc TEXT,
   live_hashrate_th REAL DEFAULT 0,
   protected INTEGER DEFAULT 0,
   updated_at_utc TEXT NOT NULL,
@@ -271,8 +273,16 @@ def connect(path: str | pathlib.Path | None = None) -> sqlite3.Connection:
     return conn
 
 
+def _ensure_column(conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:
+    columns = {str(row["name"]) for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+    if column not in columns:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
+
 def init_db(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA)
+    _ensure_column(conn, "slots", "observed_profile_since_utc", "TEXT")
+    _ensure_column(conn, "slots", "observed_status_since_utc", "TEXT")
     conn.execute(
         "INSERT OR IGNORE INTO schema_migrations(version, applied_at_utc) VALUES(?, ?)",
         (1, utc_now()),
@@ -659,19 +669,48 @@ def active_search_cooldowns(conn: sqlite3.Connection) -> set[tuple[str, str, str
 
 def update_slot_observation(conn: sqlite3.Connection, row: dict[str, Any]) -> None:
     now = row.get("updated_at_utc") or utc_now()
+    existing = conn.execute(
+        """
+        SELECT observed_profile_key, observed_status, observed_profile_since_utc,
+               observed_status_since_utc, updated_at_utc
+        FROM slots
+        WHERE org_label = ? AND slot_name = ?
+        """,
+        (row["org_label"], row["slot_name"]),
+    ).fetchone()
+    observed_profile = row.get("observed_profile_key")
+    observed_status = row.get("observed_status")
+    if existing is None:
+        profile_since = now if observed_profile else None
+        status_since = now if observed_status else None
+    else:
+        profile_since = (
+            existing["observed_profile_since_utc"] or existing["updated_at_utc"] or now
+            if existing["observed_profile_key"] == observed_profile
+            else (now if observed_profile else None)
+        )
+        status_since = (
+            existing["observed_status_since_utc"] or existing["updated_at_utc"] or now
+            if existing["observed_status"] == observed_status
+            else (now if observed_status else None)
+        )
     conn.execute(
         """
         UPDATE slots
         SET observed_profile_key = ?,
             observed_status = ?,
+            observed_profile_since_utc = ?,
+            observed_status_since_utc = ?,
             live_hashrate_th = ?,
             protected = ?,
             updated_at_utc = ?
         WHERE org_label = ? AND slot_name = ?
         """,
         (
-            row.get("observed_profile_key"),
-            row.get("observed_status"),
+            observed_profile,
+            observed_status,
+            profile_since,
+            status_since,
             float(row.get("live_hashrate_th") or 0),
             1 if row.get("protected") else 0,
             now,

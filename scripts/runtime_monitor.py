@@ -63,6 +63,8 @@ def _run_action(
     price: float | None,
     fee: float | None,
     require_secrets: bool,
+    allow_pending_retarget: bool,
+    pending_retarget_after_seconds: int,
 ) -> dict[str, Any]:
     if action == "guard-apply":
         return runner(
@@ -81,6 +83,8 @@ def _run_action(
             price=price,
             fee=fee,
             apply_workers=True,
+            allow_pending_retarget=allow_pending_retarget,
+            pending_retarget_after_seconds=pending_retarget_after_seconds,
             require_secrets=require_secrets,
         )
     raise RuntimeError(f"unknown action {action}")
@@ -96,6 +100,8 @@ def run_monitor_tick(
     apply_guard: bool = False,
     apply_one_org: bool = False,
     org: str | None = None,
+    allow_pending_retarget: bool = False,
+    pending_retarget_after_seconds: int = 45,
     confirm_live_actions: bool = False,
     runner: RolloutRunner = rollout.run_rollout,
 ) -> dict[str, Any]:
@@ -132,6 +138,8 @@ def run_monitor_tick(
                 price=price,
                 fee=fee,
                 require_secrets=require_secrets,
+                allow_pending_retarget=allow_pending_retarget,
+                pending_retarget_after_seconds=pending_retarget_after_seconds,
             )
             action_summary = _summarize_rollout(action_payload)
 
@@ -186,6 +194,8 @@ def main() -> None:
     parser.add_argument("--apply-guard", action="store_true", help="Run guard-apply after a passing shadow gate.")
     parser.add_argument("--apply-one-org", action="store_true", help="Run one-org worker apply after a passing shadow gate.")
     parser.add_argument("--org", default=None, help="Organization label for --apply-one-org.")
+    parser.add_argument("--allow-pending-retarget", action="store_true", help="Allow one-org apply to patch stale creating/allocating slots.")
+    parser.add_argument("--pending-retarget-after-seconds", type=int, default=45)
     parser.add_argument("--confirm-live-actions", action="store_true", help="Required for any live action.")
     parser.add_argument("--once", action="store_true")
     parser.add_argument("--loop", action="store_true")
@@ -205,6 +215,8 @@ def main() -> None:
             apply_guard=args.apply_guard,
             apply_one_org=args.apply_one_org,
             org=args.org,
+            allow_pending_retarget=args.allow_pending_retarget,
+            pending_retarget_after_seconds=args.pending_retarget_after_seconds,
             confirm_live_actions=args.confirm_live_actions,
         )
         if args.json:

@@ -11,6 +11,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
 import fleet_scheduler
+import org_worker
 import state_db
 from config_loader import load_config
 
@@ -34,6 +35,114 @@ class StateAndSchedulerTest(unittest.TestCase):
         self.assertEqual(orgs, 4)
         self.assertEqual(slots, 40)
         self.assertEqual(config.target_slot_count(), 40)
+
+    def test_slot_observation_tracks_status_and_profile_since(self) -> None:
+        config = load_config()
+        with state_db.connect(self.db_path) as conn:
+            state_db.init_db(conn)
+            state_db.sync_config(conn, config)
+            state_db.update_slot_observation(
+                conn,
+                {
+                    "org_label": "kray",
+                    "slot_name": "prl-kray-roi-01",
+                    "observed_profile_key": "3090:batch:2048",
+                    "observed_status": "allocating",
+                    "updated_at_utc": "2026-06-24T12:00:00+00:00",
+                },
+            )
+            state_db.update_slot_observation(
+                conn,
+                {
+                    "org_label": "kray",
+                    "slot_name": "prl-kray-roi-01",
+                    "observed_profile_key": "3090:batch:2048",
+                    "observed_status": "allocating",
+                    "updated_at_utc": "2026-06-24T12:01:00+00:00",
+                },
+            )
+            row = conn.execute(
+                """
+                SELECT observed_profile_since_utc, observed_status_since_utc
+                FROM slots
+                WHERE org_label = 'kray' AND slot_name = 'prl-kray-roi-01'
+                """
+            ).fetchone()
+            state_db.update_slot_observation(
+                conn,
+                {
+                    "org_label": "kray",
+                    "slot_name": "prl-kray-roi-01",
+                    "observed_profile_key": "4070ti:batch:2048",
+                    "observed_status": "running",
+                    "updated_at_utc": "2026-06-24T12:02:00+00:00",
+                },
+            )
+            changed = conn.execute(
+                """
+                SELECT observed_profile_since_utc, observed_status_since_utc
+                FROM slots
+                WHERE org_label = 'kray' AND slot_name = 'prl-kray-roi-01'
+                """
+            ).fetchone()
+        self.assertEqual(row["observed_profile_since_utc"], "2026-06-24T12:00:00+00:00")
+        self.assertEqual(row["observed_status_since_utc"], "2026-06-24T12:00:00+00:00")
+        self.assertEqual(changed["observed_profile_since_utc"], "2026-06-24T12:02:00+00:00")
+        self.assertEqual(changed["observed_status_since_utc"], "2026-06-24T12:02:00+00:00")
+
+    def test_org_worker_waits_before_retargeting_fresh_pending_mismatch(self) -> None:
+        class Watch:
+            def slot_state(self, _slot_name):
+                return (
+                    {
+                        "priority": "batch",
+                        "container": {"resources": {"gpu_classes": ["gpu-rtx-3070"], "memory": 4096}},
+                        "current_state": {"instance_status_counts": {"allocating_count": 1}},
+                    },
+                    [],
+                )
+
+            GPU = {"3070": "gpu-rtx-3070"}
+
+        plan = org_worker.planned_action(
+            Watch(),
+            "prl-kray-roi-01",
+            {
+                "profile_key": "4090:batch:2048",
+                "observed_status_since_utc": datetime.now(UTC).isoformat(timespec="seconds"),
+            },
+            protect_pending=False,
+            pending_retarget_after_seconds=45,
+        )
+        self.assertEqual(plan["action"], "observe")
+        self.assertIn("pending_profile_mismatch_wait", plan["reason"])
+
+    def test_org_worker_patches_stale_pending_mismatch_when_allowed(self) -> None:
+        class Watch:
+            def slot_state(self, _slot_name):
+                return (
+                    {
+                        "priority": "batch",
+                        "container": {"resources": {"gpu_classes": ["gpu-rtx-3070"], "memory": 4096}},
+                        "current_state": {"instance_status_counts": {"allocating_count": 1}},
+                    },
+                    [],
+                )
+
+            GPU = {"3070": "gpu-rtx-3070"}
+
+        plan = org_worker.planned_action(
+            Watch(),
+            "prl-kray-roi-01",
+            {
+                "profile_key": "4090:batch:2048",
+                "observed_status_since_utc": (datetime.now(UTC) - timedelta(minutes=5)).isoformat(timespec="seconds"),
+            },
+            protect_pending=False,
+            pending_retarget_after_seconds=45,
+        )
+        self.assertEqual(plan["action"], "patch")
+        self.assertIn("stale_pending_profile_mismatch", plan["reason"])
 
     def test_scheduler_assigns_diversified_profitable_batch_targets(self) -> None:
         payload = fleet_scheduler.schedule_once(

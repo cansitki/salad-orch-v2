@@ -510,6 +510,7 @@ Default behavior is read-only. Live action modes are:
 
 - `--apply-guard --confirm-live-actions`
 - `--apply-one-org --org <label> --confirm-live-actions`
+- add `--allow-pending-retarget --pending-retarget-after-seconds N` to the one-org path when stale creating/allocating mismatches should rotate
 
 ### `rollback.py`
 
@@ -758,6 +759,7 @@ Safe default behavior:
 - no live changes unless `--apply` is passed
 - running slots are protected unless `--allow-live-retarget` is passed
 - creating/allocating slots are protected unless `--allow-pending-retarget` is passed
+- pending retargets still wait for `--pending-retarget-after-seconds` before patching stale creating/allocating profile mismatches
 - this lets the new worker shadow existing runtime without churn
 - every worker tick writes observed slot status/profile/protection state into `slots`
 - `scripts/rollout.py` requires `--confirm-live-retarget` before passing live retarget authority to workers

@@ -207,6 +207,7 @@ def run_rollout(
     require_secrets: bool = False,
     require_fresh_heartbeats: bool = False,
     schedule_width: int = 10,
+    pending_retarget_after_seconds: int = 45,
 ) -> dict[str, Any]:
     if stage not in STAGES:
         raise SystemExit(f"unknown stage {stage!r}; expected one of {', '.join(sorted(STAGES))}")
@@ -265,6 +266,7 @@ def run_rollout(
                     apply=apply_workers,
                     allow_live_retarget=allow_live_retarget,
                     allow_pending_retarget=allow_pending_retarget,
+                    pending_retarget_after_seconds=pending_retarget_after_seconds,
                 )
             )
         scheduler_payload = fleet_scheduler.schedule_once(
@@ -382,6 +384,7 @@ def main() -> None:
     parser.add_argument("--apply-guard", action="store_true", help="Allow guard v2 live retarget/stop actions.")
     parser.add_argument("--allow-live-retarget", action="store_true", help="Allow org_worker to patch running slots.")
     parser.add_argument("--allow-pending-retarget", action="store_true", help="Allow org_worker to patch creating/allocating slots.")
+    parser.add_argument("--pending-retarget-after-seconds", type=int, default=45)
     parser.add_argument("--confirm-live-retarget", action="store_true", help="Required with --allow-live-retarget.")
     parser.add_argument("--confirm-all-orgs", action="store_true", help="Required with --stage all-orgs --apply-workers.")
     parser.add_argument("--skip-workers", action="store_true")
@@ -414,6 +417,7 @@ def main() -> None:
         require_secrets=args.require_secrets,
         require_fresh_heartbeats=args.require_fresh_heartbeats,
         schedule_width=args.width,
+        pending_retarget_after_seconds=args.pending_retarget_after_seconds,
     )
     if args.json:
         print(json_dumps(payload))

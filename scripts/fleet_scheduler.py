@@ -96,6 +96,9 @@ def build_targets(
             return True
         return allow_availability_probe
 
+    def is_in_cooldown(org_label: str, slot_name: str, profile_key: str) -> bool:
+        return (org_label, slot_name, profile_key) in cooldowns or (org_label, "*", profile_key) in cooldowns
+
     def slot_sort_key(org_label: str, slot_name: str) -> tuple[int, str]:
         row = slot_rows.get((org_label, slot_name), {})
         status = str(row.get("observed_status") or "unknown")
@@ -213,6 +216,7 @@ def build_targets(
                 pending_observed
                 and mode != "optimize"
                 and pending_target_protect_seconds > 0
+                and not is_in_cooldown(org.label, slot_name, str(observed_profile))
                 and (pending_age is None or pending_age < pending_target_protect_seconds)
             )
             if (protected or pending_observed) and observed_profile and observed_profile in scores_by_key:

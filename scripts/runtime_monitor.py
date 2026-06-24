@@ -352,7 +352,7 @@ def run_monitor_tick(
     if shadow_summary["ok"]:
         if apply_guard:
             action = "guard-apply"
-        elif guard_on_issues and guard_due and apply_all_orgs_pending and _has_guard_issues(shadow_summary):
+        elif guard_on_issues and guard_due and apply_all_orgs_pending:
             if guard_actionable_only:
                 guard_probe = _guard_actionable_probe(
                     db_path=db_path,
@@ -362,8 +362,10 @@ def run_monitor_tick(
                 )
                 has_actionable_guard = not guard_probe["ok"] or int(guard_probe.get("actionable") or 0) > 0
                 action = "guard-apply" if has_actionable_guard else "all-orgs-pending"
-            else:
+            elif _has_guard_issues(shadow_summary):
                 action = "guard-apply"
+            else:
+                action = "all-orgs-pending"
         elif apply_all_orgs_pending:
             action = "all-orgs-pending"
         elif apply_one_org:
@@ -480,7 +482,7 @@ def main() -> None:
     parser.add_argument(
         "--guard-actionable-only",
         action="store_true",
-        help="With --guard-on-issues-every, run guard-apply only when a read-only guard probe has retarget/stop decisions; otherwise keep filling.",
+        help="With --guard-on-issues-every, probe guard on due ticks and run guard-apply only for retarget/stop decisions; otherwise keep filling.",
     )
     parser.add_argument("--org", default=None, help="Organization label for --apply-one-org.")
     parser.add_argument("--allow-pending-retarget", action="store_true", help="Allow one-org apply to patch stale creating/allocating slots.")

@@ -294,6 +294,62 @@ class RuntimeMonitorTest(unittest.TestCase):
         self.assertEqual(payload["action"], "all-orgs-pending")
         self.assertEqual([call["stage"] for call in calls], ["shadow", "all-orgs"])
 
+    def test_guard_actionable_only_checks_guard_even_when_shadow_has_no_issues(self) -> None:
+        calls = []
+
+        def runner(**kwargs):
+            calls.append(kwargs)
+            return rollout_payload_without_issues(stage=kwargs["stage"])
+
+        with patch(
+            "runtime_monitor.guard_status.run_once",
+            return_value={
+                "issue_count": 1,
+                "decisions": [
+                    {"action": "retarget", "issue_type": "negative"},
+                ],
+            },
+        ) as guard_mock:
+            payload = runtime_monitor.run_monitor_tick(
+                apply_all_orgs_pending=True,
+                guard_on_issues=True,
+                guard_due=True,
+                guard_actionable_only=True,
+                confirm_live_actions=True,
+                runner=runner,
+            )
+
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["action"], "guard-apply")
+        self.assertEqual([call["stage"] for call in calls], ["shadow", "guard-apply"])
+        self.assertEqual(payload["guard_probe"]["actionable"], 1)
+        guard_mock.assert_called_once_with(db_path=None, price=None, apply=False)
+
+    def test_guard_actionable_only_fills_when_shadow_and_guard_are_clean(self) -> None:
+        calls = []
+
+        def runner(**kwargs):
+            calls.append(kwargs)
+            return rollout_payload_without_issues(stage=kwargs["stage"])
+
+        with patch(
+            "runtime_monitor.guard_status.run_once",
+            return_value={"issue_count": 0, "decisions": []},
+        ):
+            payload = runtime_monitor.run_monitor_tick(
+                apply_all_orgs_pending=True,
+                guard_on_issues=True,
+                guard_due=True,
+                guard_actionable_only=True,
+                confirm_live_actions=True,
+                runner=runner,
+            )
+
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["action"], "all-orgs-pending")
+        self.assertEqual([call["stage"] for call in calls], ["shadow", "all-orgs"])
+        self.assertEqual(payload["guard_probe"]["actionable"], 0)
+
     def test_guard_on_issues_requires_all_orgs_pending_mode(self) -> None:
         with self.assertRaises(SystemExit):
             runtime_monitor.run_monitor_tick(

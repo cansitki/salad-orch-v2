@@ -458,8 +458,14 @@ Responsibilities:
 - compare scheduler targets against observed slot state
 - flag missing targets and targets for unknown slots
 - flag unsafe targets: missing profile score, blocked risk tier, or below minimum profit
-- flag protected running mismatches outside optimize mode
+- warn on protected running mismatches outside optimize mode
+- warn, but do not block, protected running fill-mode slots that are positive but below the new-candidate minimum profit
 - report target diversification so one profile does not dominate the entire fleet
+
+Protected running slots with negative expected profit must not be preserved as
+fill targets. The scheduler should assign a profitable replacement target, while
+guard/live rollout authority controls when the active negative slot is actually
+retargeted or stopped.
 
 This script must not call live Salad APIs. It reads the scheduler DB only.
 
@@ -471,6 +477,7 @@ Responsibilities:
 
 - run scheduler target assignment
 - optionally run org workers in shadow or apply mode
+- rerun scheduler target assignment after org worker observations so protected running slots are reconciled
 - optionally run guard v2 in dry-run or apply mode
 - collect reporter and health output
 - enforce safety gates before the operator expands scope
@@ -481,6 +488,10 @@ Default behavior must stay non-destructive. Live actions require
 
 Live apply stages create a rollout checkpoint before scheduler targets are
 rewritten.
+
+One-shot rollout commands treat stale process heartbeats as warnings by default
+because a full read-only pass can exceed a component heartbeat TTL while it is
+still progressing. Use `--require-fresh-heartbeats` for supervised runtime gates.
 
 ### `rollback.py`
 

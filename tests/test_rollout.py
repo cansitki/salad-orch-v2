@@ -75,6 +75,41 @@ class RolloutTest(unittest.TestCase):
         self.assertFalse(gates["ok"])
         self.assertEqual(gates["failed"][0]["gate"], "target_coverage")
 
+    def test_stale_heartbeats_warn_by_default_for_one_shot_rollout(self) -> None:
+        gates = rollout.evaluate_gates(
+            db_path=self.db_path,
+            scheduler_payload={"mode": "base_fill", "assigned_targets": 40, "target_slots": 40},
+            worker_payloads=[],
+            guard_payload=None,
+            report_payload={"running_no_live_billable_slots": [], "negative_slots": []},
+            health_payload={
+                "health": "degraded",
+                "runtime_failures": [],
+                "stale_heartbeats": [{"process_name": "fleet_scheduler"}],
+            },
+            allow_degraded=False,
+        )
+        self.assertTrue(gates["ok"])
+        self.assertEqual(gates["warnings"][0]["gate"], "stale_heartbeats")
+
+    def test_stale_heartbeats_can_be_required_as_hard_gate(self) -> None:
+        gates = rollout.evaluate_gates(
+            db_path=self.db_path,
+            scheduler_payload={"mode": "base_fill", "assigned_targets": 40, "target_slots": 40},
+            worker_payloads=[],
+            guard_payload=None,
+            report_payload={"running_no_live_billable_slots": [], "negative_slots": []},
+            health_payload={
+                "health": "degraded",
+                "runtime_failures": [],
+                "stale_heartbeats": [{"process_name": "fleet_scheduler"}],
+            },
+            allow_degraded=False,
+            require_fresh_heartbeats=True,
+        )
+        self.assertFalse(gates["ok"])
+        self.assertEqual(gates["failed"][0]["gate"], "stale_heartbeats")
+
     def test_all_org_live_apply_requires_confirmation(self) -> None:
         with self.assertRaises(SystemExit):
             rollout.run_rollout(

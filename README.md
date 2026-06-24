@@ -275,6 +275,12 @@ unless `--apply-workers` or `--apply-guard` is passed.
    PRL_PEARL_FEE_RATE=0.01 python3 scripts/rollout.py --stage shadow --price 0.64 --fee 0.01 --require-secrets
    ```
 
+   Rollout runs one scheduler pass, collects live read-only worker observations,
+   then runs a second scheduler pass so protected running slots are reflected in
+   the final target table. In one-shot mode, stale process heartbeats are
+   warnings; add `--require-fresh-heartbeats` when validating under tmux
+   supervision.
+
 3. Apply one org only:
 
    ```bash
@@ -300,6 +306,12 @@ unless `--apply-workers` or `--apply-guard` is passed.
 The live rule is staged: fill empty/stopped slots first, keep profitable hashing
 slots protected, rotate no-hash after 60 seconds, rotate negative slots after 90
 seconds, then optimize only after the enabled orgs are full or manually approved.
+
+Protected running GPUs that are still positive but below the fill candidate
+profit threshold are reported as shadow warnings, not rollout blockers. Negative
+live slots are not preserved as scheduler targets; the scheduler emits a
+profitable replacement target and the guard remains responsible for live
+retarget/stop action after grace.
 
 Full-org live worker apply requires an explicit confirmation flag:
 

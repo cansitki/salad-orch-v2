@@ -254,51 +254,55 @@ def run_once(
     watch = load_watch_module(org, decision_price=decision_price, min_profit_day=min_profit)
     install_rate_limited_request(watch, org, db_path=db_path)
     results: list[dict[str, Any]] = []
+    attempt_rows: list[dict[str, Any]] = []
+    observation_rows: list[dict[str, Any]] = []
+    for target in targets:
+        started = time.monotonic()
+        plan = planned_action(
+            watch,
+            str(target["slot_name"]),
+            target,
+            protect_running=not allow_live_retarget,
+            protect_pending=not allow_pending_retarget,
+        )
+        try:
+            result = execute_action(watch, target, plan, apply=apply)
+            ok = True
+            error = None
+        except Exception as exc:
+            result = {"ok": False, "applied": False, **plan, "error": type(exc).__name__}
+            ok = False
+            error = f"{type(exc).__name__}: {str(exc)[:180]}"
+        attempt_rows.append(
+            {
+                "at_utc": utc_now(),
+                "org_label": org_label,
+                "slot_name": str(target["slot_name"]),
+                "action": result["action"] if apply else f"dry_run_{result['action']}",
+                "profile_key": str(target["profile_key"]),
+                "ok": ok,
+                "duration_ms": int((time.monotonic() - started) * 1000),
+                "error": error,
+                "payload": result,
+            }
+        )
+        observation_rows.append(
+            {
+                "org_label": org_label,
+                "slot_name": str(target["slot_name"]),
+                "observed_profile_key": result.get("current_profile_key"),
+                "observed_status": result.get("observed_status"),
+                "live_hashrate_th": 0.0,
+                "protected": bool(result.get("protected")),
+            }
+        )
+        results.append(result)
     with state_db.connect(db_path) as conn:
         state_db.init_db(conn)
-        for target in targets:
-            started = time.monotonic()
-            plan = planned_action(
-                watch,
-                str(target["slot_name"]),
-                target,
-                protect_running=not allow_live_retarget,
-                protect_pending=not allow_pending_retarget,
-            )
-            try:
-                result = execute_action(watch, target, plan, apply=apply)
-                ok = True
-                error = None
-            except Exception as exc:
-                result = {"ok": False, "applied": False, **plan, "error": type(exc).__name__}
-                ok = False
-                error = f"{type(exc).__name__}: {str(exc)[:180]}"
-            state_db.record_attempt(
-                conn,
-                {
-                    "at_utc": utc_now(),
-                    "org_label": org_label,
-                    "slot_name": str(target["slot_name"]),
-                    "action": result["action"] if apply else f"dry_run_{result['action']}",
-                    "profile_key": str(target["profile_key"]),
-                    "ok": ok,
-                    "duration_ms": int((time.monotonic() - started) * 1000),
-                    "error": error,
-                    "payload": result,
-                },
-            )
-            state_db.update_slot_observation(
-                conn,
-                {
-                    "org_label": org_label,
-                    "slot_name": str(target["slot_name"]),
-                    "observed_profile_key": result.get("current_profile_key"),
-                    "observed_status": result.get("observed_status"),
-                    "live_hashrate_th": 0.0,
-                    "protected": bool(result.get("protected")),
-                },
-            )
-            results.append(result)
+        for attempt in attempt_rows:
+            state_db.record_attempt(conn, attempt)
+        for observation in observation_rows:
+            state_db.update_slot_observation(conn, observation)
         action_counts: dict[str, int] = {}
         for result in results:
             action_counts[str(result["action"])] = action_counts.get(str(result["action"]), 0) + 1

@@ -43,6 +43,7 @@ def _target_profit_violations(db_path: str | None, min_profit_day: float) -> lis
             SELECT org_label, slot_name, profile_key, expected_profit_day, mode, reason
             FROM slot_targets
             WHERE expected_profit_day < ?
+              AND NOT (mode != 'optimize' AND protected = 1 AND expected_profit_day >= 0)
             ORDER BY expected_profit_day ASC
             """,
             (min_profit_day,),
@@ -75,6 +76,7 @@ def evaluate_gates(
     report_payload: dict[str, Any],
     health_payload: dict[str, Any],
     allow_degraded: bool,
+    require_fresh_heartbeats: bool = False,
 ) -> dict[str, Any]:
     config = load_config()
     min_profit = config.risk.min_profit_for_mode(str(scheduler_payload.get("mode") or None))
@@ -120,7 +122,7 @@ def evaluate_gates(
                 "examples": runtime_failures[:5],
             }
         )
-    if stale_heartbeats and not allow_degraded:
+    if stale_heartbeats and require_fresh_heartbeats and not allow_degraded:
         failed.append(
             {
                 "gate": "stale_heartbeats",
@@ -131,6 +133,14 @@ def evaluate_gates(
 
     if health_payload.get("health") == "degraded" and allow_degraded:
         warnings.append({"gate": "health", "message": "health.py reports degraded but allow_degraded is set"})
+    if stale_heartbeats and not require_fresh_heartbeats:
+        warnings.append(
+            {
+                "gate": "stale_heartbeats",
+                "message": f"{len(stale_heartbeats)} stale heartbeats present; pass --require-fresh-heartbeats to make this a hard gate",
+                "examples": stale_heartbeats[:5],
+            }
+        )
     if report_payload.get("running_no_live_billable_slots"):
         warnings.append(
             {
@@ -158,6 +168,7 @@ def evaluate_gates(
         "warnings": warnings,
         "coverage": {"assigned_targets": assigned, "target_slots": target_slots},
         "min_profit_day": min_profit,
+        "require_fresh_heartbeats": require_fresh_heartbeats,
     }
 
 
@@ -194,6 +205,7 @@ def run_rollout(
     refresh_timeout_seconds: int = 45,
     allow_degraded: bool = False,
     require_secrets: bool = False,
+    require_fresh_heartbeats: bool = False,
     schedule_width: int = 10,
 ) -> dict[str, Any]:
     if stage not in STAGES:
@@ -255,6 +267,13 @@ def run_rollout(
                     allow_pending_retarget=allow_pending_retarget,
                 )
             )
+        scheduler_payload = fleet_scheduler.schedule_once(
+            db_path=db_path,
+            price=price,
+            fee=fee,
+            width=schedule_width,
+            dry_run=False,
+        )
 
     guard_payload = None
     if not skip_guard:
@@ -275,6 +294,7 @@ def run_rollout(
         report_payload=report_payload,
         health_payload=health_payload,
         allow_degraded=allow_degraded,
+        require_fresh_heartbeats=require_fresh_heartbeats,
     )
     if not shadow_payload.get("ok"):
         gates["failed"].append(
@@ -285,6 +305,14 @@ def run_rollout(
             }
         )
         gates["ok"] = False
+    if shadow_payload.get("warnings"):
+        gates["warnings"].append(
+            {
+                "gate": "shadow_compare",
+                "message": f"{len(shadow_payload.get('warnings') or [])} shadow comparison warnings",
+                "examples": (shadow_payload.get("warnings") or [])[:5],
+            }
+        )
     return {
         "stage": stage,
         "apply_workers": apply_workers,
@@ -334,6 +362,7 @@ def run_rollout(
             "unsafe_targets": len(shadow_payload.get("unsafe_targets") or []),
             "missing_targets": len(shadow_payload.get("missing_targets") or []),
             "mismatches": len(shadow_payload.get("mismatches") or []),
+            "warnings": len(shadow_payload.get("warnings") or []),
             "unique_target_profiles": (shadow_payload.get("diversification") or {}).get("unique_target_profiles"),
             "top_profile_share": (shadow_payload.get("diversification") or {}).get("top_profile_share"),
         },
@@ -361,6 +390,7 @@ def main() -> None:
     parser.add_argument("--refresh-timeout", type=int, default=45)
     parser.add_argument("--allow-degraded", action="store_true")
     parser.add_argument("--require-secrets", action="store_true")
+    parser.add_argument("--require-fresh-heartbeats", action="store_true")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
 
@@ -382,6 +412,7 @@ def main() -> None:
         refresh_timeout_seconds=args.refresh_timeout,
         allow_degraded=args.allow_degraded,
         require_secrets=args.require_secrets,
+        require_fresh_heartbeats=args.require_fresh_heartbeats,
         schedule_width=args.width,
     )
     if args.json:

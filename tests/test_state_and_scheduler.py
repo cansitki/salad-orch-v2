@@ -81,6 +81,36 @@ class StateAndSchedulerTest(unittest.TestCase):
         self.assertEqual(row["protected"], 1)
         self.assertIn("protected_observed_profile", row["reason"])
 
+    def test_scheduler_replaces_protected_negative_running_slot_target(self) -> None:
+        config = load_config()
+        with state_db.connect(self.db_path) as conn:
+            state_db.init_db(conn)
+            state_db.sync_config(conn, config)
+            state_db.update_slot_observation(
+                conn,
+                {
+                    "org_label": "kry1",
+                    "slot_name": "prl-kry1-roi-09",
+                    "observed_profile_key": "4080:low:2048",
+                    "observed_status": "running",
+                    "protected": True,
+                },
+            )
+            conn.commit()
+        fleet_scheduler.schedule_once(db_path=self.db_path, price=0.64, fee=0.01, dry_run=False)
+        with state_db.connect(self.db_path) as conn:
+            row = conn.execute(
+                """
+                SELECT profile_key, protected, reason, expected_profit_day
+                FROM slot_targets
+                WHERE org_label = 'kry1' AND slot_name = 'prl-kry1-roi-09'
+                """
+            ).fetchone()
+        self.assertNotEqual(row["profile_key"], "4080:low:2048")
+        self.assertEqual(row["protected"], 0)
+        self.assertGreaterEqual(row["expected_profit_day"], 0.05)
+        self.assertIn("replace_negative_observed_profile", row["reason"])
+
     def test_optimize_mode_can_upgrade_protected_running_slot_when_delta_is_large(self) -> None:
         config = load_config()
         with state_db.connect(self.db_path) as conn:

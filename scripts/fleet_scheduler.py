@@ -113,10 +113,26 @@ def build_targets(
             if protected and observed_profile and observed_profile in scores_by_key:
                 current = scores_by_key[str(observed_profile)]
                 selected = None
-                if mode == "optimize":
+                current_profit = float(current["expected_profit_day"])
+                if current_profit < 0:
+                    selected = diversified_candidate(
+                        org.label,
+                        slot_name,
+                        slot_index,
+                        org_index,
+                        skip_profile_key=str(observed_profile),
+                    )
+                    if selected is not None:
+                        profile_index, profile = selected
+                        protected = False
+                        reason = f"{mode}:replace_negative_observed_profile:{observed_profile}"
+                    else:
+                        profile = current
+                        profile_index = 0
+                        reason = f"{mode}:negative_observed_profile_no_replacement"
+                elif mode == "optimize":
                     min_upgrade_profit = (
-                        float(current["expected_profit_day"])
-                        + float(config.risk.optimize_min_upgrade_delta_day)
+                        current_profit + float(config.risk.optimize_min_upgrade_delta_day)
                     )
                     selected = diversified_candidate(
                         org.label,
@@ -126,11 +142,15 @@ def build_targets(
                         skip_profile_key=str(observed_profile),
                         min_profit_day=min_upgrade_profit,
                     )
-                if selected is not None:
-                    profile_index, profile = selected
-                    protected = False
-                    delta = float(profile["expected_profit_day"]) - float(current["expected_profit_day"])
-                    reason = f"{mode}:upgrade_from_{observed_profile}:delta_{delta:.3f}"
+                    if selected is not None:
+                        profile_index, profile = selected
+                        protected = False
+                        delta = float(profile["expected_profit_day"]) - current_profit
+                        reason = f"{mode}:upgrade_from_{observed_profile}:delta_{delta:.3f}"
+                    else:
+                        profile = current
+                        profile_index = 0
+                        reason = f"{mode}:protected_observed_profile"
                 else:
                     profile = current
                     profile_index = 0

@@ -74,12 +74,23 @@ def build_shadow_compare(db_path: str | None = None) -> dict[str, Any]:
         if (org_label, slot_name) not in expected_slot_keys
     ]
     unsafe_targets: list[dict[str, Any]] = []
+    warnings: list[dict[str, Any]] = []
     mismatches: list[dict[str, Any]] = []
     for target in targets:
         mode = str(target["mode"])
         min_profit = float(min_profit_by_mode.get(mode, config.risk.fill_min_profit_day))
         expected_profit = float(target.get("expected_profit_day") or 0)
         risk_tier = target.get("risk_tier")
+        observed_status = str(target.get("observed_status") or "")
+        observed_protected = int(target.get("observed_protected") or 0) > 0
+        target_protected = int(target.get("protected") or 0) > 0
+        protected_positive_fill = (
+            mode != "optimize"
+            and observed_status == "running"
+            and observed_protected
+            and target_protected
+            and expected_profit >= 0
+        )
         if risk_tier is None:
             unsafe_targets.append(
                 {
@@ -90,29 +101,31 @@ def build_shadow_compare(db_path: str | None = None) -> dict[str, Any]:
                 }
             )
         elif str(risk_tier) in BLOCKED_RISK_TIERS:
-            unsafe_targets.append(
-                {
-                    "org_label": target["org_label"],
-                    "slot_name": target["slot_name"],
-                    "profile_key": target["profile_key"],
-                    "risk_tier": risk_tier,
-                    "reason": "blocked_risk_tier",
-                }
-            )
+            payload = {
+                "org_label": target["org_label"],
+                "slot_name": target["slot_name"],
+                "profile_key": target["profile_key"],
+                "risk_tier": risk_tier,
+                "reason": "blocked_risk_tier",
+            }
+            if protected_positive_fill and str(risk_tier) == "marginal":
+                warnings.append({**payload, "reason": "protected_positive_marginal"})
+            else:
+                unsafe_targets.append(payload)
         if expected_profit < min_profit:
-            unsafe_targets.append(
-                {
-                    "org_label": target["org_label"],
-                    "slot_name": target["slot_name"],
-                    "profile_key": target["profile_key"],
-                    "expected_profit_day": expected_profit,
-                    "min_profit_day": min_profit,
-                    "reason": "below_min_profit",
-                }
-            )
+            payload = {
+                "org_label": target["org_label"],
+                "slot_name": target["slot_name"],
+                "profile_key": target["profile_key"],
+                "expected_profit_day": expected_profit,
+                "min_profit_day": min_profit,
+                "reason": "below_min_profit",
+            }
+            if protected_positive_fill:
+                warnings.append({**payload, "reason": "protected_positive_below_min_profit"})
+            else:
+                unsafe_targets.append(payload)
         observed_profile = target.get("observed_profile_key")
-        observed_status = str(target.get("observed_status") or "")
-        observed_protected = int(target.get("observed_protected") or 0) > 0
         if observed_profile and observed_profile != target["profile_key"]:
             severity = "info"
             if observed_status == "running" and observed_protected and mode != "optimize":
@@ -154,7 +167,7 @@ def build_shadow_compare(db_path: str | None = None) -> dict[str, Any]:
         gate_failures.append({"gate": "diversification", "count": len(profile_counts)})
     warning_mismatches = [item for item in mismatches if item["severity"] == "warning"]
     if warning_mismatches:
-        gate_failures.append({"gate": "protected_running_mismatch", "count": len(warning_mismatches)})
+        warnings.append({"gate": "protected_running_mismatch", "count": len(warning_mismatches)})
     return {
         "ok": not gate_failures,
         "target_slots": config.target_slot_count(),
@@ -165,6 +178,7 @@ def build_shadow_compare(db_path: str | None = None) -> dict[str, Any]:
         "unsafe_targets": unsafe_targets,
         "mismatches": mismatches,
         "diversification": diversification,
+        "warnings": warnings,
         "gate_failures": gate_failures,
     }
 
@@ -191,6 +205,11 @@ def main() -> None:
     )
     for failure in payload["gate_failures"]:
         print(f"FAIL {failure['gate']}: {failure['count']}")
+    for warning in payload["warnings"]:
+        if "gate" in warning:
+            print(f"WARN {warning['gate']}: {warning['count']}")
+        else:
+            print(f"WARN {warning['reason']}: {warning['org_label']} {warning['slot_name']} {warning['profile_key']}")
 
 
 if __name__ == "__main__":

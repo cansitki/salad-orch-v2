@@ -98,6 +98,8 @@ The runnable code lives in `scripts/`.
 | `.env.example` | Safe template for local secrets and runtime settings. |
 
 The current operating plan is documented in `docs/current-operations.md`.
+The planned next-generation scheduler is documented in
+`docs/fleet-scheduler-build-plan.md`.
 
 The public scripts are intentionally parameterized. Secrets are read from env
 vars or `.env`, not from source code.

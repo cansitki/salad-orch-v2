@@ -187,6 +187,20 @@ def active_counts(group: dict[str, Any] | None) -> dict[str, int]:
     }
 
 
+def pending_instance_ids(instances: list[dict[str, Any]]) -> list[str]:
+    ids: list[str] = []
+    seen: set[str] = set()
+    for instance in instances:
+        if instance.get("ready") or instance.get("started"):
+            continue
+        instance_id = str(instance.get("id") or "")
+        if not instance_id or instance_id in seen:
+            continue
+        seen.add(instance_id)
+        ids.append(instance_id)
+    return ids
+
+
 def observed_status(group: dict[str, Any] | None, counts: dict[str, int]) -> str:
     if group is None:
         return "missing"
@@ -280,6 +294,7 @@ def planned_action(
         "protected": counts["running"] > 0,
         "counts": counts,
         "instance_count": len(instances),
+        "pending_instance_ids": pending_instance_ids(instances),
     }
 
 
@@ -293,7 +308,7 @@ def candidate_from_target(watch: Any, target: dict[str, Any]) -> Any:
 
 
 def execute_action(watch: Any, target: dict[str, Any], plan: dict[str, Any], *, apply: bool) -> dict[str, Any]:
-    if not apply or plan["action"] in {"observe", "cooldown_pending"}:
+    if not apply or plan["action"] == "observe":
         return {"ok": True, "applied": False, **plan}
     candidate = candidate_from_target(watch, target)
     slot_name = str(target["slot_name"])
@@ -312,6 +327,26 @@ def execute_action(watch: Any, target: dict[str, Any], plan: dict[str, Any], *, 
             }
     elif plan["action"] == "start":
         watch.start_slot(slot_name, "fleet_scheduler_target")
+    elif plan["action"] == "cooldown_pending":
+        recycled = []
+        for instance_id in plan.get("pending_instance_ids") or []:
+            watch.reallocate(slot_name, str(instance_id), "stale_pending_same_profile")
+            recycled.append(str(instance_id))
+        restart_requested = False
+        restart_reason = None
+        if not recycled:
+            restart_reason = "stale_pending_without_visible_instances"
+            watch.request("POST", f"/organizations/{watch.ORG}/projects/{watch.PROJECT}/containers/{slot_name}/stop")
+            watch.start_slot(slot_name, f"stale_pending_same_profile:{restart_reason}")
+            restart_requested = True
+        return {
+            "ok": True,
+            "applied": True,
+            **plan,
+            "recycled_pending_instances": recycled,
+            "restart_requested": restart_requested,
+            "restart_reason": restart_reason,
+        }
     else:
         raise RuntimeError(f"unknown action {plan['action']}")
     return {"ok": True, "applied": True, **plan}

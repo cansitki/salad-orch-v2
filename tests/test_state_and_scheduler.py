@@ -337,7 +337,7 @@ class StateAndSchedulerTest(unittest.TestCase):
                         "container": {"resources": {"gpu_classes": ["gpu-rtx-4090"], "memory": 2048}},
                         "current_state": {"instance_status_counts": {"allocating_count": 1}},
                     },
-                    [],
+                    [{"id": "pending-1"}],
                 )
 
             GPU = {"4090": "gpu-rtx-4090"}
@@ -354,6 +354,118 @@ class StateAndSchedulerTest(unittest.TestCase):
         )
         self.assertEqual(plan["action"], "cooldown_pending")
         self.assertIn("stale_pending_same_profile", plan["reason"])
+        self.assertEqual(plan["pending_instance_ids"], ["pending-1"])
+
+    def test_org_worker_recycles_stale_pending_same_profile_instances(self) -> None:
+        class Watch:
+            ORG = "kray"
+            PROJECT = "default"
+
+            class Candidate:
+                def __init__(self, label, priority, gpu_keys, memory):
+                    self.label = label
+                    self.priority = priority
+                    self.gpu_keys = gpu_keys
+                    self.memory = memory
+
+            def __init__(self):
+                self.reallocate_calls = []
+
+            def reallocate(self, slot_name, instance_id, reason):
+                self.reallocate_calls.append((slot_name, instance_id, reason))
+
+        watch = Watch()
+        result = org_worker.execute_action(
+            watch,
+            {
+                "slot_name": "prl-kray-roi-01",
+                "label": "RTX 4090 batch",
+                "priority": "batch",
+                "gpu_key": "4090",
+                "memory_mb": 2048,
+            },
+            {
+                "slot_name": "prl-kray-roi-01",
+                "action": "cooldown_pending",
+                "reason": "stale_pending_same_profile:4090:batch:2048:age_300.0",
+                "target_profile_key": "4090:batch:2048",
+                "current_profile_key": "4090:batch:2048",
+                "observed_status": "allocating",
+                "protected": False,
+                "counts": {"allocating": 1, "creating": 0, "running": 0, "stopping": 0},
+                "instance_count": 1,
+                "pending_instance_ids": ["pending-1"],
+            },
+            apply=True,
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["applied"])
+        self.assertEqual(result["recycled_pending_instances"], ["pending-1"])
+        self.assertFalse(result["restart_requested"])
+        self.assertEqual(watch.reallocate_calls, [("prl-kray-roi-01", "pending-1", "stale_pending_same_profile")])
+
+    def test_org_worker_restarts_hidden_stale_pending_same_profile(self) -> None:
+        class Watch:
+            ORG = "kray"
+            PROJECT = "default"
+
+            class Candidate:
+                def __init__(self, label, priority, gpu_keys, memory):
+                    self.label = label
+                    self.priority = priority
+                    self.gpu_keys = gpu_keys
+                    self.memory = memory
+
+            def __init__(self):
+                self.request_calls = []
+                self.start_calls = []
+
+            def request(self, method, path):
+                self.request_calls.append((method, path))
+                return {}
+
+            def start_slot(self, slot_name, reason):
+                self.start_calls.append((slot_name, reason))
+
+        watch = Watch()
+        result = org_worker.execute_action(
+            watch,
+            {
+                "slot_name": "prl-kray-roi-01",
+                "label": "RTX 4090 batch",
+                "priority": "batch",
+                "gpu_key": "4090",
+                "memory_mb": 2048,
+            },
+            {
+                "slot_name": "prl-kray-roi-01",
+                "action": "cooldown_pending",
+                "reason": "stale_pending_same_profile:4090:batch:2048:age_300.0",
+                "target_profile_key": "4090:batch:2048",
+                "current_profile_key": "4090:batch:2048",
+                "observed_status": "allocating",
+                "protected": False,
+                "counts": {"allocating": 1, "creating": 0, "running": 0, "stopping": 0},
+                "instance_count": 0,
+                "pending_instance_ids": [],
+            },
+            apply=True,
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["applied"])
+        self.assertEqual(result["recycled_pending_instances"], [])
+        self.assertTrue(result["restart_requested"])
+        self.assertEqual(result["restart_reason"], "stale_pending_without_visible_instances")
+        self.assertEqual(
+            watch.request_calls,
+            [("POST", "/organizations/kray/projects/default/containers/prl-kray-roi-01/stop")],
+        )
+        self.assertEqual(
+            watch.start_calls,
+            [("prl-kray-roi-01", "stale_pending_same_profile:stale_pending_without_visible_instances")],
+        )
 
     def test_org_worker_waits_on_fresh_pending_same_profile(self) -> None:
         class Watch:

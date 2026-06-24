@@ -447,6 +447,18 @@ Responsibilities:
 Default behavior must stay non-destructive. Live actions require
 `--apply-workers` or `--apply-guard`.
 
+### `maintenance.py`
+
+Long-running state retention and compaction helper.
+
+Responsibilities:
+
+- prune old historical rows from events, attempts, profit snapshots, price history, risk modes, and availability samples
+- keep operational state tables intact
+- run in dry-run mode by default
+- optionally loop under tmux/supervisor
+- optionally run `VACUUM` after applied pruning
+
 ## GPU Risk Tiers
 
 Use conservative 5% Pearl fee for tiers.
@@ -807,6 +819,14 @@ Acceptance:
 - scheduler spreads targets across old and new orgs without all orgs chasing the same profile
 - API backoff prevents request storms
 - status remains readable as org count grows
+
+Current implementation:
+
+- `scripts/maintenance.py` prunes historical rows with dry-run default and `--apply` for deletion
+- `scripts/maintenance.py --loop --interval 21600 --apply` can run as a six-hour retention job
+- `scripts/supervisor.py --include-maintenance` includes maintenance in the tmux plan
+- `scripts/supervisor.py --include-maintenance --maintenance-apply` allows the maintenance loop to prune old historical rows
+- maintenance does not delete organizations, slots, slot targets, heartbeats, guard issues, runtime failures, workers, or search cooldowns
 
 ## Verification Gates
 

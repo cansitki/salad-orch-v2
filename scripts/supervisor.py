@@ -23,7 +23,13 @@ def _with_db(cmd: list[str], db_path: str | None) -> list[str]:
     return [*cmd, "--db", db_path] if db_path else cmd
 
 
-def process_plan(*, apply_workers: bool = False, db_path: str | None = None) -> list[dict[str, Any]]:
+def process_plan(
+    *,
+    apply_workers: bool = False,
+    db_path: str | None = None,
+    include_maintenance: bool = False,
+    maintenance_apply: bool = False,
+) -> list[dict[str, Any]]:
     config = load_config()
     plan = [
         {
@@ -47,6 +53,17 @@ def process_plan(*, apply_workers: bool = False, db_path: str | None = None) -> 
             "cmd": _with_db(["python3", str(SCRIPT_DIR / "guard.py"), "--loop", "--interval", "30"], db_path),
         },
     ]
+    if include_maintenance:
+        cmd = ["python3", str(SCRIPT_DIR / "maintenance.py"), "--loop", "--interval", "21600"]
+        if maintenance_apply:
+            cmd.append("--apply")
+        plan.append(
+            {
+                "name": "salad-maintenance",
+                "heartbeat": "maintenance",
+                "cmd": _with_db(cmd, db_path),
+            }
+        )
     for org in config.enabled_orgs():
         cmd = ["python3", str(SCRIPT_DIR / "org_worker.py"), "--org", org.label, "--loop", "--interval", "30"]
         if apply_workers:
@@ -66,9 +83,20 @@ def tmux_command(session: str, cmd: list[str]) -> list[str]:
     return ["tmux", "new-session", "-d", "-s", session, joined]
 
 
-def start_tmux_sessions(*, apply_workers: bool = False, db_path: str | None = None) -> list[dict[str, Any]]:
+def start_tmux_sessions(
+    *,
+    apply_workers: bool = False,
+    db_path: str | None = None,
+    include_maintenance: bool = False,
+    maintenance_apply: bool = False,
+) -> list[dict[str, Any]]:
     results = []
-    for item in process_plan(apply_workers=apply_workers, db_path=db_path):
+    for item in process_plan(
+        apply_workers=apply_workers,
+        db_path=db_path,
+        include_maintenance=include_maintenance,
+        maintenance_apply=maintenance_apply,
+    ):
         subprocess.run(["tmux", "has-session", "-t", item["name"]], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         subprocess.run(["tmux", "kill-session", "-t", item["name"]], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         result = subprocess.run(tmux_command(item["name"], item["cmd"]), check=False, capture_output=True, text=True)
@@ -103,9 +131,16 @@ def ensure_tmux_sessions(
     *,
     apply_workers: bool = False,
     db_path: str | None = None,
+    include_maintenance: bool = False,
+    maintenance_apply: bool = False,
     restart_stale: bool = True,
 ) -> list[dict[str, Any]]:
-    plan = process_plan(apply_workers=apply_workers, db_path=db_path)
+    plan = process_plan(
+        apply_workers=apply_workers,
+        db_path=db_path,
+        include_maintenance=include_maintenance,
+        maintenance_apply=maintenance_apply,
+    )
     results: list[dict[str, Any]] = []
     with state_db.connect(db_path) as conn:
         state_db.init_db(conn)
@@ -170,21 +205,35 @@ def main() -> None:
     parser.add_argument("--ensure", action="store_true", help="Start missing tmux sessions and restart stale heartbeats.")
     parser.add_argument("--no-restart-stale", action="store_true", help="Only start missing sessions during --ensure.")
     parser.add_argument("--apply-workers", action="store_true", help="Include --apply for org workers when starting tmux.")
+    parser.add_argument("--include-maintenance", action="store_true", help="Include maintenance.py loop in the tmux plan.")
+    parser.add_argument("--maintenance-apply", action="store_true", help="Let maintenance.py delete old historical rows.")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
 
     if args.print_plan:
-        payload = process_plan(apply_workers=args.apply_workers, db_path=args.db)
+        payload = process_plan(
+            apply_workers=args.apply_workers,
+            db_path=args.db,
+            include_maintenance=args.include_maintenance,
+            maintenance_apply=args.maintenance_apply,
+        )
         print(json_dumps(payload) if args.json else "\n".join(f"{item['name']}: {' '.join(item['cmd'])}" for item in payload))
         return
     if args.start_tmux:
-        payload = start_tmux_sessions(apply_workers=args.apply_workers, db_path=args.db)
+        payload = start_tmux_sessions(
+            apply_workers=args.apply_workers,
+            db_path=args.db,
+            include_maintenance=args.include_maintenance,
+            maintenance_apply=args.maintenance_apply,
+        )
         print(json_dumps(payload) if args.json else "\n".join(f"{item['name']}: rc={item['returncode']}" for item in payload))
         return
     if args.ensure:
         payload = ensure_tmux_sessions(
             apply_workers=args.apply_workers,
             db_path=args.db,
+            include_maintenance=args.include_maintenance,
+            maintenance_apply=args.maintenance_apply,
             restart_stale=not args.no_restart_stale,
         )
         print(json_dumps(payload) if args.json else "\n".join(f"{item['name']}: {item['action']}" for item in payload))

@@ -108,6 +108,7 @@ The runnable code lives in `scripts/`.
 | `scripts/reporter.py` | CLI/JSON status report from the scheduler DB. |
 | `scripts/health.py` | Read-only health check for targets, stale heartbeats, guard issues, and runtime failures. |
 | `scripts/rollout.py` | Controlled shadow/one-org/all-org/guard rollout runner with safety gates. |
+| `scripts/maintenance.py` | Dry-run-first SQLite retention/compaction helper for long-running fleets. |
 | `.env.example` | Safe template for local secrets and runtime settings. |
 
 The current operating plan is documented in `docs/current-operations.md`.
@@ -197,6 +198,18 @@ python3 scripts/supervisor.py --ensure
 
 `--ensure` starts missing tmux sessions and restarts sessions only when their
 heartbeat is stale. Use `--no-restart-stale` for a start-missing-only pass.
+
+Optional DB maintenance process:
+
+```bash
+python3 scripts/maintenance.py
+python3 scripts/maintenance.py --apply
+python3 scripts/supervisor.py --print-plan --include-maintenance
+python3 scripts/supervisor.py --ensure --include-maintenance --maintenance-apply
+```
+
+Maintenance prunes historical rows only. It does not delete organizations,
+slots, targets, heartbeats, guard issues, runtime failures, workers, or cooldowns.
 
 Read-only scheduler health:
 

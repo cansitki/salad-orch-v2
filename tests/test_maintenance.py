@@ -61,6 +61,13 @@ class MaintenanceTest(unittest.TestCase):
         self.assertEqual(len(maintenance_items), 1)
         self.assertIn("--apply", maintenance_items[0]["cmd"])
 
+    def test_supervisor_tmux_sessions_load_dotenv(self) -> None:
+        command = supervisor.tmux_command("salad-test", ["python3", "scripts/price_oracle.py", "--loop"])
+
+        self.assertEqual(command[:5], ["tmux", "new-session", "-d", "-s", "salad-test"])
+        self.assertIn("if [ -f .env ]; then set -a; . ./.env; set +a; fi", command[-1])
+        self.assertIn("python3 scripts/price_oracle.py --loop", command[-1])
+
 
 if __name__ == "__main__":
     unittest.main()

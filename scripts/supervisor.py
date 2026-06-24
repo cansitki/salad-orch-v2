@@ -79,7 +79,12 @@ def process_plan(
 
 
 def tmux_command(session: str, cmd: list[str]) -> list[str]:
-    joined = "cd " + shlex.quote(str(REPO_ROOT)) + " && " + " ".join(shlex.quote(part) for part in cmd)
+    joined = (
+        "cd "
+        + shlex.quote(str(REPO_ROOT))
+        + " && if [ -f .env ]; then set -a; . ./.env; set +a; fi && "
+        + " ".join(shlex.quote(part) for part in cmd)
+    )
     return ["tmux", "new-session", "-d", "-s", session, joined]
 
 

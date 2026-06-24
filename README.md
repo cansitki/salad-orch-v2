@@ -225,7 +225,9 @@ export PRL_SLOT_NAME_OVERRIDES_JSON='{"kray2":{"05":"prl-kray2-roi-05b"}}'
 ```
 
 The override keeps the org at 10 target slots and prunes the old slot target from
-the local scheduler database on the next config sync.
+the local scheduler database on the next config sync. For persistent live
+operation, put the same non-secret override in the private `.env` file so every
+tmux process restarted by `scripts/supervisor.py` loads the same slot map.
 
 Supervisor process plan:
 
@@ -669,7 +671,8 @@ The supervisor keeps the tmux sessions alive. It also switches modes:
 
 The new `scripts/supervisor.py` keeps the scheduler stack alive: price oracle,
 availability probe, scheduler, guard, and one org worker per enabled
-organization. It uses DB heartbeats to avoid restart loops.
+organization. It loads the private `.env` file before starting each tmux
+session, then uses DB heartbeats to avoid restart loops.
 
 ## Miner Runtime
 

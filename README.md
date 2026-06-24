@@ -371,6 +371,8 @@ Current fill settings:
 | Live upgrades | disabled |
 | Underperform optimization | disabled |
 | No-hash grace | 60 seconds |
+| Guard poll interval | 15 seconds |
+| Guard snapshot HTTP timeout | 4 seconds, 1 attempt |
 | Negative-profit threshold | profit < 0 USD/day |
 | Negative-profit grace | 120 seconds |
 | Allocating rotation | 45 seconds |
@@ -615,7 +617,12 @@ This usually happens when a billable container is running but has not appeared i
 pool stats yet.
 
 The guard waits 60 seconds before acting. If the miner appears in pool stats,
-the slot is kept. If it stays no-hash, the guard stops or reallocates it.
+the slot is kept. If it stays no-hash, the guard retargets it to the next
+profitable candidate. If no profitable replacement is available, the guard stops
+the slot instead of reallocating the same unprofitable GPU.
+
+The same rule applies to slots that stay negative past the negative-profit
+grace window: retarget first, stop if no profitable replacement is available.
 
 ### Everything feels slow
 

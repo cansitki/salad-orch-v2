@@ -336,6 +336,33 @@ def retarget_slot(org: str, slot: str, reason: str) -> dict[str, Any] | None:
         return None
 
 
+def stop_slot(module: Any, org: str, slot: str, reason: str, instance_ids: list[str]) -> dict[str, Any]:
+    try:
+        module.request("POST", f"/organizations/{module.ORG}/projects/{module.PROJECT}/containers/{slot}/stop")
+        module.log("slot_stop_requested", slot=slot, reason=reason)
+        log("slot_stop_requested", org=org, slot=slot, reason=reason, instance_ids=instance_ids)
+        return {
+            "org": org,
+            "slot": slot,
+            "instance_ids": instance_ids,
+            "retargeted": None,
+            "stopped": True,
+            "reason": reason,
+        }
+    except Exception as exc:
+        module.log("slot_stop_failed", slot=slot, reason=reason, error=type(exc).__name__)
+        log("slot_stop_failed", org=org, slot=slot, reason=reason, error=type(exc).__name__, detail=str(exc)[:180])
+        return {
+            "org": org,
+            "slot": slot,
+            "instance_ids": instance_ids,
+            "retargeted": None,
+            "stopped": False,
+            "reason": reason,
+            "error": type(exc).__name__,
+        }
+
+
 def reallocate_slot(org: str, slot: str, reason: str, *, retarget: bool = True) -> list[dict[str, Any]]:
     module = watchers.get(org)
     if module is None:
@@ -344,6 +371,10 @@ def reallocate_slot(org: str, slot: str, reason: str, *, retarget: bool = True) 
     pre_retarget_ids = {str(instance.get("id") or "") for instance in pre_retarget_instances}
     retargeted = retarget_slot(org, slot, reason) if retarget else None
     actions: list[dict[str, Any]] = []
+    if retarget and retargeted is None:
+        instance_ids = [instance_id for instance_id in pre_retarget_ids if instance_id]
+        actions.append(stop_slot(module, org, slot, reason, instance_ids))
+        return actions
     instances_by_id: dict[str, dict[str, Any]] = {}
     for instance in pre_retarget_instances + running_instances(module, slot):
         instance_id = str(instance.get("id") or "")

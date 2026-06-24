@@ -33,12 +33,13 @@ BASE = "https://api.salad.com/api/public"
 WALLET = os.environ.get("PRL_WALLET", "")
 USER_AGENT = "kray-prl-profit-snapshot/1.0"
 HTTP_TIMEOUT_SECONDS = float(os.environ.get("PRL_SNAPSHOT_HTTP_TIMEOUT_SECONDS", "8"))
+HTTP_ATTEMPTS = max(1, int(os.environ.get("PRL_SNAPSHOT_HTTP_ATTEMPTS", "3")))
 
 ACCOUNTS = [
-    ("kray", "kray", "SALAD_API_KEY_2", [f"prl-kray-roi-{index:02d}" for index in range(1, 16)]),
-    ("kry1", "kry1", "SALAD_API_KEY_KRY1", [f"prl-kry1-roi-{index:02d}" for index in range(1, 16)]),
-    ("kray2", "kray2", "SALAD_API_KEY_2", [f"prl-kray2-roi-{index:02d}" for index in range(1, 16)]),
-    ("kray3", "kray3", "SALAD_API_KEY_2", [f"prl-kray3-roi-{index:02d}" for index in range(1, 16)]),
+    ("kray", "kray", "SALAD_API_KEY_2", [f"prl-kray-roi-{index:02d}" for index in range(1, 11)]),
+    ("kry1", "kry1", "SALAD_API_KEY_KRY1", [f"prl-kry1-roi-{index:02d}" for index in range(1, 11)]),
+    ("kray2", "kray2", "SALAD_API_KEY_2", [f"prl-kray2-roi-{index:02d}" for index in range(1, 11)]),
+    ("kray3", "kray3", "SALAD_API_KEY_2", [f"prl-kray3-roi-{index:02d}" for index in range(1, 11)]),
 ]
 if os.environ.get("PRL_INCLUDE_BMU", "").lower() in {"1", "true", "yes"}:
     ACCOUNTS.insert(0, ("bmu", "bmu", "SALAD_API_KEY", [f"prl-roi-fresh-{index:02d}" for index in range(1, 7)]))
@@ -119,7 +120,8 @@ def external_json(url: str) -> dict[str, Any]:
     return open_json_with_retries(request)
 
 
-def open_json_with_retries(request: urllib.request.Request, attempts: int = 3) -> dict[str, Any]:
+def open_json_with_retries(request: urllib.request.Request, attempts: int | None = None) -> dict[str, Any]:
+    attempts = HTTP_ATTEMPTS if attempts is None else attempts
     for attempt in range(attempts):
         try:
             with urllib.request.urlopen(request, timeout=HTTP_TIMEOUT_SECONDS) as response:

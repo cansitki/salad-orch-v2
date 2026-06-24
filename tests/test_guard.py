@@ -143,6 +143,35 @@ class GuardDecisionTest(unittest.TestCase):
         self.assertEqual(failures, 0)
         self.assertEqual(attempt["ok"], 1)
 
+    def test_guard_applies_once_when_same_slot_has_multiple_issues(self) -> None:
+        self.make_issue_old("no_hash")
+        self.make_issue_old("negative")
+
+        with patch("guard.apply_guard_target", return_value={"action": "retarget", "applied": True}) as apply_mock:
+            decisions = guard.enforce_issues(
+                db_path=self.db_path,
+                decision_price=0.64,
+                apply=True,
+                analysis={
+                    "fresh_workers": 3,
+                    "running_no_live_billable_slots": [
+                        {"org": "kray", "slot": "prl-kray-roi-01", "cost_day": 1.0}
+                    ],
+                    "negative_slots": [
+                        {
+                            "org": "kray",
+                            "slot": "prl-kray-roi-01",
+                            "gpu": "3090",
+                            "priority": "batch",
+                            "profit_day": -1.0,
+                        }
+                    ],
+                },
+            )
+
+        self.assertEqual(apply_mock.call_count, 1)
+        self.assertEqual([decision["action"] for decision in decisions], ["retarget", "skip_duplicate"])
+
     def test_guard_snapshot_updates_slot_hashrate_and_workers(self) -> None:
         fake_snapshot = {
             "live_market_prl_price": 0.64,

@@ -227,6 +227,7 @@ def enforce_issues(
 
     decisions: list[dict[str, Any]] = []
     active_keys: set[tuple[str, str, str]] = set()
+    actioned_slots: set[tuple[str, str]] = set()
     with state_db.connect(db_path) as conn:
         state_db.init_db(conn)
         profile_scorer.score_profiles(db_path=db_path, decision_price_usd=decision_price, write=True)
@@ -270,63 +271,71 @@ def enforce_issues(
                 "apply": apply,
             }
             if issue_age >= float(issue["grace_seconds"]):
-                if target is not None:
+                slot_key = (org_label, slot_name)
+                if apply and slot_key in actioned_slots:
+                    decision["action"] = "skip_duplicate"
+                    decision["reason"] = "slot_already_actioned_this_tick"
+                elif target is not None:
                     state_db.set_slot_target(conn, target)
                     decision["action"] = "retarget"
                     decision["target"] = target
                 else:
                     decision["action"] = "stop"
                 if apply:
-                    # Release SQLite write locks before live Salad calls; the rate limiter also writes to this DB.
-                    conn.commit()
-                    try:
-                        applied = apply_guard_target(
-                            target
-                            or {
-                                "org_label": org_label,
-                                "slot_name": slot_name,
-                                "decision_price_usd": decision_price,
-                            },
-                            db_path=db_path,
-                            stop_if_no_target=target is None,
-                            reason=f"guard_{issue_type}",
-                        )
-                        decision["applied"] = applied
-                        state_db.increment_guard_issue_action(conn, org_label, slot_name, issue_type)
-                        state_db.clear_failure(conn, guard_failure_component(org_label, slot_name, issue_type))
-                        state_db.record_attempt(
-                            conn,
-                            {
-                                "org_label": org_label,
-                                "slot_name": slot_name,
-                                "action": f"guard_{decision['action']}",
-                                "profile_key": target.get("profile_key") if target else None,
-                                "ok": True,
-                                "payload": decision,
-                            },
-                        )
-                    except Exception as exc:
-                        decision["apply_error"] = f"{type(exc).__name__}: {str(exc)[:180]}"
-                        state_db.record_failure(
-                            conn,
-                            guard_failure_component(org_label, slot_name, issue_type),
-                            severity="warning",
-                            error_type=type(exc).__name__,
-                            message=str(exc)[:180],
-                            payload=decision,
-                        )
-                        state_db.record_attempt(
-                            conn,
-                            {
-                                "org_label": org_label,
-                                "slot_name": slot_name,
-                                "action": f"guard_{decision['action']}",
-                                "profile_key": target.get("profile_key") if target else None,
-                                "ok": False,
-                                "error": decision["apply_error"],
-                                "payload": decision,
-                            },
-                        )
+                    if decision["action"] == "skip_duplicate":
+                        pass
+                    else:
+                        actioned_slots.add(slot_key)
+                        # Release SQLite write locks before live Salad calls; the rate limiter also writes to this DB.
+                        conn.commit()
+                        try:
+                            applied = apply_guard_target(
+                                target
+                                or {
+                                    "org_label": org_label,
+                                    "slot_name": slot_name,
+                                    "decision_price_usd": decision_price,
+                                },
+                                db_path=db_path,
+                                stop_if_no_target=target is None,
+                                reason=f"guard_{issue_type}",
+                            )
+                            decision["applied"] = applied
+                            state_db.increment_guard_issue_action(conn, org_label, slot_name, issue_type)
+                            state_db.clear_failure(conn, guard_failure_component(org_label, slot_name, issue_type))
+                            state_db.record_attempt(
+                                conn,
+                                {
+                                    "org_label": org_label,
+                                    "slot_name": slot_name,
+                                    "action": f"guard_{decision['action']}",
+                                    "profile_key": target.get("profile_key") if target else None,
+                                    "ok": True,
+                                    "payload": decision,
+                                },
+                            )
+                        except Exception as exc:
+                            decision["apply_error"] = f"{type(exc).__name__}: {str(exc)[:180]}"
+                            state_db.record_failure(
+                                conn,
+                                guard_failure_component(org_label, slot_name, issue_type),
+                                severity="warning",
+                                error_type=type(exc).__name__,
+                                message=str(exc)[:180],
+                                payload=decision,
+                            )
+                            state_db.record_attempt(
+                                conn,
+                                {
+                                    "org_label": org_label,
+                                    "slot_name": slot_name,
+                                    "action": f"guard_{decision['action']}",
+                                    "profile_key": target.get("profile_key") if target else None,
+                                    "ok": False,
+                                    "error": decision["apply_error"],
+                                    "payload": decision,
+                                },
+                            )
                 else:
                     state_db.record_attempt(
                         conn,

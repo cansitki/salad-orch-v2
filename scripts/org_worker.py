@@ -322,7 +322,6 @@ def run_once(
                 "slot_name": str(target["slot_name"]),
                 "observed_profile_key": result.get("current_profile_key"),
                 "observed_status": result.get("observed_status"),
-                "live_hashrate_th": 0.0,
                 "protected": bool(result.get("protected")),
             }
         )

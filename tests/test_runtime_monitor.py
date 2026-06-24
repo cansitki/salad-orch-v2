@@ -147,6 +147,23 @@ class RuntimeMonitorTest(unittest.TestCase):
         self.assertEqual(calls[1]["pending_retarget_after_seconds"], 75)
         self.assertTrue(calls[1]["require_secrets"])
 
+    def test_worker_parallelism_is_passed_to_shadow_and_action(self) -> None:
+        calls = []
+
+        def runner(**kwargs):
+            calls.append(kwargs)
+            return rollout_payload(stage=kwargs["stage"])
+
+        payload = runtime_monitor.run_monitor_tick(
+            apply_all_orgs_pending=True,
+            confirm_live_actions=True,
+            worker_parallelism=4,
+            runner=runner,
+        )
+
+        self.assertTrue(payload["ok"])
+        self.assertEqual([call["worker_parallelism"] for call in calls], [4, 4])
+
     def test_live_action_is_skipped_when_shadow_fails(self) -> None:
         calls = []
 

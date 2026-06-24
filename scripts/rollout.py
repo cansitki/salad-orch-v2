@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ProcessPoolExecutor
 import os
 import sys
 from typing import Any
@@ -186,6 +187,41 @@ def _worker_orgs_for_stage(stage: str, org_label: str | None) -> list[str]:
     return []
 
 
+def _run_org_worker_task(kwargs: dict[str, Any]) -> dict[str, Any]:
+    return org_worker.run_once(**kwargs)
+
+
+def _run_org_workers(
+    orgs: list[str],
+    *,
+    db_path: str | None,
+    apply_workers: bool,
+    allow_live_retarget: bool,
+    allow_pending_retarget: bool,
+    pending_retarget_after_seconds: int,
+    worker_parallelism: int,
+) -> list[dict[str, Any]]:
+    tasks = [
+        {
+            "org_label": org,
+            "db_path": db_path,
+            "apply": apply_workers,
+            "allow_live_retarget": allow_live_retarget,
+            "allow_pending_retarget": allow_pending_retarget,
+            "pending_retarget_after_seconds": pending_retarget_after_seconds,
+        }
+        for org in orgs
+    ]
+    if worker_parallelism <= 1 or len(tasks) <= 1:
+        return [_run_org_worker_task(task) for task in tasks]
+
+    max_workers = min(worker_parallelism, len(tasks))
+    # org_worker loads the legacy watcher through process-global environment
+    # variables. Processes keep each organization isolated; threads would not.
+    with ProcessPoolExecutor(max_workers=max_workers) as executor:
+        return list(executor.map(_run_org_worker_task, tasks))
+
+
 def run_rollout(
     *,
     stage: str,
@@ -208,6 +244,7 @@ def run_rollout(
     require_fresh_heartbeats: bool = False,
     schedule_width: int = 10,
     pending_retarget_after_seconds: int = 45,
+    worker_parallelism: int = 1,
 ) -> dict[str, Any]:
     if stage not in STAGES:
         raise SystemExit(f"unknown stage {stage!r}; expected one of {', '.join(sorted(STAGES))}")
@@ -223,6 +260,8 @@ def run_rollout(
         missing = _missing_secret_envs()
         if missing:
             raise SystemExit(f"missing env vars: {', '.join(missing)}")
+    if worker_parallelism < 1:
+        raise SystemExit("worker_parallelism must be at least 1")
 
     checkpoint = None
     if apply_workers or apply_guard:
@@ -258,17 +297,15 @@ def run_rollout(
 
     worker_payloads: list[dict[str, Any]] = []
     if not skip_workers:
-        for org in _worker_orgs_for_stage(stage, org_label):
-            worker_payloads.append(
-                org_worker.run_once(
-                    org_label=org,
-                    db_path=db_path,
-                    apply=apply_workers,
-                    allow_live_retarget=allow_live_retarget,
-                    allow_pending_retarget=allow_pending_retarget,
-                    pending_retarget_after_seconds=pending_retarget_after_seconds,
-                )
-            )
+        worker_payloads = _run_org_workers(
+            _worker_orgs_for_stage(stage, org_label),
+            db_path=db_path,
+            apply_workers=apply_workers,
+            allow_live_retarget=allow_live_retarget,
+            allow_pending_retarget=allow_pending_retarget,
+            pending_retarget_after_seconds=pending_retarget_after_seconds,
+            worker_parallelism=worker_parallelism,
+        )
         scheduler_payload = fleet_scheduler.schedule_once(
             db_path=db_path,
             price=price,
@@ -321,6 +358,7 @@ def run_rollout(
         "apply_guard": apply_guard,
         "allow_live_retarget": allow_live_retarget,
         "allow_pending_retarget": allow_pending_retarget,
+        "worker_parallelism": worker_parallelism,
         "checkpoint": checkpoint,
         "scheduler": {key: value for key, value in scheduler_payload.items() if key != "targets"},
         "workers": [
@@ -385,6 +423,7 @@ def main() -> None:
     parser.add_argument("--allow-live-retarget", action="store_true", help="Allow org_worker to patch running slots.")
     parser.add_argument("--allow-pending-retarget", action="store_true", help="Allow org_worker to patch creating/allocating slots.")
     parser.add_argument("--pending-retarget-after-seconds", type=int, default=45)
+    parser.add_argument("--worker-parallelism", type=int, default=1)
     parser.add_argument("--confirm-live-retarget", action="store_true", help="Required with --allow-live-retarget.")
     parser.add_argument("--confirm-all-orgs", action="store_true", help="Required with --stage all-orgs --apply-workers.")
     parser.add_argument("--skip-workers", action="store_true")
@@ -418,6 +457,7 @@ def main() -> None:
         require_fresh_heartbeats=args.require_fresh_heartbeats,
         schedule_width=args.width,
         pending_retarget_after_seconds=args.pending_retarget_after_seconds,
+        worker_parallelism=args.worker_parallelism,
     )
     if args.json:
         print(json_dumps(payload))

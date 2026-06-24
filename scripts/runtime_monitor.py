@@ -152,6 +152,7 @@ def _run_shadow(
     require_secrets: bool,
     require_fresh_heartbeats: bool,
     allow_degraded: bool,
+    worker_parallelism: int,
 ) -> dict[str, Any]:
     return runner(
         stage="shadow",
@@ -163,6 +164,7 @@ def _run_shadow(
         require_secrets=require_secrets,
         require_fresh_heartbeats=require_fresh_heartbeats,
         allow_degraded=allow_degraded,
+        worker_parallelism=worker_parallelism,
     )
 
 
@@ -177,6 +179,7 @@ def _run_action(
     require_secrets: bool,
     allow_pending_retarget: bool,
     pending_retarget_after_seconds: int,
+    worker_parallelism: int,
 ) -> dict[str, Any]:
     if action == "guard-apply":
         return runner(
@@ -186,6 +189,7 @@ def _run_action(
             fee=fee,
             apply_guard=True,
             require_secrets=require_secrets,
+            worker_parallelism=worker_parallelism,
         )
     if action == "all-orgs-pending":
         return runner(
@@ -198,6 +202,7 @@ def _run_action(
             allow_pending_retarget=True,
             pending_retarget_after_seconds=pending_retarget_after_seconds,
             require_secrets=require_secrets,
+            worker_parallelism=worker_parallelism,
         )
     if action == "one-org-apply":
         if not org:
@@ -212,6 +217,7 @@ def _run_action(
             allow_pending_retarget=allow_pending_retarget,
             pending_retarget_after_seconds=pending_retarget_after_seconds,
             require_secrets=require_secrets,
+            worker_parallelism=worker_parallelism,
         )
     raise RuntimeError(f"unknown action {action}")
 
@@ -233,6 +239,7 @@ def run_monitor_tick(
     confirm_live_actions: bool = False,
     runner_timeout_seconds: float = 90,
     hard_runner_timeout: bool = False,
+    worker_parallelism: int = 1,
     runner: RolloutRunner = rollout.run_rollout,
 ) -> dict[str, Any]:
     live_action_count = sum(1 for enabled in (apply_guard, apply_one_org, apply_all_orgs_pending) if enabled)
@@ -253,6 +260,7 @@ def run_monitor_tick(
                 require_secrets=require_secrets,
                 require_fresh_heartbeats=require_fresh_heartbeats,
                 allow_degraded=allow_degraded_shadow,
+                worker_parallelism=worker_parallelism,
             ),
             runner_timeout_seconds,
             hard_timeout=hard_runner_timeout,
@@ -284,6 +292,7 @@ def run_monitor_tick(
                         require_secrets=require_secrets,
                         allow_pending_retarget=allow_pending_retarget,
                         pending_retarget_after_seconds=pending_retarget_after_seconds,
+                        worker_parallelism=worker_parallelism,
                     ),
                     runner_timeout_seconds,
                     hard_timeout=hard_runner_timeout,
@@ -365,6 +374,7 @@ def main() -> None:
     parser.add_argument("--org", default=None, help="Organization label for --apply-one-org.")
     parser.add_argument("--allow-pending-retarget", action="store_true", help="Allow one-org apply to patch stale creating/allocating slots.")
     parser.add_argument("--pending-retarget-after-seconds", type=int, default=45)
+    parser.add_argument("--worker-parallelism", type=int, default=1)
     parser.add_argument("--confirm-live-actions", action="store_true", help="Required for any live action.")
     parser.add_argument("--once", action="store_true")
     parser.add_argument("--loop", action="store_true")
@@ -397,6 +407,7 @@ def main() -> None:
             confirm_live_actions=args.confirm_live_actions,
             runner_timeout_seconds=args.runner_timeout_seconds,
             hard_runner_timeout=not args.soft_runner_timeout,
+            worker_parallelism=args.worker_parallelism,
         )
         if args.json:
             print(json_dumps(payload))

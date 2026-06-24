@@ -117,6 +117,60 @@ class StateAndSchedulerTest(unittest.TestCase):
         self.assertEqual(stale["stale"], 1)
         self.assertEqual(stale["reported_hashrate_th"], 101.5)
 
+    def test_slot_observation_preserves_hashrate_when_omitted(self) -> None:
+        with state_db.connect(self.db_path) as conn:
+            state_db.init_db(conn)
+            state_db.sync_config(conn, load_config())
+            state_db.update_slot_observation(
+                conn,
+                {
+                    "org_label": "kray",
+                    "slot_name": "prl-kray-roi-01",
+                    "observed_profile_key": "3090:batch:2048",
+                    "observed_status": "running",
+                    "live_hashrate_th": 111.5,
+                    "protected": True,
+                },
+            )
+            state_db.update_slot_observation(
+                conn,
+                {
+                    "org_label": "kray",
+                    "slot_name": "prl-kray-roi-01",
+                    "observed_profile_key": "3090:batch:2048",
+                    "observed_status": "running",
+                    "protected": True,
+                },
+            )
+            preserved = conn.execute(
+                """
+                SELECT live_hashrate_th
+                FROM slots
+                WHERE org_label = 'kray' AND slot_name = 'prl-kray-roi-01'
+                """
+            ).fetchone()
+            state_db.update_slot_observation(
+                conn,
+                {
+                    "org_label": "kray",
+                    "slot_name": "prl-kray-roi-01",
+                    "observed_profile_key": "3090:batch:2048",
+                    "observed_status": "running",
+                    "live_hashrate_th": 0,
+                    "protected": True,
+                },
+            )
+            cleared = conn.execute(
+                """
+                SELECT live_hashrate_th
+                FROM slots
+                WHERE org_label = 'kray' AND slot_name = 'prl-kray-roi-01'
+                """
+            ).fetchone()
+
+        self.assertEqual(preserved["live_hashrate_th"], 111.5)
+        self.assertEqual(cleared["live_hashrate_th"], 0)
+
     def test_profile_scorer_uses_runtime_profit_snapshot_history(self) -> None:
         now = datetime.now(UTC)
         earlier = now - timedelta(minutes=2)

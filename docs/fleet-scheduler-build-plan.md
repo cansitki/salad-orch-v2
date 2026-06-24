@@ -512,7 +512,7 @@ Default behavior is read-only. Live action modes are:
 
 - `--apply-guard --confirm-live-actions`
 - `--apply-one-org --org <label> --confirm-live-actions`
-- `--apply-all-orgs-pending --confirm-live-actions` to keep all orgs rotating stale creating/allocating slots without retargeting protected running slots
+- `--apply-all-orgs-pending --confirm-live-actions --worker-parallelism 4` to keep all orgs rotating stale creating/allocating slots without retargeting protected running slots
 - add `--allow-pending-retarget --pending-retarget-after-seconds N` to the one-org path when stale creating/allocating mismatches should rotate
 
 ### `rollback.py`

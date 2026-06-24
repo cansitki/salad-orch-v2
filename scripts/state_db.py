@@ -672,7 +672,7 @@ def update_slot_observation(conn: sqlite3.Connection, row: dict[str, Any]) -> No
     existing = conn.execute(
         """
         SELECT observed_profile_key, observed_status, observed_profile_since_utc,
-               observed_status_since_utc, updated_at_utc
+               observed_status_since_utc, live_hashrate_th, updated_at_utc
         FROM slots
         WHERE org_label = ? AND slot_name = ?
         """,
@@ -694,6 +694,12 @@ def update_slot_observation(conn: sqlite3.Connection, row: dict[str, Any]) -> No
             if existing["observed_status"] == observed_status
             else (now if observed_status else None)
         )
+    if "live_hashrate_th" in row:
+        live_hashrate_th = float(row.get("live_hashrate_th") or 0)
+    elif existing is not None:
+        live_hashrate_th = float(existing["live_hashrate_th"] or 0)
+    else:
+        live_hashrate_th = 0.0
     conn.execute(
         """
         UPDATE slots
@@ -711,7 +717,7 @@ def update_slot_observation(conn: sqlite3.Connection, row: dict[str, Any]) -> No
             observed_status,
             profile_since,
             status_since,
-            float(row.get("live_hashrate_th") or 0),
+            live_hashrate_th,
             1 if row.get("protected") else 0,
             now,
             row["org_label"],

@@ -1,21 +1,31 @@
-# Salad PRL GPU Runbook
+# Salad Orch v2
 
-Public runbook for running a SaladCloud GPU fleet that mines PearlFortune PRL.
+Deterministic SaladCloud GPU orchestrator for mining PearlFortune PRL
+profitably.
 
-This repository includes the public, sanitized version of the automation code.
-It explains the operating model, thresholds, environment variables, monitoring
-flow, and safety rules. It intentionally does not include live API keys, cookies,
+This repository is the public, sanitized `salad-orch-v2` control plane. It
+includes the deterministic scheduler, worker, guard, monitor, rollback, and
+operator runbooks. It intentionally does not include live API keys, cookies,
 private logs, or machine-local secrets.
+
+Start here for live testing:
+
+- `docs/salad-orch-v2-live.md` - live read-only start, one-org apply, guard
+  apply, rollback, and safety gates.
+- `docs/fleet-scheduler-build-plan.md` - full build plan and phase acceptance
+  gates.
+- `docs/current-operations.md` - legacy watcher operating context and migration
+  notes.
 
 ## Reader And Goal
 
-This is for a future operator who needs to understand or recreate the current
-Salad PRL automation without reading the private VM history.
+This is for a future operator who needs to start or audit `salad-orch-v2`
+without reading the private VM history.
 
 After reading this, the operator should be able to:
 
 1. Set up the required secrets locally.
-2. Start the fleet in fill mode.
+2. Start the orchestrator in read-only live mode.
 3. Verify whether GPUs are hashing and profitable.
 4. Know when to wait, rotate, stop, or optimize.
 
@@ -114,9 +124,8 @@ The runnable code lives in `scripts/`.
 | `scripts/maintenance.py` | Dry-run-first SQLite retention/compaction helper for long-running fleets. |
 | `.env.example` | Safe template for local secrets and runtime settings. |
 
-The current operating plan is documented in `docs/current-operations.md`.
-The planned next-generation scheduler is documented in
-`docs/fleet-scheduler-build-plan.md`.
+The live runbook is documented in `docs/salad-orch-v2-live.md`. The full build
+plan is documented in `docs/fleet-scheduler-build-plan.md`.
 
 The public scripts are intentionally parameterized. Secrets are read from env
 vars or `.env`, not from source code.
@@ -366,11 +375,17 @@ Restoring a checkpoint only restores scheduler `slot_targets`. To make Salad
 containers follow restored targets, run the relevant `org_worker.py --apply`
 or controlled `rollout.py` command after reviewing the dry-run restore output.
 
-Start fill mode:
+Legacy watcher fill mode:
 
 ```bash
 PRL_FLEET_MODE=fill bash scripts/start_watchers.sh
 PRL_FLEET_MODE=fill bash scripts/start_supervisor.sh
+```
+
+For `salad-orch-v2`, prefer the read-only live monitor first:
+
+```bash
+PRL_PEARL_FEE_RATE=0.01 python3 scripts/runtime_monitor.py --once --runner-timeout-seconds 90 --price 0.64 --fee 0.01 --require-secrets
 ```
 
 Generate a profit snapshot:
@@ -701,7 +716,10 @@ RTX 3080 Ti batch
 
 L40S is intentionally ignored in the current plan.
 
-## Operational Loop
+## Legacy Watcher Operational Loop
+
+This section documents the old watcher-first runtime. For `salad-orch-v2`, use
+the live runbook linked at the top of this README.
 
 ### 1. Start In Fill Mode
 

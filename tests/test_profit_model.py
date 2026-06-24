@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pathlib
+import subprocess
 import sys
 import unittest
 
@@ -38,6 +39,17 @@ class ProfitModelTest(unittest.TestCase):
         one_percent = self.estimate("5080:batch:2048", 0.64, 0.01).profit_day
         self.assertGreater(one_percent, five_percent)
         self.assertGreater(one_percent, 0.05)
+
+    def test_cli_help_renders_percent_help_text(self) -> None:
+        result = subprocess.run(
+            [sys.executable, str(ROOT / "scripts" / "profit_model.py"), "--help"],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("0.01 means 1%", result.stdout)
 
 
 if __name__ == "__main__":

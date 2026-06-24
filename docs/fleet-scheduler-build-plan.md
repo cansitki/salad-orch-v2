@@ -947,7 +947,7 @@ Every implementation phase must run:
 ```bash
 python3 -m compileall scripts
 git diff --check
-rg -n 'salad_cloud_user_|cf_clearance|Cookie:|Authorization: Bearer|SALAD_API_KEY_.*=salad|PRL_WALLET=prl[[:alnum:]]{20,}' .
+rg -n 'salad_cloud_user_|cf_clearance|Cookie[:]|Authorization: Bearer|SALAD_API_KEY_.*=salad|PRL_WALLET=prl[[:alnum:]]{20,}' .
 ```
 
 Runtime verification must include:

@@ -225,7 +225,7 @@ def sync_profiles_to_db(db_path: str | None = None) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Profit model for Salad PRL GPU profiles.")
     parser.add_argument("--price", type=float, default=None, help="Decision PRL/USD price.")
-    parser.add_argument("--fee", type=float, default=None, help="Pearl fee rate. 0.01 means 1%.")
+    parser.add_argument("--fee", type=float, default=None, help="Pearl fee rate. 0.01 means 1%%.")
     parser.add_argument("--gross-prl-per-th-day", type=float, default=DEFAULT_GROSS_PRL_PER_TH_DAY)
     parser.add_argument("--min-profit", type=float, default=None)
     parser.add_argument("--sync-db", action="store_true")

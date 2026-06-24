@@ -155,6 +155,12 @@ def _has_guard_issues(summary: dict[str, Any]) -> bool:
     return int(summary.get("no_hash") or 0) > 0 or int(summary.get("negative") or 0) > 0
 
 
+def _guard_due(tick_index: int, every: int) -> bool:
+    if every <= 0:
+        return False
+    return (tick_index + 1) % every == 0
+
+
 def _run_shadow(
     runner: RolloutRunner,
     *,
@@ -439,7 +445,7 @@ def main() -> None:
             apply_one_org=args.apply_one_org,
             apply_all_orgs_pending=args.apply_all_orgs_pending,
             guard_on_issues=guard_on_issues,
-            guard_due=bool(guard_on_issues and ticks % args.guard_on_issues_every == 0),
+            guard_due=bool(guard_on_issues and _guard_due(ticks, args.guard_on_issues_every)),
             org=args.org,
             allow_pending_retarget=args.allow_pending_retarget,
             pending_retarget_after_seconds=args.pending_retarget_after_seconds,

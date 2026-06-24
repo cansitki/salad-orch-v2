@@ -45,6 +45,13 @@ def rollout_payload_without_issues(*, stage: str, ok: bool = True) -> dict:
 
 
 class RuntimeMonitorTest(unittest.TestCase):
+    def test_guard_due_skips_initial_fill_ticks(self) -> None:
+        self.assertFalse(runtime_monitor._guard_due(0, 3))
+        self.assertFalse(runtime_monitor._guard_due(1, 3))
+        self.assertTrue(runtime_monitor._guard_due(2, 3))
+        self.assertFalse(runtime_monitor._guard_due(3, 3))
+        self.assertFalse(runtime_monitor._guard_due(0, 0))
+
     def test_read_only_tick_runs_shadow_only(self) -> None:
         calls = []
 

@@ -208,15 +208,30 @@ class FleetAuditTest(unittest.TestCase):
                 """,
                 (payload["snapshot_id"],),
             ).fetchone()
+            kray_slot = conn.execute(
+                """
+                SELECT observed_status, observed_profile_key, live_hashrate_th, billable, cost_day, profit_day
+                FROM fleet_slot_active_snapshots
+                WHERE snapshot_id = ? AND org_label = 'kray' AND slot_name = 'prl-kray-roi-01'
+                """,
+                (payload["snapshot_id"],),
+            ).fetchone()
             heartbeat = conn.execute("SELECT * FROM heartbeats WHERE process_name = 'fleet_audit'").fetchone()
 
         self.assertEqual(fleet_count, 1)
+        self.assertEqual(payload["slot_snapshots"], 40)
         self.assertEqual(kray["active_slots"], 1)
         self.assertEqual(kray["running_slots"], 1)
         self.assertEqual(kray["live_hashing_gpus"], 1)
         self.assertEqual(kray["live_th"], 100.0)
         self.assertEqual(kray["cost_day"], 1.2)
         self.assertEqual(kray["profit_day"], 0.4)
+        self.assertEqual(kray_slot["observed_status"], "running")
+        self.assertEqual(kray_slot["observed_profile_key"], "4090:batch:2048")
+        self.assertEqual(kray_slot["live_hashrate_th"], 100.0)
+        self.assertEqual(kray_slot["billable"], 1)
+        self.assertEqual(kray_slot["cost_day"], 1.2)
+        self.assertEqual(kray_slot["profit_day"], 0.4)
         self.assertIsNotNone(heartbeat)
 
     def test_balance_audit_marks_expected_hourly_cost_ok(self) -> None:

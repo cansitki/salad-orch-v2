@@ -287,6 +287,31 @@ CREATE TABLE IF NOT EXISTS fleet_org_active_snapshots (
 );
 CREATE INDEX IF NOT EXISTS idx_fleet_org_active_snapshots_org ON fleet_org_active_snapshots(org_label, snapshot_id);
 
+CREATE TABLE IF NOT EXISTS fleet_slot_active_snapshots (
+  snapshot_id INTEGER NOT NULL,
+  org_label TEXT NOT NULL,
+  slot_name TEXT NOT NULL,
+  slot_index INTEGER NOT NULL,
+  observed_status TEXT,
+  desired_profile_key TEXT,
+  observed_profile_key TEXT,
+  target_profile_key TEXT,
+  target_mode TEXT,
+  target_reason TEXT,
+  protected INTEGER NOT NULL DEFAULT 0,
+  live_hashrate_th REAL NOT NULL DEFAULT 0,
+  billable INTEGER NOT NULL DEFAULT 0,
+  cost_day REAL,
+  profit_day REAL,
+  updated_at_utc TEXT,
+  observed_profile_since_utc TEXT,
+  observed_status_since_utc TEXT,
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  PRIMARY KEY (snapshot_id, org_label, slot_name)
+);
+CREATE INDEX IF NOT EXISTS idx_fleet_slot_active_snapshots_org_slot
+  ON fleet_slot_active_snapshots(org_label, slot_name, snapshot_id);
+
 CREATE TABLE IF NOT EXISTS fleet_org_balance_audits (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   at_utc TEXT NOT NULL,
@@ -1184,6 +1209,7 @@ def status_payload(conn: sqlite3.Connection) -> dict[str, Any]:
         "events",
         "fleet_active_snapshots",
         "fleet_org_active_snapshots",
+        "fleet_slot_active_snapshots",
         "fleet_org_balance_audits",
     ):
         tables[table] = int(conn.execute(f"SELECT COUNT(*) AS count FROM {table}").fetchone()["count"])

@@ -240,7 +240,8 @@ python3 scripts/supervisor.py --ensure
 `--ensure` starts missing tmux sessions and restarts sessions only when their
 heartbeat is stale. Use `--no-restart-stale` for a start-missing-only pass.
 The default supervisor plan includes `scripts/fleet_audit.py`, which records
-active GPU counts every 300 seconds and balance audits every 3600 seconds.
+active GPU and per-slot profile snapshots every 300 seconds and balance audits
+every 3600 seconds.
 
 Balance audit input is intentionally private. If a portal/browser scraper is
 available, have it refresh this local untracked file:
@@ -741,11 +742,14 @@ tmux session, then uses DB heartbeats to avoid restart loops.
   daily cost, and daily profit.
 - `fleet_org_active_snapshots`: per-org active/running/creating/allocating/live
   hashing counts and cost.
+- `fleet_slot_active_snapshots`: per-slot status, observed GPU profile, target
+  profile, hashrate, billable flag, cost, and profit for each active audit tick.
 - `fleet_org_balance_audits`: hourly balance delta versus expected GPU cost.
 
 Quick audit query:
 
 ```bash
+sqlite3 -header -column state/fleet_scheduler.db "SELECT snapshot_id,org_label,slot_name,observed_status,observed_profile_key,live_hashrate_th,billable,cost_day,profit_day FROM fleet_slot_active_snapshots WHERE snapshot_id=(SELECT MAX(id) FROM fleet_active_snapshots) ORDER BY org_label,slot_index;"
 sqlite3 -header -column state/fleet_scheduler.db "SELECT org_label,status,balance_source,balance_usd,cost_day,expected_cost_usd,balance_delta_usd,variance_usd FROM fleet_org_balance_audits ORDER BY id DESC LIMIT 8;"
 ```
 

@@ -65,6 +65,23 @@ def latest_slot_profit_by_org(conn) -> dict[str, dict[str, Any]]:
     return {str(row["org_label"]): dict(row) for row in rows}
 
 
+def latest_slot_profit_by_key(conn) -> dict[tuple[str, str], dict[str, Any]]:
+    latest = conn.execute(
+        "SELECT at_utc FROM profit_snapshots WHERE scope = 'slot' ORDER BY at_utc DESC, id DESC LIMIT 1"
+    ).fetchone()
+    if latest is None:
+        return {}
+    rows = conn.execute(
+        """
+        SELECT org_label, slot_name, profile_key, th, cost_day, revenue_day, profit_day
+        FROM profit_snapshots
+        WHERE scope = 'slot' AND at_utc = ?
+        """,
+        (latest["at_utc"],),
+    ).fetchall()
+    return {(str(row["org_label"]), str(row["slot_name"])): dict(row) for row in rows}
+
+
 def org_runtime_summary(conn) -> dict[str, dict[str, Any]]:
     summary: dict[str, dict[str, Any]] = {}
     status_rows = conn.execute(
@@ -132,6 +149,85 @@ def org_runtime_summary(conn) -> dict[str, dict[str, Any]]:
         item["profit_day"] = float(profit.get("profit_day") or 0)
         item["billable_slots"] = int(profit.get("billable_slots") or 0)
     return summary
+
+
+def record_slot_active_snapshots(conn, snapshot_id: int) -> int:
+    profits = latest_slot_profit_by_key(conn)
+    rows = conn.execute(
+        """
+        SELECT s.org_label,
+               s.slot_name,
+               s.slot_index,
+               s.desired_profile_key,
+               s.observed_profile_key,
+               s.observed_status,
+               s.live_hashrate_th,
+               s.protected,
+               s.updated_at_utc,
+               s.observed_profile_since_utc,
+               s.observed_status_since_utc,
+               t.profile_key AS target_profile_key,
+               t.mode AS target_mode,
+               t.decision_price_usd AS target_decision_price_usd,
+               t.expected_profit_day AS target_expected_profit_day,
+               t.protected AS target_protected,
+               t.reason AS target_reason,
+               t.assigned_at_utc AS target_assigned_at_utc
+        FROM slots s
+        LEFT JOIN slot_targets t
+          ON t.org_label = s.org_label AND t.slot_name = s.slot_name
+        ORDER BY s.org_label, s.slot_index, s.slot_name
+        """
+    ).fetchall()
+    for row in rows:
+        key = (str(row["org_label"]), str(row["slot_name"]))
+        profit = profits.get(key, {})
+        conn.execute(
+            """
+            INSERT INTO fleet_slot_active_snapshots(
+              snapshot_id, org_label, slot_name, slot_index, observed_status,
+              desired_profile_key, observed_profile_key, target_profile_key,
+              target_mode, target_reason, protected, live_hashrate_th, billable,
+              cost_day, profit_day, updated_at_utc, observed_profile_since_utc,
+              observed_status_since_utc, payload_json
+            )
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                snapshot_id,
+                row["org_label"],
+                row["slot_name"],
+                int(row["slot_index"] or 0),
+                row["observed_status"],
+                row["desired_profile_key"],
+                row["observed_profile_key"],
+                row["target_profile_key"],
+                row["target_mode"],
+                row["target_reason"],
+                int(row["protected"] or 0),
+                float(row["live_hashrate_th"] or 0),
+                1 if profit else 0,
+                profit.get("cost_day"),
+                profit.get("profit_day"),
+                row["updated_at_utc"],
+                row["observed_profile_since_utc"],
+                row["observed_status_since_utc"],
+                compact_json(
+                    safe_public_payload(
+                        {
+                            "profit_profile_key": profit.get("profile_key"),
+                            "profit_th": profit.get("th"),
+                            "profit_revenue_day": profit.get("revenue_day"),
+                            "target_decision_price_usd": row["target_decision_price_usd"],
+                            "target_expected_profit_day": row["target_expected_profit_day"],
+                            "target_protected": row["target_protected"],
+                            "target_assigned_at_utc": row["target_assigned_at_utc"],
+                        }
+                    )
+                ),
+            ),
+        )
+    return len(rows)
 
 
 def record_active_snapshot(db_path: str | None = None) -> dict[str, Any]:
@@ -205,6 +301,7 @@ def record_active_snapshot(db_path: str | None = None) -> dict[str, Any]:
                     compact_json(safe_public_payload(item)),
                 ),
             )
+        slot_snapshot_count = record_slot_active_snapshots(conn, snapshot_id)
         state_db.write_heartbeat(
             conn,
             "fleet_audit",
@@ -215,6 +312,7 @@ def record_active_snapshot(db_path: str | None = None) -> dict[str, Any]:
                 "target_slots": report.get("target_slots"),
                 "live_hashing_gpus": report.get("live_hashing_gpus"),
                 "cost_day": profit_064.get("cost_day"),
+                "slot_snapshots": slot_snapshot_count,
             },
         )
         state_db.record_event(
@@ -222,7 +320,7 @@ def record_active_snapshot(db_path: str | None = None) -> dict[str, Any]:
             "fleet_active_snapshot",
             source="fleet_audit",
             message="fleet active GPU snapshot recorded",
-            payload={"snapshot_id": snapshot_id, "orgs": len(org_summary)},
+            payload={"snapshot_id": snapshot_id, "orgs": len(org_summary), "slots": slot_snapshot_count},
         )
         conn.commit()
     return {
@@ -235,6 +333,7 @@ def record_active_snapshot(db_path: str | None = None) -> dict[str, Any]:
         "profit_day_064": profit_064.get("profit_day"),
         "market_profit_day": profit_live.get("market_profit_day"),
         "org_summary": org_summary,
+        "slot_snapshots": slot_snapshot_count,
     }
 
 

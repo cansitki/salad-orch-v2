@@ -173,9 +173,9 @@ tmux new-session -d -s salad-orch-v2-audit \
   "cd \"$REPO_ROOT\" && PYTHONUNBUFFERED=1 PRL_PEARL_FEE_RATE=0.01 PRL_AUDIT_MONITOR_DB=/home/coder/salad-pearl-monitor/salad_pearl_monitor.db python3 scripts/fleet_audit.py --loop --interval 300 --balance-interval 3600 --balance-file state/salad_balances.json"
 ```
 
-It records active GPU snapshots every 5 minutes and balance-vs-cost audits every
-hour. The balance file is private and must be refreshed by a portal/browser
-provider outside git:
+It records active fleet/org and per-slot GPU snapshots every 5 minutes, then
+records balance-vs-cost audits every hour. The balance file is private and must
+be refreshed by a portal/browser provider outside git:
 
 ```json
 {"kray": 100.0, "kry1": 100.0, "kray2": 100.0, "kray3": 100.0}
@@ -191,6 +191,7 @@ Inspect the latest audit rows:
 
 ```bash
 sqlite3 -header -column state/fleet_scheduler.db "SELECT id,at_utc,assigned_targets,target_slots,live_hashing_gpus,live_th,cost_day,profit_day_064 FROM fleet_active_snapshots ORDER BY id DESC LIMIT 5;"
+sqlite3 -header -column state/fleet_scheduler.db "SELECT snapshot_id,org_label,slot_name,observed_status,observed_profile_key,live_hashrate_th,billable,cost_day,profit_day FROM fleet_slot_active_snapshots WHERE snapshot_id=(SELECT MAX(id) FROM fleet_active_snapshots) ORDER BY org_label,slot_index;"
 sqlite3 -header -column state/fleet_scheduler.db "SELECT org_label,status,balance_source,balance_usd,cost_day,expected_cost_usd,balance_delta_usd,variance_usd FROM fleet_org_balance_audits ORDER BY id DESC LIMIT 8;"
 ```
 Leave `--price` unset in this mode. The scheduler then uses `price_oracle.py`

@@ -904,6 +904,70 @@ class StateAndSchedulerTest(unittest.TestCase):
 
         self.assertFalse(org_worker.should_skip_live_hashing_target(target, apply=True, allow_live_retarget=False))
 
+    def test_org_worker_waits_before_patching_fresh_running_no_hash_mismatch(self) -> None:
+        class Watch:
+            def slot_state(self, _slot_name):
+                return (
+                    {
+                        "priority": "low",
+                        "container": {"resources": {"gpu_classes": ["gpu-rtx-4070tis"], "memory": 2048}},
+                        "current_state": {"instance_status_counts": {"running_count": 1}},
+                    },
+                    [{"id": "running-1", "ready": True, "started": True}],
+                )
+
+            GPU = {"4070tis": "gpu-rtx-4070tis"}
+
+        plan = org_worker.planned_action(
+            Watch(),
+            "prl-kray-roi-01",
+            {
+                "profile_key": "5090:low:2048",
+                "observed_profile_since_utc": datetime.now(UTC).isoformat(timespec="seconds"),
+                "live_worker_count": 0,
+                "live_worker_th": 0,
+            },
+            protect_running=True,
+            pending_retarget_after_seconds=60,
+        )
+
+        self.assertEqual(plan["action"], "observe")
+        self.assertIn("running_no_hash_profile_mismatch_wait", plan["reason"])
+        self.assertFalse(plan["protected"])
+
+    def test_org_worker_patches_stale_running_no_hash_mismatch(self) -> None:
+        class Watch:
+            def slot_state(self, _slot_name):
+                return (
+                    {
+                        "priority": "low",
+                        "container": {"resources": {"gpu_classes": ["gpu-rtx-4070tis"], "memory": 2048}},
+                        "current_state": {"instance_status_counts": {"running_count": 1}},
+                    },
+                    [{"id": "running-1", "ready": True, "started": True}],
+                )
+
+            GPU = {"4070tis": "gpu-rtx-4070tis"}
+
+        plan = org_worker.planned_action(
+            Watch(),
+            "prl-kray-roi-01",
+            {
+                "profile_key": "5090:low:2048",
+                "observed_profile_since_utc": (datetime.now(UTC) - timedelta(minutes=5)).isoformat(
+                    timespec="seconds"
+                ),
+                "live_worker_count": 0,
+                "live_worker_th": 0,
+            },
+            protect_running=True,
+            pending_retarget_after_seconds=60,
+        )
+
+        self.assertEqual(plan["action"], "patch")
+        self.assertIn("stale_running_no_hash_profile_mismatch", plan["reason"])
+        self.assertFalse(plan["protected"])
+
     def test_scheduler_assigns_diversified_profitable_batch_targets(self) -> None:
         payload = fleet_scheduler.schedule_once(
             db_path=self.db_path,

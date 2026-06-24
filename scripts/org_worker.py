@@ -268,13 +268,27 @@ def planned_action(
     counts = active_counts(group)
     status = observed_status(group, counts)
     pending_active = counts["creating"] + counts["allocating"] > 0 or status == "deploying"
+    live_hashing = int(target.get("live_worker_count") or 0) > 0 and float(target.get("live_worker_th") or 0) > 0
     if group is None:
         action = "create"
         reason = "missing_container_group"
     elif current != target["profile_key"]:
         if protect_running and counts["running"] > 0:
-            action = "observe"
-            reason = f"protected_running_profile_mismatch:{current or 'unknown'}"
+            if live_hashing:
+                action = "observe"
+                reason = f"protected_running_profile_mismatch:{current or 'unknown'}"
+            else:
+                running_age = pending_profile_age_seconds(target)
+                if running_age is None or running_age < pending_retarget_after_seconds:
+                    action = "observe"
+                    age_text = "unknown" if running_age is None else f"{running_age:.1f}"
+                    reason = (
+                        f"running_no_hash_profile_mismatch_wait:{current or 'unknown'}:"
+                        f"age_{age_text}_lt_{pending_retarget_after_seconds}"
+                    )
+                else:
+                    action = "patch"
+                    reason = f"stale_running_no_hash_profile_mismatch:{current or 'unknown'}:age_{running_age:.1f}"
         elif pending_active:
             pending_age = pending_profile_age_seconds(target)
             if protect_pending:
@@ -315,7 +329,7 @@ def planned_action(
         "target_profile_key": target["profile_key"],
         "current_profile_key": current,
         "observed_status": status,
-        "protected": counts["running"] > 0,
+        "protected": counts["running"] > 0 and live_hashing,
         "counts": counts,
         "instance_count": len(instances),
         "pending_instance_ids": pending_instance_ids(instances),

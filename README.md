@@ -216,6 +216,17 @@ The validator catches duplicate labels, slugs, slot prefixes, slot names,
 non-positive slot counts, and missing key env vars when `--check-secrets` is
 used.
 
+If Salad keeps a deleted container group name reserved with `name_conflict`,
+temporarily replace only that configured slot name instead of increasing the org
+capacity:
+
+```bash
+export PRL_SLOT_NAME_OVERRIDES_JSON='{"kray2":{"05":"prl-kray2-roi-05b"}}'
+```
+
+The override keeps the org at 10 target slots and prunes the old slot target from
+the local scheduler database on the next config sync.
+
 Supervisor process plan:
 
 ```bash

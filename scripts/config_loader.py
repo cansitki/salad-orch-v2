@@ -23,9 +23,14 @@ class OrgConfig:
     worker_slot_prefix: str | None = None
     pool_worker_prefix: str | None = None
     display_prefix: str | None = None
+    slot_name_overrides: tuple[str, ...] = ()
 
     def slot_names(self) -> list[str]:
-        return [f"{self.slot_prefix}-{index:02d}" for index in range(1, self.slots + 1)]
+        names = [f"{self.slot_prefix}-{index:02d}" for index in range(1, self.slots + 1)]
+        for index, slot_name in enumerate(self.slot_name_overrides[: self.slots]):
+            if slot_name:
+                names[index] = slot_name
+        return names
 
     def watch_env(self) -> dict[str, str]:
         label = self.label
@@ -155,6 +160,7 @@ DEFAULT_ORGS = (
 
 
 def _org_from_dict(payload: dict[str, Any]) -> OrgConfig:
+    slot_name_overrides = payload.get("slot_name_overrides") or payload.get("slot_names") or ()
     return OrgConfig(
         label=str(payload["label"]),
         slug=str(payload.get("slug") or payload["label"]),
@@ -166,6 +172,7 @@ def _org_from_dict(payload: dict[str, Any]) -> OrgConfig:
         worker_slot_prefix=payload.get("worker_slot_prefix"),
         pool_worker_prefix=payload.get("pool_worker_prefix"),
         display_prefix=payload.get("display_prefix"),
+        slot_name_overrides=tuple(str(item or "") for item in slot_name_overrides),
     )
 
 
@@ -191,6 +198,50 @@ def _extra_orgs_from_env() -> tuple[OrgConfig, ...]:
     if isinstance(payload, dict):
         payload = payload.get("organizations") or []
     return tuple(_org_from_dict(item) for item in payload)
+
+
+def _slot_name_overrides_from_env() -> dict[str, Any]:
+    payload = read_json_env("SALAD_SLOT_NAME_OVERRIDES_JSON") or read_json_env("PRL_SLOT_NAME_OVERRIDES_JSON")
+    return payload if isinstance(payload, dict) else {}
+
+
+def _apply_slot_name_overrides(organizations: tuple[OrgConfig, ...]) -> tuple[OrgConfig, ...]:
+    payload = _slot_name_overrides_from_env()
+    if not payload:
+        return organizations
+    updated: list[OrgConfig] = []
+    for org in organizations:
+        raw = payload.get(org.label, payload.get(org.slug))
+        if raw is None:
+            updated.append(org)
+            continue
+        overrides = list(org.slot_name_overrides[: org.slots])
+        if len(overrides) < org.slots:
+            overrides.extend([""] * (org.slots - len(overrides)))
+        base_names = [f"{org.slot_prefix}-{index:02d}" for index in range(1, org.slots + 1)]
+        if isinstance(raw, list):
+            for index, value in enumerate(raw[: org.slots]):
+                if value:
+                    overrides[index] = str(value)
+        elif isinstance(raw, dict):
+            for key, value in raw.items():
+                if not value:
+                    continue
+                key_text = str(key)
+                index: int | None = None
+                if key_text.isdigit():
+                    index = int(key_text) - 1
+                elif key_text in base_names:
+                    index = base_names.index(key_text)
+                elif key_text in {name.rsplit("-", 1)[-1] for name in base_names}:
+                    for candidate_index, name in enumerate(base_names):
+                        if name.rsplit("-", 1)[-1] == key_text:
+                            index = candidate_index
+                            break
+                if index is not None and 0 <= index < org.slots:
+                    overrides[index] = str(value)
+        updated.append(OrgConfig(**{**asdict(org), "slot_name_overrides": tuple(overrides)}))
+    return tuple(updated)
 
 
 def validate_config(config: FleetConfig, *, require_secrets: bool = False) -> list[dict[str, str]]:
@@ -239,6 +290,7 @@ def load_config() -> FleetConfig:
     extra_orgs = _extra_orgs_from_env()
     if extra_orgs:
         organizations = (*organizations, *extra_orgs)
+    organizations = _apply_slot_name_overrides(organizations)
 
     enabled_filter = {item.strip() for item in os.environ.get("PRL_ENABLED_ORGS", "").split(",") if item.strip()}
     if enabled_filter:

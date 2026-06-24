@@ -76,6 +76,20 @@ class ConfigLoaderTest(unittest.TestCase):
         self.assertIn("a missing env var SALAD_API_KEY_A", messages)
         self.assertNotIn("b missing env var SALAD_API_KEY_B", messages)
 
+    def test_slot_name_overrides_replace_one_slot_without_changing_capacity(self) -> None:
+        overrides = {"kray2": {"05": "prl-kray2-roi-05b"}}
+        with patch.object(config_loader, "load_env_file", lambda: None), patch.dict(
+            config_loader.os.environ,
+            {"PRL_SLOT_NAME_OVERRIDES_JSON": json.dumps(overrides)},
+            clear=True,
+        ):
+            config = config_loader.load_config()
+
+        kray2 = next(org for org in config.organizations if org.label == "kray2")
+        self.assertEqual(config.target_slot_count(), 40)
+        self.assertIn("prl-kray2-roi-05b", kray2.slot_names())
+        self.assertNotIn("prl-kray2-roi-05", kray2.slot_names())
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -419,6 +419,16 @@ def sync_config(conn: sqlite3.Connection, config: FleetConfig) -> None:
                 """,
                 (org.label, slot_name, slot_index, now),
             )
+        desired_slots = org.slot_names()
+        placeholders = ",".join("?" for _slot in desired_slots)
+        conn.execute(
+            f"DELETE FROM slot_targets WHERE org_label = ? AND slot_name NOT IN ({placeholders})",
+            (org.label, *desired_slots),
+        )
+        conn.execute(
+            f"DELETE FROM slots WHERE org_label = ? AND slot_name NOT IN ({placeholders})",
+            (org.label, *desired_slots),
+        )
     record_event(
         conn,
         "config_synced",

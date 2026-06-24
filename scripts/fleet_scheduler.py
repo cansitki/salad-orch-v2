@@ -364,6 +364,7 @@ def schedule_once(
     with state_db.connect(db_path) as conn:
         state_db.init_db(conn)
         if not dry_run:
+            conn.execute("DELETE FROM slot_targets")
             for target in targets:
                 state_db.set_slot_target(conn, target)
             state_db.write_heartbeat(

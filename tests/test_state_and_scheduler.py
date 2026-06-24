@@ -10,6 +10,7 @@ from datetime import UTC, datetime, timedelta
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
+import config_loader
 import fleet_scheduler
 import org_worker
 import profile_scorer
@@ -36,6 +37,59 @@ class StateAndSchedulerTest(unittest.TestCase):
         self.assertEqual(orgs, 4)
         self.assertEqual(slots, 40)
         self.assertEqual(config.target_slot_count(), 40)
+
+    def test_state_db_sync_prunes_slot_names_removed_by_override(self) -> None:
+        org = config_loader.OrgConfig(
+            label="kray2",
+            slug="kray2",
+            api_key_env="SALAD_API_KEY_2",
+            slot_prefix="prl-kray2-roi",
+        )
+        initial = config_loader.FleetConfig(organizations=(org,))
+        updated = config_loader.FleetConfig(
+            organizations=(
+                config_loader.OrgConfig(
+                    **{
+                        **config_loader.asdict(org),
+                        "slot_name_overrides": ("", "", "", "", "prl-kray2-roi-05b"),
+                    }
+                ),
+            )
+        )
+        with state_db.connect(self.db_path) as conn:
+            state_db.init_db(conn)
+            state_db.sync_config(conn, initial)
+            state_db.set_slot_target(
+                conn,
+                {
+                    "org_label": "kray2",
+                    "slot_name": "prl-kray2-roi-05",
+                    "profile_key": "4090:batch:2048",
+                    "mode": "base_fill",
+                    "decision_price_usd": 0.64,
+                    "expected_profit_day": 1.0,
+                    "protected": False,
+                    "reason": "test",
+                    "assigned_at_utc": "2026-06-24T12:00:00+00:00",
+                },
+            )
+            state_db.sync_config(conn, updated)
+            slots = [
+                row[0]
+                for row in conn.execute(
+                    "SELECT slot_name FROM slots WHERE org_label='kray2' ORDER BY slot_index"
+                ).fetchall()
+            ]
+            targets = [
+                row[0]
+                for row in conn.execute(
+                    "SELECT slot_name FROM slot_targets WHERE org_label='kray2' ORDER BY slot_name"
+                ).fetchall()
+            ]
+        self.assertEqual(len(slots), 10)
+        self.assertIn("prl-kray2-roi-05b", slots)
+        self.assertNotIn("prl-kray2-roi-05", slots)
+        self.assertEqual(targets, [])
 
     def test_slot_observation_tracks_status_and_profile_since(self) -> None:
         config = load_config()

@@ -152,6 +152,8 @@ Tables:
 | `profit_snapshots` | Fleet and per-slot profit estimates. |
 | `profile_scores` | Profile score over time. |
 | `heartbeats` | Runtime health for each process. |
+| `runtime_failures` | Last failure per component, sanitized and operator-visible. |
+| `guard_issues` | Persistent no-hash/negative issue state with first-seen grace tracking. |
 | `events` | Structured operational events. |
 
 Database rules:
@@ -355,6 +357,16 @@ Rules:
 
 Guard must prefer retargeting before stopping when a profitable replacement exists.
 
+Current implementation behavior:
+
+- `scripts/guard.py --once` analyzes and records decisions without live Salad actions.
+- `scripts/guard.py --once --apply` can patch/reallocate or stop slots after grace.
+- no-hash grace is 60 seconds.
+- negative grace is 90 seconds.
+- decisions are persisted to `guard_issues`, `attempts`, and `events`.
+- runtime failures are persisted to `runtime_failures`.
+- `--apply-legacy` remains available for the old guard path.
+
 ### `supervisor.py`
 
 Keeps the system alive.
@@ -401,6 +413,23 @@ Output targets:
 - CLI JSON
 - CLI table
 - optional Discord/Nicolas integration
+
+### `health.py`
+
+Read-only status surface for runtime supervision.
+
+Required output:
+
+- overall health: `healthy`, `degraded`, or `down`
+- target coverage
+- stale heartbeats
+- runtime failures
+- active guard issues
+- latest risk mode and price sample
+- slot status counts
+
+This script must not call live Salad APIs. It reads the scheduler DB only, so it
+can be used frequently by `/goal` supervision without triggering API churn.
 
 ## GPU Risk Tiers
 
@@ -649,7 +678,9 @@ Implemented file:
 Current status:
 
 - default mode analyzes and records guard issues without live actions
-- live enforcement is still delegated to the existing `scripts/salad_prl_guard.py` with `--apply-legacy`
+- `--apply` performs guard v2 retarget/stop actions after persistent grace
+- `--apply-legacy` still delegates to the existing `scripts/salad_prl_guard.py`
+- guard v2 records attempts, events, guard issues, and runtime failures
 
 ### Phase 7: Supervisor And Reporter
 
@@ -672,6 +703,7 @@ Implemented files:
 
 - `scripts/supervisor.py`
 - `scripts/reporter.py`
+- `scripts/health.py`
 
 Current behavior:
 
@@ -679,6 +711,7 @@ Current behavior:
 - `scripts/supervisor.py --ensure` starts missing tmux sessions and restarts sessions with stale heartbeats
 - `scripts/reporter.py --refresh` records fresh guard snapshots at `0.64` and `0.70`
 - `scripts/reporter.py --refresh --refresh-timeout N` fails fast and reports stale DB data with `refresh_error` if live APIs hang
+- `scripts/health.py --json` shows target coverage, stale heartbeats, runtime failures, and active guard issues from SQLite
 
 ### Phase 8: Shadow Mode
 
@@ -703,6 +736,8 @@ python3 scripts/state_db.py --init --sync-config --status
 PRL_PEARL_FEE_RATE=0.01 python3 scripts/fleet_scheduler.py --price 0.64 --fee 0.01
 python3 scripts/reporter.py
 python3 scripts/org_worker.py --org kry1
+python3 scripts/guard.py --once
+python3 scripts/health.py
 ```
 
 ### Phase 9: Controlled Rollout
@@ -721,6 +756,27 @@ Acceptance:
 - no-hash and negative slots are cleared
 - process restarts are handled
 - rollback path works
+
+Recommended live sequence:
+
+```bash
+PRL_PEARL_FEE_RATE=0.01 python3 scripts/fleet_scheduler.py --price 0.64 --fee 0.01
+python3 scripts/org_worker.py --org kry1 --apply
+python3 scripts/guard.py --once
+python3 scripts/reporter.py --refresh --refresh-timeout 45
+python3 scripts/health.py
+```
+
+Only after the one-org apply is stable:
+
+```bash
+python3 scripts/guard.py --once --apply
+python3 scripts/supervisor.py --print-plan
+python3 scripts/supervisor.py --ensure
+```
+
+During the first live test, Codex should supervise health, reporter output,
+guard decisions, and org-worker attempts before enabling all orgs with apply.
 
 ### Phase 10: Multi-Organization Scale Readiness
 
@@ -756,7 +812,10 @@ Runtime verification must include:
 ```text
 process health
 fresh heartbeats
+health.py status
 latest guard snapshot
+active guard issues
+runtime failures
 profit at base decision price
 no-hash slots
 negative slots
@@ -811,7 +870,25 @@ Work in phases. After each phase, verify with tests or fresh runtime checks, upd
 After the infrastructure exists and is deployed, use a separate nonstop runtime/debug goal:
 
 ```text
-Continuously monitor and debug the Salad PRL fleet scheduler. Keep all funded slots trying to become live profitable GPUs, protect profitable live workers, rotate no-hash or negative slots after grace, verify profit at base and live prices, and only sleep no-GPU searches after one hour of unsuccessful attempts. Do not stop when the fleet is full; switch to optimize mode and improve profit while keeping the fleet safe.
+Continuously monitor, live-test, debug, and improve the Salad PRL fleet scheduler.
+
+Start in controlled rollout:
+- verify scheduler targets, health.py, reporter.py, guard.py dry-run decisions, and org_worker.py output
+- apply one org first, then expand to all enabled orgs only if health stays safe
+- use PRL_PEARL_FEE_RATE=0.01 while the next-24h Pearl fee window is active
+
+Runtime goal:
+- keep all funded slots trying to become live profitable GPUs
+- protect profitable live hashing workers
+- rotate no-hash slots after 60 seconds
+- rotate or stop negative slots after 90 seconds
+- verify profit at base, trailing, and live prices
+- do not sleep no-GPU searches until one hour of unsuccessful attempts
+- when the fleet is full or manually approved, switch from fill to optimize mode
+- keep improving scripts, tests, docs, and observability as live failures appear
+- when Can adds more organizations, onboard them as 10-slot config units without committing secrets
+
+Do not mark complete until the live fleet is stable under supervision, health.py is healthy or explained, no live slot is losing money under the active policy, and every funded org has all slots either live profitable or actively searching for profitable GPUs.
 ```
 
 ## Open Decisions

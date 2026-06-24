@@ -103,9 +103,10 @@ The runnable code lives in `scripts/`.
 | `scripts/profile_scorer.py` | Scores GPU profiles using expected profit and recent attempt history. |
 | `scripts/fleet_scheduler.py` | Central dry-run-safe target assignment across all org slots. |
 | `scripts/org_worker.py` | Per-org worker that consumes scheduler targets; live actions require `--apply`. |
-| `scripts/guard.py` | New guard facade; analyzes current fleet by default, can delegate to legacy live guard. |
+| `scripts/guard.py` | Guard v2. Analyzes by default; `--apply` retargets/stops no-hash or negative slots after grace. |
 | `scripts/supervisor.py` | Scheduler control tick and tmux process plan for the new stack. |
 | `scripts/reporter.py` | CLI/JSON status report from the scheduler DB. |
+| `scripts/health.py` | Read-only health check for targets, stale heartbeats, guard issues, and runtime failures. |
 | `.env.example` | Safe template for local secrets and runtime settings. |
 
 The current operating plan is documented in `docs/current-operations.md`.
@@ -196,6 +197,13 @@ python3 scripts/supervisor.py --ensure
 `--ensure` starts missing tmux sessions and restarts sessions only when their
 heartbeat is stale. Use `--no-restart-stale` for a start-missing-only pass.
 
+Read-only scheduler health:
+
+```bash
+python3 scripts/health.py
+python3 scripts/health.py --json
+```
+
 Fresh operator report with live snapshots:
 
 ```bash
@@ -204,6 +212,44 @@ python3 scripts/reporter.py --refresh --refresh-timeout 45
 
 If live Salad/PearlFortune lookups are slow, the reporter returns the latest DB
 state with `refresh_error=...` instead of blocking indefinitely.
+
+## Controlled Live Test Path
+
+Use this path when moving from shadow mode to live control.
+
+1. Shadow all orgs:
+
+   ```bash
+   PRL_PEARL_FEE_RATE=0.01 python3 scripts/fleet_scheduler.py --price 0.64 --fee 0.01
+   python3 scripts/org_worker.py --org kry1
+   python3 scripts/guard.py --once
+   python3 scripts/health.py
+   ```
+
+2. Apply one org only:
+
+   ```bash
+   python3 scripts/org_worker.py --org kry1 --apply
+   python3 scripts/reporter.py --refresh --refresh-timeout 45
+   python3 scripts/health.py
+   ```
+
+3. Enable guard v2 live actions only after the dry-run decisions look correct:
+
+   ```bash
+   python3 scripts/guard.py --once --apply
+   ```
+
+4. Start tmux supervision for the full new stack:
+
+   ```bash
+   python3 scripts/supervisor.py --print-plan
+   python3 scripts/supervisor.py --ensure
+   ```
+
+The live rule is staged: fill empty/stopped slots first, keep profitable hashing
+slots protected, rotate no-hash after 60 seconds, rotate negative slots after 90
+seconds, then optimize only after the enabled orgs are full or manually approved.
 
 Start fill mode:
 
@@ -370,6 +416,11 @@ It acts on:
 In fill mode, the guard is intentionally conservative. It should not kill a
 hashing GPU just because it is not ideal.
 
+`scripts/guard.py` is the new guard path. By default it records decisions only.
+Passing `--apply` is required before it patches, reallocates, or stops anything.
+It persists guard issues in SQLite so a no-hash or negative slot must remain bad
+past the grace window before action is taken.
+
 ### Profit Snapshot
 
 The snapshot combines:
@@ -406,6 +457,10 @@ The supervisor keeps the tmux sessions alive. It also switches modes:
 
 - `fill` while any org has fewer than 10 live hashing workers.
 - `optimize` only when all target orgs have 10 live hashing workers.
+
+The new `scripts/supervisor.py` keeps the scheduler stack alive: price oracle,
+availability probe, scheduler, guard, and one org worker per enabled
+organization. It uses DB heartbeats to avoid restart loops.
 
 ## Miner Runtime
 

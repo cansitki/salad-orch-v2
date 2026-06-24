@@ -214,6 +214,26 @@ CREATE TABLE IF NOT EXISTS events (
   payload_json TEXT NOT NULL DEFAULT '{}'
 );
 CREATE INDEX IF NOT EXISTS idx_events_at ON events(at_utc);
+
+CREATE TABLE IF NOT EXISTS runtime_failures (
+  component TEXT PRIMARY KEY,
+  at_utc TEXT NOT NULL,
+  severity TEXT NOT NULL,
+  error_type TEXT NOT NULL,
+  message TEXT NOT NULL,
+  payload_json TEXT NOT NULL DEFAULT '{}'
+);
+
+CREATE TABLE IF NOT EXISTS guard_issues (
+  org_label TEXT NOT NULL,
+  slot_name TEXT NOT NULL,
+  issue_type TEXT NOT NULL,
+  first_seen_utc TEXT NOT NULL,
+  last_seen_utc TEXT NOT NULL,
+  action_count INTEGER NOT NULL DEFAULT 0,
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  PRIMARY KEY (org_label, slot_name, issue_type)
+);
 """
 
 
@@ -265,6 +285,41 @@ def record_event(
             compact_json(safe_public_payload(payload or {})),
         ),
     )
+
+
+def record_failure(
+    conn: sqlite3.Connection,
+    component: str,
+    *,
+    severity: str,
+    error_type: str,
+    message: str,
+    payload: dict[str, Any] | None = None,
+) -> None:
+    conn.execute(
+        """
+        INSERT INTO runtime_failures(component, at_utc, severity, error_type, message, payload_json)
+        VALUES(?, ?, ?, ?, ?, ?)
+        ON CONFLICT(component) DO UPDATE SET
+          at_utc=excluded.at_utc,
+          severity=excluded.severity,
+          error_type=excluded.error_type,
+          message=excluded.message,
+          payload_json=excluded.payload_json
+        """,
+        (
+            component,
+            utc_now(),
+            severity,
+            error_type,
+            message,
+            compact_json(safe_public_payload(payload or {})),
+        ),
+    )
+
+
+def clear_failure(conn: sqlite3.Connection, component: str) -> None:
+    conn.execute("DELETE FROM runtime_failures WHERE component = ?", (component,))
 
 
 def write_heartbeat(
@@ -448,6 +503,63 @@ def record_search_state(conn: sqlite3.Connection, row: dict[str, Any]) -> None:
             row.get("updated_at_utc") or utc_now(),
         ),
     )
+
+
+def record_guard_issue(conn: sqlite3.Connection, row: dict[str, Any]) -> sqlite3.Row:
+    now = row.get("last_seen_utc") or utc_now()
+    payload = compact_json(safe_public_payload(row.get("payload", {})))
+    conn.execute(
+        """
+        INSERT INTO guard_issues(
+          org_label, slot_name, issue_type, first_seen_utc, last_seen_utc,
+          action_count, payload_json
+        )
+        VALUES(?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(org_label, slot_name, issue_type) DO UPDATE SET
+          last_seen_utc=excluded.last_seen_utc,
+          payload_json=excluded.payload_json
+        """,
+        (
+            row["org_label"],
+            row["slot_name"],
+            row["issue_type"],
+            row.get("first_seen_utc") or now,
+            now,
+            int(row.get("action_count") or 0),
+            payload,
+        ),
+    )
+    return conn.execute(
+        """
+        SELECT *
+        FROM guard_issues
+        WHERE org_label = ? AND slot_name = ? AND issue_type = ?
+        """,
+        (row["org_label"], row["slot_name"], row["issue_type"]),
+    ).fetchone()
+
+
+def increment_guard_issue_action(conn: sqlite3.Connection, org_label: str, slot_name: str, issue_type: str) -> None:
+    conn.execute(
+        """
+        UPDATE guard_issues
+        SET action_count = action_count + 1,
+            last_seen_utc = ?
+        WHERE org_label = ? AND slot_name = ? AND issue_type = ?
+        """,
+        (utc_now(), org_label, slot_name, issue_type),
+    )
+
+
+def clear_guard_issues(conn: sqlite3.Connection, active_keys: set[tuple[str, str, str]]) -> None:
+    rows = conn.execute("SELECT org_label, slot_name, issue_type FROM guard_issues").fetchall()
+    for row in rows:
+        key = (str(row["org_label"]), str(row["slot_name"]), str(row["issue_type"]))
+        if key not in active_keys:
+            conn.execute(
+                "DELETE FROM guard_issues WHERE org_label = ? AND slot_name = ? AND issue_type = ?",
+                key,
+            )
 
 
 def active_search_cooldowns(conn: sqlite3.Connection) -> set[tuple[str, str, str]]:
@@ -729,6 +841,8 @@ def status_payload(conn: sqlite3.Connection) -> dict[str, Any]:
         "attempts",
         "profile_scores",
         "heartbeats",
+        "runtime_failures",
+        "guard_issues",
         "events",
     ):
         tables[table] = int(conn.execute(f"SELECT COUNT(*) AS count FROM {table}").fetchone()["count"])
@@ -755,6 +869,10 @@ def status_payload(conn: sqlite3.Connection) -> dict[str, Any]:
         "latest_risk_mode": dict(risk) if risk else None,
         "latest_price_sample": dict(price) if price else None,
         "heartbeats": heartbeats,
+        "runtime_failures": [
+            dict(row)
+            for row in conn.execute("SELECT * FROM runtime_failures ORDER BY at_utc DESC").fetchall()
+        ],
         "slot_status": slot_status,
     }
 

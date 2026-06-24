@@ -78,6 +78,84 @@ class AvailabilityProbeTest(unittest.TestCase):
         self.assertIsNotNone(heartbeat)
         self.assertEqual(heartbeat["stale_after_seconds"], 1800)
 
+    def test_parallel_org_batches_do_not_share_api_key(self) -> None:
+        tasks = [
+            {
+                "org": OrgConfig(
+                    label="kray",
+                    slug="kray",
+                    api_key_env="SALAD_API_KEY_2",
+                    slot_prefix="prl-kray-roi",
+                )
+            },
+            {
+                "org": OrgConfig(
+                    label="kry1",
+                    slug="kry1",
+                    api_key_env="SALAD_API_KEY_KRY1",
+                    slot_prefix="prl-kry1-roi",
+                )
+            },
+            {
+                "org": OrgConfig(
+                    label="kray2",
+                    slug="kray2",
+                    api_key_env="SALAD_API_KEY_2",
+                    slot_prefix="prl-kray2-roi",
+                )
+            },
+            {
+                "org": OrgConfig(
+                    label="kray3",
+                    slug="kray3",
+                    api_key_env="SALAD_API_KEY_2",
+                    slot_prefix="prl-kray3-roi",
+                )
+            },
+        ]
+
+        batches = availability_probe._batch_org_tasks(tasks, max_workers=4)
+
+        self.assertEqual(
+            [[task["org"].label for task in batch] for batch in batches],
+            [["kray", "kry1"], ["kray2"], ["kray3"]],
+        )
+
+    def test_run_once_reports_selected_org_parallelism(self) -> None:
+        config = FleetConfig(
+            organizations=(
+                OrgConfig(
+                    label="test",
+                    slug="test",
+                    api_key_env="SALAD_API_KEY_TEST",
+                    slot_prefix="prl-test-roi",
+                ),
+            )
+        )
+        profile = profit_model.Profile(
+            profile_key="4090:batch:2048",
+            gpu_key="4090",
+            gpu_id="gpu-4090",
+            priority="batch",
+            label="RTX 4090 batch",
+            memory_mb=2048,
+            expected_th=230.0,
+            static_hourly_usd=0.16,
+        )
+
+        with (
+            mock.patch.object(availability_probe, "load_config", return_value=config),
+            mock.patch.object(availability_probe.profit_model, "load_profiles", return_value=[profile]),
+            mock.patch.object(availability_probe, "_probe_org_profiles", return_value=[]),
+        ):
+            payload = availability_probe.run_once(
+                db_path=self.db_path,
+                profile_limit=1,
+                org_parallelism=3,
+            )
+
+        self.assertEqual(payload["org_parallelism"], 3)
+
 
 if __name__ == "__main__":
     unittest.main()

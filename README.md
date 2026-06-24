@@ -178,7 +178,7 @@ python3 scripts/reporter.py
 Probe live Salad availability for the highest-profit batch profile only:
 
 ```bash
-python3 scripts/availability_probe.py --profile-limit 1
+python3 scripts/availability_probe.py --profile-limit 1 --org-parallelism 2
 ```
 
 Dry-run one organization worker:
@@ -366,16 +366,19 @@ unless `--apply-workers` or `--apply-guard` is passed.
    per-org capacity hints instead of rotating profitable profiles blindly:
 
    ```bash
-   PRL_PEARL_FEE_RATE=0.01 python3 scripts/availability_probe.py --loop --interval 300 --priorities batch,low
+   PRL_PEARL_FEE_RATE=0.01 python3 scripts/availability_probe.py --loop --interval 300 --priorities batch,low --org-parallelism 2
    ```
 
    The probe uses the same API budget limiter as live workers, so it should
-   slow itself down instead of exhausting a shared Salad key. The default
-   availability heartbeat stale window is 1800 seconds
-   (`PRL_AVAILABILITY_STALE_AFTER_SECONDS`) because probing `batch,low` across
-   multiple orgs can take longer than one monitor tick. The scheduler and guard
-   use the same freshness window by default so they do not ignore slow-but-fresh
-   capacity hints during long probe runs.
+   slow itself down instead of exhausting a shared Salad key. It probes
+   organizations in parallel only when they use different API key env vars;
+   orgs sharing one key are automatically batched apart. The default
+   organization parallelism is 2 and can also be set with
+   `PRL_AVAILABILITY_ORG_PARALLELISM`. The default availability heartbeat stale
+   window is 1800 seconds (`PRL_AVAILABILITY_STALE_AFTER_SECONDS`) because
+   probing `batch,low` across multiple orgs can take longer than one monitor
+   tick. The scheduler and guard use the same freshness window by default so
+   they do not ignore slow-but-fresh capacity hints during long probe runs.
 
 3. Apply one org only:
 
@@ -1010,7 +1013,8 @@ grace window: retarget first, stop if no profitable replacement is available.
 ### Everything feels slow
 
 Each cycle checks Salad availability across many GPU classes and multiple orgs.
-The runtime uses a 15 second poll interval, 45 second allocating rotation, and
+The availability probe runs orgs with different API keys in parallel, while the
+runtime uses a 15 second poll interval, 45 second allocating rotation, and
 shorter HTTP timeout so it can catch newly available GPUs faster during scarce
 availability. API timeouts and scarce availability can still make a full cycle
 take longer than the nominal poll interval.

@@ -3,8 +3,10 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import multiprocessing
 import os
 import pathlib
+import queue
 import sys
 import time
 from datetime import UTC, datetime, timedelta
@@ -48,16 +50,138 @@ def candidate_from_profile(watch: Any, profile: profit_model.Profile) -> Any:
     return watch.Candidate(profile.label, profile.priority, (profile.gpu_key,), profile.memory_mb)
 
 
+def _probe_org_profiles(
+    org: OrgConfig,
+    profiles: list[profit_model.Profile],
+    *,
+    db_path: str | None,
+) -> list[dict[str, Any]]:
+    watch = load_watch_module(org)
+    install_rate_limited_request(watch, org, db_path=db_path)
+    rows: list[dict[str, Any]] = []
+    for profile in profiles:
+        checked_at = utc_now()
+        candidate = candidate_from_profile(watch, profile)
+        try:
+            available = watch.candidate_availability("__availability_probe__", candidate)
+            ok = available is not None
+            error = None
+        except Exception as exc:
+            available = None
+            ok = False
+            error = type(exc).__name__
+        rows.append(
+            {
+                "org_label": org.label,
+                "profile_key": profile.profile_key,
+                "available_count": available,
+                "ok": ok,
+                "error": error,
+                "checked_at_utc": checked_at,
+            }
+        )
+    return rows
+
+
+def _probe_org_process(task: dict[str, Any], result_queue: Any) -> None:
+    try:
+        result_queue.put(("ok", _probe_org_profiles(**task)))
+    except BaseException as exc:
+        result_queue.put(("error", type(exc).__name__, str(exc)[:500]))
+
+
+def _join_probe_process(process: Any) -> None:
+    process.join(5)
+    if process.is_alive():
+        process.terminate()
+        process.join(5)
+    if process.is_alive():
+        process.kill()
+        process.join(5)
+
+
+def _run_probe_batch(tasks: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
+    ctx = multiprocessing.get_context("fork")
+    workers = []
+    for task in tasks:
+        result_queue = ctx.Queue(maxsize=1)
+        process = ctx.Process(target=_probe_org_process, args=(task, result_queue))
+        process.start()
+        workers.append((task, process, result_queue))
+
+    results: list[list[dict[str, Any]]] = []
+    for task, process, result_queue in workers:
+        while True:
+            try:
+                item = result_queue.get(timeout=0.5)
+                break
+            except queue.Empty:
+                if not process.is_alive():
+                    process.join(5)
+                    org = task["org"].label
+                    raise RuntimeError(f"availability probe {org} exited without result rc={process.exitcode}")
+        _join_probe_process(process)
+        if item[0] == "ok":
+            results.append(item[1])
+        else:
+            org = task["org"].label
+            raise RuntimeError(f"availability probe {org} failed: {item[1]}: {item[2]}")
+    return results
+
+
+def _batch_org_tasks(tasks: list[dict[str, Any]], max_workers: int) -> list[list[dict[str, Any]]]:
+    batches: list[list[dict[str, Any]]] = []
+    remaining = list(tasks)
+    while remaining:
+        batch: list[dict[str, Any]] = []
+        used_api_keys: set[str] = set()
+        next_remaining: list[dict[str, Any]] = []
+        for task in remaining:
+            api_key_env = str(task["org"].api_key_env)
+            if len(batch) < max_workers and api_key_env not in used_api_keys:
+                batch.append(task)
+                used_api_keys.add(api_key_env)
+            else:
+                next_remaining.append(task)
+        batches.append(batch)
+        remaining = next_remaining
+    return batches
+
+
+def _probe_orgs(
+    orgs: list[OrgConfig],
+    profiles: list[profit_model.Profile],
+    *,
+    db_path: str | None,
+    org_parallelism: int,
+) -> list[dict[str, Any]]:
+    tasks = [{"org": org, "profiles": profiles, "db_path": db_path} for org in orgs]
+    if org_parallelism <= 1 or len(tasks) <= 1:
+        rows: list[dict[str, Any]] = []
+        for task in tasks:
+            rows.extend(_probe_org_profiles(**task))
+        return rows
+
+    rows = []
+    max_workers = min(org_parallelism, len(tasks))
+    for batch in _batch_org_tasks(tasks, max_workers):
+        for org_rows in _run_probe_batch(batch):
+            rows.extend(org_rows)
+    return rows
+
+
 def run_once(
     *,
     db_path: str | None = None,
     priorities: tuple[str, ...] = ("batch",),
     profile_limit: int | None = None,
+    org_parallelism: int | None = None,
 ) -> dict[str, Any]:
     config = load_config()
     no_gpu_sleep_after_seconds = env_int("PRL_NO_GPU_SLEEP_AFTER_SECONDS", 3600)
     no_gpu_sleep_seconds = env_int("PRL_NO_GPU_SLEEP_SECONDS", 900)
     heartbeat_stale_after_seconds = env_int("PRL_AVAILABILITY_STALE_AFTER_SECONDS", 1800)
+    selected_org_parallelism = max(1, org_parallelism or env_int("PRL_AVAILABILITY_ORG_PARALLELISM", 2))
     profiles = [profile for profile in profit_model.load_profiles() if profile.priority in priorities]
     profiles.sort(
         key=lambda item: profit_model.expected_profit(
@@ -80,97 +204,92 @@ def run_once(
             conn,
             "availability_probe",
             stale_after_seconds=heartbeat_stale_after_seconds,
-            payload={"running": True, "priorities": priorities, "profile_count": len(profiles)},
+            payload={
+                "running": True,
+                "priorities": priorities,
+                "profile_count": len(profiles),
+                "org_parallelism": selected_org_parallelism,
+            },
         )
         conn.commit()
 
-    for org in config.enabled_orgs():
-        watch = load_watch_module(org)
-        install_rate_limited_request(watch, org, db_path=db_path)
-        for profile in profiles:
-            checked_at = utc_now()
-            candidate = candidate_from_profile(watch, profile)
-            try:
-                available = watch.candidate_availability("__availability_probe__", candidate)
-                ok = available is not None
-                error = None
-            except Exception as exc:
-                available = None
-                ok = False
-                error = type(exc).__name__
-            row = {
-                "org_label": org.label,
-                "profile_key": profile.profile_key,
-                "available_count": available,
-                "ok": ok,
-                "error": error,
-                "checked_at_utc": checked_at,
-            }
-            with state_db.connect(db_path) as conn:
-                state_db.init_db(conn)
-                state_db.upsert_profile_availability(conn, row)
-                if ok and int(available or 0) <= 0:
-                    existing = conn.execute(
-                        """
-                        SELECT *
-                        FROM search_cooldowns
-                        WHERE org_label = ? AND slot_name = '*' AND profile_key = ?
-                        """,
-                        (org.label, profile.profile_key),
-                    ).fetchone()
-                    no_gpu_since = existing["no_gpu_since_utc"] if existing and existing["no_gpu_since_utc"] else checked_at
-                    attempts = int(existing["attempts"] or 0) + 1 if existing else 1
-                    sleep_until = existing["sleep_until_utc"] if existing else None
-                    try:
-                        since_dt = datetime.fromisoformat(str(no_gpu_since).replace("Z", "+00:00"))
-                    except ValueError:
-                        since_dt = datetime.now(UTC)
-                        no_gpu_since = since_dt.isoformat(timespec="seconds")
-                    if since_dt.tzinfo is None:
-                        since_dt = since_dt.replace(tzinfo=UTC)
-                    age = (datetime.now(UTC) - since_dt).total_seconds()
-                    if age >= no_gpu_sleep_after_seconds:
-                        sleep_until = (datetime.now(UTC) + timedelta(seconds=no_gpu_sleep_seconds)).isoformat(timespec="seconds")
-                        no_gpu_since = datetime.now(UTC).isoformat(timespec="seconds")
-                    state_db.record_search_state(
-                        conn,
-                        {
-                            "org_label": org.label,
-                            "slot_name": "*",
-                            "profile_key": profile.profile_key,
-                            "no_gpu_since_utc": no_gpu_since,
-                            "sleep_until_utc": sleep_until,
-                            "attempts": attempts,
-                            "reason": "availability_zero",
-                        },
-                    )
-                    state_db.record_attempt(
-                        conn,
-                        {
-                            "at_utc": checked_at,
-                            "org_label": org.label,
-                            "slot_name": "__availability__",
-                            "action": "capacity_failure",
-                            "profile_key": profile.profile_key,
-                            "ok": False,
-                            "payload": {"available_count": available},
-                        },
-                    )
-                elif ok and int(available or 0) > 0:
-                    state_db.record_search_state(
-                        conn,
-                        {
-                            "org_label": org.label,
-                            "slot_name": "*",
-                            "profile_key": profile.profile_key,
-                            "no_gpu_since_utc": None,
-                            "sleep_until_utc": None,
-                            "attempts": 0,
-                            "reason": "availability_restored",
-                        },
-                    )
-                conn.commit()
-            results.append(row)
+    org_rows = _probe_orgs(
+        config.enabled_orgs(),
+        profiles,
+        db_path=db_path,
+        org_parallelism=selected_org_parallelism,
+    )
+    for row in org_rows:
+        available = row.get("available_count")
+        ok = bool(row.get("ok"))
+        checked_at = str(row["checked_at_utc"])
+        profile_key = str(row["profile_key"])
+        org_label = str(row["org_label"])
+        with state_db.connect(db_path) as conn:
+            state_db.init_db(conn)
+            state_db.upsert_profile_availability(conn, row)
+            if ok and int(available or 0) <= 0:
+                existing = conn.execute(
+                    """
+                    SELECT *
+                    FROM search_cooldowns
+                    WHERE org_label = ? AND slot_name = '*' AND profile_key = ?
+                    """,
+                    (org_label, profile_key),
+                ).fetchone()
+                no_gpu_since = existing["no_gpu_since_utc"] if existing and existing["no_gpu_since_utc"] else checked_at
+                attempts = int(existing["attempts"] or 0) + 1 if existing else 1
+                sleep_until = existing["sleep_until_utc"] if existing else None
+                try:
+                    since_dt = datetime.fromisoformat(str(no_gpu_since).replace("Z", "+00:00"))
+                except ValueError:
+                    since_dt = datetime.now(UTC)
+                    no_gpu_since = since_dt.isoformat(timespec="seconds")
+                if since_dt.tzinfo is None:
+                    since_dt = since_dt.replace(tzinfo=UTC)
+                age = (datetime.now(UTC) - since_dt).total_seconds()
+                if age >= no_gpu_sleep_after_seconds:
+                    sleep_until = (datetime.now(UTC) + timedelta(seconds=no_gpu_sleep_seconds)).isoformat(timespec="seconds")
+                    no_gpu_since = datetime.now(UTC).isoformat(timespec="seconds")
+                state_db.record_search_state(
+                    conn,
+                    {
+                        "org_label": org_label,
+                        "slot_name": "*",
+                        "profile_key": profile_key,
+                        "no_gpu_since_utc": no_gpu_since,
+                        "sleep_until_utc": sleep_until,
+                        "attempts": attempts,
+                        "reason": "availability_zero",
+                    },
+                )
+                state_db.record_attempt(
+                    conn,
+                    {
+                        "at_utc": checked_at,
+                        "org_label": org_label,
+                        "slot_name": "__availability__",
+                        "action": "capacity_failure",
+                        "profile_key": profile_key,
+                        "ok": False,
+                        "payload": {"available_count": available},
+                    },
+                )
+            elif ok and int(available or 0) > 0:
+                state_db.record_search_state(
+                    conn,
+                    {
+                        "org_label": org_label,
+                        "slot_name": "*",
+                        "profile_key": profile_key,
+                        "no_gpu_since_utc": None,
+                        "sleep_until_utc": None,
+                        "attempts": 0,
+                        "reason": "availability_restored",
+                    },
+                )
+            conn.commit()
+        results.append(row)
 
     by_profile: dict[str, int] = {}
     for row in results:
@@ -194,7 +313,13 @@ def run_once(
         )
         conn.commit()
 
-    return {"probed": len(results), "priorities": priorities, "by_profile": by_profile, "results": results}
+    return {
+        "probed": len(results),
+        "priorities": priorities,
+        "org_parallelism": selected_org_parallelism,
+        "by_profile": by_profile,
+        "results": results,
+    }
 
 
 def main() -> None:
@@ -202,6 +327,7 @@ def main() -> None:
     parser.add_argument("--db", default=None)
     parser.add_argument("--priorities", default="batch", help="Comma-separated priorities to probe.")
     parser.add_argument("--profile-limit", type=int, default=None)
+    parser.add_argument("--org-parallelism", type=int, default=None)
     parser.add_argument("--once", action="store_true")
     parser.add_argument("--loop", action="store_true")
     parser.add_argument("--interval", type=int, default=300)
@@ -218,10 +344,24 @@ def main() -> None:
 
     if args.loop:
         while True:
-            emit(run_once(db_path=args.db, priorities=priorities, profile_limit=args.profile_limit))
+            emit(
+                run_once(
+                    db_path=args.db,
+                    priorities=priorities,
+                    profile_limit=args.profile_limit,
+                    org_parallelism=args.org_parallelism,
+                )
+            )
             time.sleep(args.interval)
     else:
-        emit(run_once(db_path=args.db, priorities=priorities, profile_limit=args.profile_limit))
+        emit(
+            run_once(
+                db_path=args.db,
+                priorities=priorities,
+                profile_limit=args.profile_limit,
+                org_parallelism=args.org_parallelism,
+            )
+        )
 
 
 if __name__ == "__main__":

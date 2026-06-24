@@ -34,6 +34,41 @@ def _payload(row: Any) -> dict[str, Any]:
         return {}
 
 
+def _slot_snapshots_for_batch(conn: Any, snapshot_at_utc: str | None = None) -> list[dict[str, Any]]:
+    if snapshot_at_utc:
+        rows = [
+            dict(row)
+            for row in conn.execute(
+                """
+                SELECT *
+                FROM profit_snapshots
+                WHERE scope = 'slot'
+                  AND at_utc = ?
+                ORDER BY org_label, slot_name
+                """,
+                (snapshot_at_utc,),
+            ).fetchall()
+        ]
+        if rows:
+            return rows
+    return [
+        dict(row)
+        for row in conn.execute(
+            """
+            SELECT *
+            FROM profit_snapshots
+            WHERE scope = 'slot'
+              AND at_utc = (
+                SELECT MAX(at_utc)
+                FROM profit_snapshots
+                WHERE scope = 'slot'
+              )
+            ORDER BY org_label, slot_name
+            """
+        ).fetchall()
+    ]
+
+
 class RefreshTimeout(RuntimeError):
     pass
 
@@ -157,8 +192,13 @@ def build_report(
                 """
             ).fetchall()
         ]
+        latest_slot_snapshots = _slot_snapshots_for_batch(
+            conn,
+            str(latest_profit["at_utc"]) if latest_profit else None,
+        )
         slot_rows = [dict(row) for row in conn.execute("SELECT * FROM slots ORDER BY org_label, slot_name").fetchall()]
         heartbeats = [dict(row) for row in conn.execute("SELECT * FROM heartbeats ORDER BY process_name").fetchall()]
+        worker_rows = [dict(row) for row in conn.execute("SELECT * FROM workers ORDER BY stale, org_label, slot_name").fetchall()]
         risky_profiles = [
             dict(row)
             for row in conn.execute(
@@ -182,6 +222,17 @@ def build_report(
     active_pending_slots = sum(count for key, count in status_counts.items() if key in active_pending_statuses)
     live_hashing_gpus = sum(1 for slot in slot_rows if str(slot.get("observed_status") or "") == "running")
     live_th = sum(float(slot.get("live_hashrate_th") or 0) for slot in slot_rows)
+    snapshot_live_th = sum(float(row.get("th") or 0) for row in latest_slot_snapshots if float(row.get("th") or 0) > 0)
+    snapshot_live_hashing_gpus = sum(1 for row in latest_slot_snapshots if float(row.get("th") or 0) > 0)
+    snapshot_live_at_utc = max((str(row["at_utc"]) for row in latest_slot_snapshots if row.get("at_utc")), default=None)
+    live_th_source = "slots"
+    if live_th <= 0 and snapshot_live_th > 0:
+        live_th = snapshot_live_th
+        live_hashing_gpus = snapshot_live_hashing_gpus
+        live_th_source = "profit_snapshots"
+    live_workers = [row for row in worker_rows if int(row.get("stale") or 0) == 0]
+    stale_workers = [row for row in worker_rows if int(row.get("stale") or 0) != 0]
+    worker_th = sum(float(row.get("reported_hashrate_th") or 0) for row in live_workers)
     latest_payload = _payload(latest_profit)
     stuck_slots = [
         {
@@ -225,6 +276,13 @@ def build_report(
         "active_pending_slots": active_pending_slots,
         "live_hashing_gpus": live_hashing_gpus,
         "live_th": live_th,
+        "live_th_source": live_th_source,
+        "snapshot_live_hashing_gpus": snapshot_live_hashing_gpus,
+        "snapshot_live_th": snapshot_live_th,
+        "snapshot_live_at_utc": snapshot_live_at_utc,
+        "live_workers": len(live_workers),
+        "stale_workers": len(stale_workers),
+        "worker_th": worker_th,
         "status_counts": status_counts,
         "running_no_live_billable_slots": latest_payload.get("running_no_live_billable_slots") or [],
         "negative_slots": latest_payload.get("negative_slots") or [],
@@ -267,7 +325,12 @@ def main() -> None:
         print(f"refresh_error={report['refresh_error']}")
     print(
         f"active_pending={report['active_pending_slots']} "
-        f"live_hashing={report['live_hashing_gpus']} live_th={float(report['live_th']):.3f}"
+        f"live_hashing={report['live_hashing_gpus']} live_th={float(report['live_th']):.3f} "
+        f"live_th_source={report['live_th_source']}"
+    )
+    print(
+        f"workers_live={report['live_workers']} "
+        f"workers_stale={report['stale_workers']} worker_th={float(report['worker_th']):.3f}"
     )
     latest = report.get("latest_profit")
     if latest:

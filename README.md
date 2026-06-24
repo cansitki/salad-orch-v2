@@ -113,9 +113,9 @@ The runnable code lives in `scripts/`.
 | `scripts/profile_scorer.py` | Scores GPU profiles using expected profit, availability, attempts, and live no-hash/negative/time-to-hash history. |
 | `scripts/fleet_scheduler.py` | Central dry-run-safe target assignment across all org slots. |
 | `scripts/org_worker.py` | Per-org worker that consumes scheduler targets; live actions require `--apply`. |
-| `scripts/guard.py` | Guard v2. Analyzes by default; `--apply` retargets/stops no-hash or negative slots after grace. |
+| `scripts/guard.py` | Guard v2. Analyzes by default; `--apply` retargets/stops no-hash or negative slots after grace, and writes live slot hashrate/worker observations. |
 | `scripts/supervisor.py` | Scheduler control tick and tmux process plan for the new stack. |
-| `scripts/reporter.py` | CLI/JSON status report from the scheduler DB. |
+| `scripts/reporter.py` | CLI/JSON status report from the scheduler DB, including live TH, snapshot fallback, and worker freshness. |
 | `scripts/health.py` | Read-only health check for targets, stale heartbeats, guard issues, and runtime failures. |
 | `scripts/shadow_compare.py` | Read-only target-vs-observed mismatch and unsafe-target report for shadow mode. |
 | `scripts/rollout.py` | Controlled shadow/one-org/all-org/guard rollout runner with safety gates. |
@@ -264,6 +264,9 @@ python3 scripts/reporter.py --refresh --refresh-timeout 45
 
 If live Salad/PearlFortune lookups are slow, the reporter returns the latest DB
 state with `refresh_error=...` instead of blocking indefinitely.
+For live TH, it prefers `slots.live_hashrate_th` from the latest successful
+guard snapshot and falls back to the latest per-slot `profit_snapshots` batch
+when slot rows have not been refreshed yet.
 
 ## Controlled Live Test Path
 

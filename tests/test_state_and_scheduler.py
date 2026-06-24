@@ -91,6 +91,32 @@ class StateAndSchedulerTest(unittest.TestCase):
         self.assertEqual(changed["observed_profile_since_utc"], "2026-06-24T12:02:00+00:00")
         self.assertEqual(changed["observed_status_since_utc"], "2026-06-24T12:02:00+00:00")
 
+    def test_worker_sync_marks_missing_workers_stale(self) -> None:
+        with state_db.connect(self.db_path) as conn:
+            state_db.init_db(conn)
+            state_db.sync_config(conn, load_config())
+            state_db.sync_worker_rows(
+                conn,
+                [
+                    {
+                        "worker_name": "kray-prl-test-pearlfortune-inst-1",
+                        "org_label": "kray",
+                        "slot_name": "prl-kray-roi-01",
+                        "instance_id": "inst-1",
+                        "gpu_key": "3090",
+                        "reported_hashrate_th": 101.5,
+                        "last_stats_at": "2026-06-24T12:00:00+00:00",
+                    }
+                ],
+            )
+            live = conn.execute("SELECT stale, reported_hashrate_th FROM workers").fetchone()
+            state_db.sync_worker_rows(conn, [])
+            stale = conn.execute("SELECT stale, reported_hashrate_th FROM workers").fetchone()
+        self.assertEqual(live["stale"], 0)
+        self.assertEqual(live["reported_hashrate_th"], 101.5)
+        self.assertEqual(stale["stale"], 1)
+        self.assertEqual(stale["reported_hashrate_th"], 101.5)
+
     def test_profile_scorer_uses_runtime_profit_snapshot_history(self) -> None:
         now = datetime.now(UTC)
         earlier = now - timedelta(minutes=2)

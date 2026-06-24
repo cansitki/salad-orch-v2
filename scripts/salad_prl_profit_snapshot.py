@@ -507,6 +507,7 @@ def build_snapshot(price: float) -> dict[str, Any]:
                 "cost_day": round(float(row["cost_day"]), 3),
                 "market_profit_day": round(float(row.get("market_profit_day", row["profit_day"])), 3),
                 "profit_day": round(float(row["profit_day"]), 3),
+                "last_stats_at": row.get("last_stats_at"),
             }
             for row in rows
         ],

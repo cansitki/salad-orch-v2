@@ -83,6 +83,7 @@ def build_health(db_path: str | None = None) -> dict[str, Any]:
         "latest_risk_mode": status.get("latest_risk_mode"),
         "latest_price_sample": status.get("latest_price_sample"),
         "slot_status": status.get("slot_status"),
+        "worker_status": status.get("worker_status"),
     }
 
 

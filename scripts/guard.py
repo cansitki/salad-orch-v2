@@ -10,6 +10,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 import org_worker
+import profit_model
 import profile_scorer
 import salad_prl_profit_snapshot as snapshot
 import state_db
@@ -81,6 +82,26 @@ def snapshot_profile_key(conn, row: dict[str, Any]) -> str | None:
     if from_payload:
         return from_payload
     return issue_current_profile_key(conn, row)
+
+
+def snapshot_worker_row(row: dict[str, Any]) -> dict[str, Any] | None:
+    worker_name = str(row.get("worker") or "")
+    if not worker_name or worker_name == "NO_POOL_HASHRATE":
+        return None
+    slot_name = str(row.get("slot") or "")
+    org_label = str(row.get("org") or "")
+    if not slot_name or not org_label:
+        return None
+    return {
+        "worker_name": worker_name,
+        "org_label": org_label,
+        "slot_name": slot_name,
+        "instance_id": snapshot.worker_instance_id(worker_name),
+        "gpu_key": row.get("gpu"),
+        "reported_hashrate_th": row.get("th"),
+        "stale": False,
+        "last_stats_at": row.get("last_stats_at"),
+    }
 
 
 def replacement_target(
@@ -365,10 +386,11 @@ def run_once(*, db_path: str | None = None, price: float | None = None, apply: b
     with state_db.connect(db_path) as conn:
         state_db.init_db(conn)
         state_db.clear_failure(conn, "guard")
+        snapshot_at = utc_now()
         state_db.record_profit_snapshot(
             conn,
             {
-                "at_utc": utc_now(),
+                "at_utc": snapshot_at,
                 "scope": "fleet",
                 "decision_price_usd": decision_price,
                 "live_price_usd": payload.get("live_market_prl_price"),
@@ -379,12 +401,28 @@ def run_once(*, db_path: str | None = None, price: float | None = None, apply: b
                 "payload": analysis,
             },
         )
+        state_db.reset_slot_hashrates(conn)
+        worker_rows = []
         for row in payload.get("slots") or []:
             profile_key = snapshot_profile_key(conn, row)
+            state_db.update_slot_observation(
+                conn,
+                {
+                    "org_label": row.get("org"),
+                    "slot_name": row.get("slot"),
+                    "observed_profile_key": profile_key,
+                    "observed_status": "running",
+                    "live_hashrate_th": row.get("th"),
+                    "protected": True,
+                },
+            )
+            worker_row = snapshot_worker_row(row)
+            if worker_row:
+                worker_rows.append(worker_row)
             state_db.record_profit_snapshot(
                 conn,
                 {
-                    "at_utc": utc_now(),
+                    "at_utc": snapshot_at,
                     "scope": "slot",
                     "org_label": row.get("org"),
                     "slot_name": row.get("slot"),
@@ -397,10 +435,16 @@ def run_once(*, db_path: str | None = None, price: float | None = None, apply: b
                     "payload": row,
                 },
             )
+        state_db.sync_worker_rows(conn, worker_rows)
         state_db.write_heartbeat(
             conn,
             "guard",
-            payload={"issue_count": analysis["issue_count"], "decisions": len(decisions), "apply": apply},
+            payload={
+                "issue_count": analysis["issue_count"],
+                "decisions": len(decisions),
+                "apply": apply,
+                "live_workers": len(worker_rows),
+            },
         )
         state_db.record_event(
             conn,

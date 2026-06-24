@@ -799,6 +799,7 @@ Current status:
 - `--apply` performs guard v2 retarget/stop actions after persistent grace
 - `--apply-legacy` still delegates to the existing `scripts/salad_prl_guard.py`
 - guard v2 records attempts, events, guard issues, and runtime failures
+- successful guard snapshots persist per-slot hashrate into `slots`, persist live pool workers into `workers`, and mark workers missing from the latest snapshot as stale
 
 ### Phase 7: Supervisor And Reporter
 
@@ -830,6 +831,7 @@ Current behavior:
 - `scripts/supervisor.py --print-plan` includes price oracle, availability probe, scheduler, guard, and one worker per enabled org
 - `scripts/supervisor.py --ensure` starts missing tmux sessions and restarts sessions with stale heartbeats
 - `scripts/reporter.py --refresh` records fresh guard snapshots at `0.64` and `0.70`
+- `scripts/reporter.py` reports live TH from `slots.live_hashrate_th`, falls back to the latest per-slot `profit_snapshots` batch when slot rows are not yet refreshed, and reports worker freshness/hashrate from `workers`
 - `scripts/reporter.py --refresh --refresh-timeout N` fails fast and reports stale DB data with `refresh_error` if live APIs hang
 - `scripts/health.py --json` shows target coverage, stale heartbeats, runtime failures, and active guard issues from SQLite
 - `scripts/shadow_compare.py --json` reports missing targets, unsafe targets, target/observed mismatches, and diversification

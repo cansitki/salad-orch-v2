@@ -720,6 +720,45 @@ def update_slot_observation(conn: sqlite3.Connection, row: dict[str, Any]) -> No
     )
 
 
+def reset_slot_hashrates(conn: sqlite3.Connection) -> None:
+    conn.execute("UPDATE slots SET live_hashrate_th = 0")
+
+
+def sync_worker_rows(conn: sqlite3.Connection, workers: list[dict[str, Any]]) -> None:
+    now = utc_now()
+    conn.execute("UPDATE workers SET stale = 1, updated_at_utc = ?", (now,))
+    for worker in workers:
+        conn.execute(
+            """
+            INSERT INTO workers(
+              worker_name, org_label, slot_name, instance_id, gpu_key,
+              reported_hashrate_th, stale, last_stats_at, updated_at_utc
+            )
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(worker_name) DO UPDATE SET
+              org_label = excluded.org_label,
+              slot_name = excluded.slot_name,
+              instance_id = excluded.instance_id,
+              gpu_key = excluded.gpu_key,
+              reported_hashrate_th = excluded.reported_hashrate_th,
+              stale = excluded.stale,
+              last_stats_at = excluded.last_stats_at,
+              updated_at_utc = excluded.updated_at_utc
+            """,
+            (
+                worker["worker_name"],
+                worker.get("org_label"),
+                worker.get("slot_name"),
+                worker.get("instance_id"),
+                worker.get("gpu_key"),
+                float(worker.get("reported_hashrate_th") or 0),
+                1 if worker.get("stale") else 0,
+                worker.get("last_stats_at"),
+                worker.get("updated_at_utc") or now,
+            ),
+        )
+
+
 def insert_price_sample(conn: sqlite3.Connection, sample: dict[str, Any]) -> int:
     cursor = conn.execute(
         """
@@ -1059,6 +1098,7 @@ def status_payload(conn: sqlite3.Connection) -> dict[str, Any]:
         "price_history",
         "slot_targets",
         "attempts",
+        "workers",
         "profile_scores",
         "heartbeats",
         "runtime_failures",
@@ -1085,6 +1125,17 @@ def status_payload(conn: sqlite3.Connection) -> dict[str, Any]:
             """
         )
     ]
+    worker_status = [
+        dict(row)
+        for row in conn.execute(
+            """
+            SELECT stale, COUNT(*) AS count, SUM(reported_hashrate_th) AS reported_hashrate_th
+            FROM workers
+            GROUP BY stale
+            ORDER BY stale
+            """
+        )
+    ]
     return {
         "db": str(conn.execute("PRAGMA database_list").fetchone()["file"]),
         "tables": tables,
@@ -1096,6 +1147,7 @@ def status_payload(conn: sqlite3.Connection) -> dict[str, Any]:
             for row in conn.execute("SELECT * FROM runtime_failures ORDER BY at_utc DESC").fetchall()
         ],
         "slot_status": slot_status,
+        "worker_status": worker_status,
     }
 
 

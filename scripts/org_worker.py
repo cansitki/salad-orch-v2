@@ -267,6 +267,7 @@ def planned_action(
     current = current_profile_key(watch, group)
     counts = active_counts(group)
     status = observed_status(group, counts)
+    pending_active = counts["creating"] + counts["allocating"] > 0 or status == "deploying"
     if group is None:
         action = "create"
         reason = "missing_container_group"
@@ -274,7 +275,7 @@ def planned_action(
         if protect_running and counts["running"] > 0:
             action = "observe"
             reason = f"protected_running_profile_mismatch:{current or 'unknown'}"
-        elif counts["creating"] + counts["allocating"] > 0:
+        elif pending_active:
             pending_age = pending_profile_age_seconds(target)
             if protect_pending:
                 action = "observe"
@@ -292,10 +293,10 @@ def planned_action(
         else:
             action = "patch"
             reason = f"profile_mismatch:{current or 'unknown'}"
-    elif counts["running"] + counts["creating"] + counts["allocating"] <= 0:
+    elif counts["running"] <= 0 and not pending_active:
         action = "start"
         reason = "target_stopped_or_empty"
-    elif counts["creating"] + counts["allocating"] > 0:
+    elif pending_active:
         pending_age = pending_profile_age_seconds(target)
         if pending_age is not None and pending_age >= pending_retarget_after_seconds:
             action = "cooldown_pending"

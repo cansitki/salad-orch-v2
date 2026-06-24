@@ -228,6 +228,13 @@ def age_seconds(value: str | None) -> float | None:
     return max(0.0, (datetime.now(UTC) - at).total_seconds())
 
 
+def pending_profile_age_seconds(target: dict[str, Any]) -> float | None:
+    return age_seconds(
+        target.get("observed_profile_since_utc")
+        or target.get("observed_status_since_utc")
+    )
+
+
 def planned_action(
     watch: Any,
     slot_name: str,
@@ -252,7 +259,7 @@ def planned_action(
             action = "observe"
             reason = f"protected_running_profile_mismatch:{current or 'unknown'}"
         elif counts["creating"] + counts["allocating"] > 0:
-            pending_age = age_seconds(target.get("observed_status_since_utc"))
+            pending_age = pending_profile_age_seconds(target)
             if protect_pending:
                 action = "observe"
                 reason = f"protected_pending_profile_mismatch:{current or 'unknown'}"
@@ -273,7 +280,7 @@ def planned_action(
         action = "start"
         reason = "target_stopped_or_empty"
     elif counts["creating"] + counts["allocating"] > 0:
-        pending_age = age_seconds(target.get("observed_status_since_utc"))
+        pending_age = pending_profile_age_seconds(target)
         if pending_age is not None and pending_age >= pending_retarget_after_seconds:
             action = "cooldown_pending"
             reason = f"stale_pending_same_profile:{current or 'unknown'}:age_{pending_age:.1f}"
@@ -418,7 +425,11 @@ def run_once(
                     "org_label": org_label,
                     "slot_name": str(target["slot_name"]),
                     "profile_key": str(target["profile_key"]),
-                    "no_gpu_since_utc": target.get("observed_status_since_utc") or utc_now(),
+                    "no_gpu_since_utc": (
+                        target.get("observed_profile_since_utc")
+                        or target.get("observed_status_since_utc")
+                        or utc_now()
+                    ),
                     "sleep_until_utc": (now + timedelta(seconds=max(60, pending_profile_cooldown_seconds))).isoformat(
                         timespec="seconds"
                     ),

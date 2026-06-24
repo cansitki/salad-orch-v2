@@ -367,6 +367,36 @@ class StateAndSchedulerTest(unittest.TestCase):
         self.assertEqual(plan["action"], "patch")
         self.assertIn("stale_pending_profile_mismatch", plan["reason"])
 
+    def test_org_worker_waits_for_fresh_pending_profile_even_when_status_is_old(self) -> None:
+        class Watch:
+            def slot_state(self, _slot_name):
+                return (
+                    {
+                        "priority": "batch",
+                        "container": {"resources": {"gpu_classes": ["gpu-rtx-3070"], "memory": 4096}},
+                        "current_state": {"instance_status_counts": {"allocating_count": 1}},
+                    },
+                    [],
+                )
+
+            GPU = {"3070": "gpu-rtx-3070"}
+
+        plan = org_worker.planned_action(
+            Watch(),
+            "prl-kray-roi-01",
+            {
+                "profile_key": "4090:batch:2048",
+                "observed_status_since_utc": (datetime.now(UTC) - timedelta(minutes=10)).isoformat(
+                    timespec="seconds"
+                ),
+                "observed_profile_since_utc": datetime.now(UTC).isoformat(timespec="seconds"),
+            },
+            protect_pending=False,
+            pending_retarget_after_seconds=60,
+        )
+        self.assertEqual(plan["action"], "observe")
+        self.assertIn("pending_profile_mismatch_wait", plan["reason"])
+
     def test_org_worker_failed_patch_becomes_profile_cooldown_action(self) -> None:
         class Watch:
             class Candidate:
@@ -566,6 +596,36 @@ class StateAndSchedulerTest(unittest.TestCase):
             {
                 "profile_key": "4090:batch:2048",
                 "observed_status_since_utc": datetime.now(UTC).isoformat(timespec="seconds"),
+            },
+            protect_pending=False,
+            pending_retarget_after_seconds=60,
+        )
+        self.assertEqual(plan["action"], "observe")
+        self.assertIn("target_pending_wait", plan["reason"])
+
+    def test_org_worker_waits_on_fresh_pending_profile_same_target_even_when_status_is_old(self) -> None:
+        class Watch:
+            def slot_state(self, _slot_name):
+                return (
+                    {
+                        "priority": "batch",
+                        "container": {"resources": {"gpu_classes": ["gpu-rtx-4090"], "memory": 2048}},
+                        "current_state": {"instance_status_counts": {"allocating_count": 1}},
+                    },
+                    [],
+                )
+
+            GPU = {"4090": "gpu-rtx-4090"}
+
+        plan = org_worker.planned_action(
+            Watch(),
+            "prl-kray-roi-01",
+            {
+                "profile_key": "4090:batch:2048",
+                "observed_status_since_utc": (datetime.now(UTC) - timedelta(minutes=10)).isoformat(
+                    timespec="seconds"
+                ),
+                "observed_profile_since_utc": datetime.now(UTC).isoformat(timespec="seconds"),
             },
             protect_pending=False,
             pending_retarget_after_seconds=60,

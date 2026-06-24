@@ -241,6 +241,7 @@ class RolloutTest(unittest.TestCase):
                 allow_live_retarget=False,
                 allow_pending_retarget=False,
                 pending_retarget_after_seconds=60,
+                pending_status_retarget_after_seconds=None,
                 worker_parallelism=2,
             )
 

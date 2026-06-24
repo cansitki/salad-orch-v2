@@ -294,6 +294,7 @@ def _run_org_workers(
     allow_live_retarget: bool,
     allow_pending_retarget: bool,
     pending_retarget_after_seconds: int,
+    pending_status_retarget_after_seconds: int | None,
     worker_parallelism: int,
 ) -> list[dict[str, Any]]:
     config = load_config()
@@ -307,6 +308,7 @@ def _run_org_workers(
             "allow_live_retarget": allow_live_retarget,
             "allow_pending_retarget": allow_pending_retarget,
             "pending_retarget_after_seconds": pending_retarget_after_seconds,
+            "pending_status_retarget_after_seconds": pending_status_retarget_after_seconds,
         }
         for org in orgs
     ]
@@ -346,6 +348,7 @@ def run_rollout(
     require_fresh_heartbeats: bool = False,
     schedule_width: int = 10,
     pending_retarget_after_seconds: int = 45,
+    pending_status_retarget_after_seconds: int | None = None,
     worker_parallelism: int = 1,
 ) -> dict[str, Any]:
     if stage not in STAGES:
@@ -407,6 +410,7 @@ def run_rollout(
             allow_live_retarget=allow_live_retarget,
             allow_pending_retarget=allow_pending_retarget,
             pending_retarget_after_seconds=pending_retarget_after_seconds,
+            pending_status_retarget_after_seconds=pending_status_retarget_after_seconds,
             worker_parallelism=worker_parallelism,
         )
         scheduler_payload = fleet_scheduler.schedule_once(
@@ -424,6 +428,7 @@ def run_rollout(
                 allow_live_retarget=allow_live_retarget,
                 allow_pending_retarget=allow_pending_retarget,
                 pending_retarget_after_seconds=pending_retarget_after_seconds,
+                pending_status_retarget_after_seconds=pending_status_retarget_after_seconds,
                 worker_parallelism=worker_parallelism,
             )
             worker_payloads.extend(second_pass_payloads)
@@ -479,6 +484,8 @@ def run_rollout(
         "apply_guard": apply_guard,
         "allow_live_retarget": allow_live_retarget,
         "allow_pending_retarget": allow_pending_retarget,
+        "pending_retarget_after_seconds": pending_retarget_after_seconds,
+        "pending_status_retarget_after_seconds": pending_status_retarget_after_seconds,
         "worker_parallelism": worker_parallelism,
         "checkpoint": checkpoint,
         "scheduler": {key: value for key, value in scheduler_payload.items() if key != "targets"},
@@ -544,6 +551,12 @@ def main() -> None:
     parser.add_argument("--allow-live-retarget", action="store_true", help="Allow org_worker to patch running slots.")
     parser.add_argument("--allow-pending-retarget", action="store_true", help="Allow org_worker to patch creating/allocating slots.")
     parser.add_argument("--pending-retarget-after-seconds", type=int, default=45)
+    parser.add_argument(
+        "--pending-status-retarget-after-seconds",
+        type=int,
+        default=None,
+        help="Grace for creating/allocating/deploying slots; defaults to max(pending retarget, 120).",
+    )
     parser.add_argument("--worker-parallelism", type=int, default=1)
     parser.add_argument("--confirm-live-retarget", action="store_true", help="Required with --allow-live-retarget.")
     parser.add_argument("--confirm-all-orgs", action="store_true", help="Required with --stage all-orgs --apply-workers.")
@@ -578,6 +591,7 @@ def main() -> None:
         require_fresh_heartbeats=args.require_fresh_heartbeats,
         schedule_width=args.width,
         pending_retarget_after_seconds=args.pending_retarget_after_seconds,
+        pending_status_retarget_after_seconds=args.pending_status_retarget_after_seconds,
         worker_parallelism=args.worker_parallelism,
     )
     if args.json:

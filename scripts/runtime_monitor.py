@@ -24,12 +24,29 @@ class RemoteRunnerError(RuntimeError):
     pass
 
 
+def _resolve_pending_status_retarget_after_seconds(
+    pending_retarget_after_seconds: int,
+    pending_status_retarget_after_seconds: int | None = None,
+) -> int:
+    no_hash_seconds = max(0, int(pending_retarget_after_seconds))
+    if pending_status_retarget_after_seconds is not None:
+        return max(0, int(pending_status_retarget_after_seconds))
+    env_value = os.environ.get("PRL_PENDING_STATUS_RETARGET_AFTER_SECONDS")
+    if env_value not in {None, ""}:
+        return max(0, int(str(env_value)))
+    return max(no_hash_seconds, 120)
+
+
 @contextmanager
-def _pending_retarget_environment(seconds: int):
+def _pending_retarget_environment(seconds: int, pending_status_seconds: int | None = None):
     pending_seconds = str(max(0, int(seconds)))
+    pending_status_seconds = _resolve_pending_status_retarget_after_seconds(seconds, pending_status_seconds)
+    pending_status_text = str(pending_status_seconds)
     previous_target_protect = os.environ.get("PRL_PENDING_TARGET_PROTECT_SECONDS")
+    previous_status_retarget = os.environ.get("PRL_PENDING_STATUS_RETARGET_AFTER_SECONDS")
     previous_profile_cooldown = os.environ.get("PRL_PENDING_PROFILE_COOLDOWN_SECONDS")
-    os.environ["PRL_PENDING_TARGET_PROTECT_SECONDS"] = str(max(0, int(seconds)))
+    os.environ["PRL_PENDING_TARGET_PROTECT_SECONDS"] = pending_status_text
+    os.environ["PRL_PENDING_STATUS_RETARGET_AFTER_SECONDS"] = pending_status_text
     if previous_profile_cooldown is None:
         os.environ["PRL_PENDING_PROFILE_COOLDOWN_SECONDS"] = pending_seconds
     try:
@@ -39,6 +56,10 @@ def _pending_retarget_environment(seconds: int):
             os.environ.pop("PRL_PENDING_TARGET_PROTECT_SECONDS", None)
         else:
             os.environ["PRL_PENDING_TARGET_PROTECT_SECONDS"] = previous_target_protect
+        if previous_status_retarget is None:
+            os.environ.pop("PRL_PENDING_STATUS_RETARGET_AFTER_SECONDS", None)
+        else:
+            os.environ["PRL_PENDING_STATUS_RETARGET_AFTER_SECONDS"] = previous_status_retarget
         if previous_profile_cooldown is None:
             os.environ.pop("PRL_PENDING_PROFILE_COOLDOWN_SECONDS", None)
         else:
@@ -242,8 +263,9 @@ def _run_shadow(
     worker_parallelism: int,
     skip_workers: bool,
     pending_retarget_after_seconds: int,
+    pending_status_retarget_after_seconds: int | None,
 ) -> dict[str, Any]:
-    with _pending_retarget_environment(pending_retarget_after_seconds):
+    with _pending_retarget_environment(pending_retarget_after_seconds, pending_status_retarget_after_seconds):
         return runner(
             stage="shadow",
             db_path=db_path,
@@ -257,6 +279,7 @@ def _run_shadow(
             require_fresh_heartbeats=require_fresh_heartbeats,
             allow_degraded=allow_degraded,
             worker_parallelism=worker_parallelism,
+            pending_status_retarget_after_seconds=pending_status_retarget_after_seconds,
         )
 
 
@@ -271,9 +294,10 @@ def _run_action(
     require_secrets: bool,
     allow_pending_retarget: bool,
     pending_retarget_after_seconds: int,
+    pending_status_retarget_after_seconds: int | None,
     worker_parallelism: int,
 ) -> dict[str, Any]:
-    with _pending_retarget_environment(pending_retarget_after_seconds):
+    with _pending_retarget_environment(pending_retarget_after_seconds, pending_status_retarget_after_seconds):
         if action == "guard-apply":
             return runner(
                 stage="guard-apply",
@@ -294,6 +318,7 @@ def _run_action(
                 confirm_all_orgs=True,
                 allow_pending_retarget=True,
                 pending_retarget_after_seconds=pending_retarget_after_seconds,
+                pending_status_retarget_after_seconds=pending_status_retarget_after_seconds,
                 skip_guard=True,
                 require_secrets=require_secrets,
                 worker_parallelism=worker_parallelism,
@@ -310,6 +335,7 @@ def _run_action(
                 apply_workers=True,
                 allow_pending_retarget=allow_pending_retarget,
                 pending_retarget_after_seconds=pending_retarget_after_seconds,
+                pending_status_retarget_after_seconds=pending_status_retarget_after_seconds,
                 skip_guard=True,
                 require_secrets=require_secrets,
                 worker_parallelism=worker_parallelism,
@@ -334,6 +360,7 @@ def run_monitor_tick(
     org: str | None = None,
     allow_pending_retarget: bool = False,
     pending_retarget_after_seconds: int = 45,
+    pending_status_retarget_after_seconds: int | None = None,
     confirm_live_actions: bool = False,
     runner_timeout_seconds: float = 90,
     hard_runner_timeout: bool = False,
@@ -364,6 +391,7 @@ def run_monitor_tick(
                 worker_parallelism=worker_parallelism,
                 skip_workers=skip_shadow_workers,
                 pending_retarget_after_seconds=pending_retarget_after_seconds,
+                pending_status_retarget_after_seconds=pending_status_retarget_after_seconds,
             ),
             runner_timeout_seconds,
             hard_timeout=hard_runner_timeout,
@@ -410,6 +438,7 @@ def run_monitor_tick(
                         require_secrets=require_secrets,
                         allow_pending_retarget=allow_pending_retarget,
                         pending_retarget_after_seconds=pending_retarget_after_seconds,
+                        pending_status_retarget_after_seconds=pending_status_retarget_after_seconds,
                         worker_parallelism=worker_parallelism,
                     ),
                     runner_timeout_seconds,
@@ -514,6 +543,12 @@ def main() -> None:
     parser.add_argument("--org", default=None, help="Organization label for --apply-one-org.")
     parser.add_argument("--allow-pending-retarget", action="store_true", help="Allow one-org apply to patch stale creating/allocating slots.")
     parser.add_argument("--pending-retarget-after-seconds", type=int, default=45)
+    parser.add_argument(
+        "--pending-status-retarget-after-seconds",
+        type=int,
+        default=None,
+        help="Grace for creating/allocating/deploying slots; defaults to max(pending retarget, 120).",
+    )
     parser.add_argument("--worker-parallelism", type=int, default=1)
     parser.add_argument(
         "--skip-shadow-workers",
@@ -553,6 +588,7 @@ def main() -> None:
             org=args.org,
             allow_pending_retarget=args.allow_pending_retarget,
             pending_retarget_after_seconds=args.pending_retarget_after_seconds,
+            pending_status_retarget_after_seconds=args.pending_status_retarget_after_seconds,
             confirm_live_actions=args.confirm_live_actions,
             runner_timeout_seconds=args.runner_timeout_seconds,
             hard_runner_timeout=not args.soft_runner_timeout,

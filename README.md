@@ -337,12 +337,13 @@ unless `--apply-workers` or `--apply-guard` is passed.
    `--guard-actionable-only` keeps fill moving while no-hash or negative slots
    are still inside grace, but switches immediately to guard once the read-only
    guard probe has a retarget/stop decision.
-   `--pending-retarget-after-seconds` is also applied to the scheduler's
-   pending-target protection window for that monitor tick, so target selection
-   and live patching use the same grace period. When
-   `PRL_PENDING_PROFILE_COOLDOWN_SECONDS` is not explicitly set, the monitor
-   also uses this value for stale pending profile cooldowns so failed searches
-   rotate again on the same cadence.
+   `--pending-retarget-after-seconds` controls running slots that have no live
+   pool hashrate. Creating/allocating/deploying slots use the separate
+   `--pending-status-retarget-after-seconds` grace, defaulting to at least 120
+   seconds, and the scheduler's pending-target protection follows that longer
+   window. When `PRL_PENDING_PROFILE_COOLDOWN_SECONDS` is not explicitly set,
+   the monitor keeps stale pending profile cooldowns on the shorter no-hash
+   cadence so failed searches can rotate quickly after the longer pending wait.
    `--worker-parallelism 4` runs each organization in an isolated process so
    the legacy watcher environment cannot leak between orgs while the fill scan
    finishes faster. Org worker heartbeats default to a 300 second stale window
@@ -396,9 +397,9 @@ unless `--apply-workers` or `--apply-guard` is passed.
    ```
 
    To rotate stale creating/allocating slots after the configured grace, add
-   `--allow-pending-retarget`. Fresh pending slots are still protected until
-   `--pending-retarget-after-seconds` elapses; the monitor also passes that
-   value through to the scheduler's pending-target protection window:
+   `--allow-pending-retarget`. Fresh pending slots are protected until
+   `--pending-status-retarget-after-seconds` elapses; when omitted, that grace
+   defaults to `max(--pending-retarget-after-seconds, 120)`:
 
    ```bash
    PRL_PEARL_FEE_RATE=0.01 python3 scripts/runtime_monitor.py --once --runner-timeout-seconds 90 --price 0.64 --fee 0.01 --require-secrets --apply-one-org --org kry1 --confirm-live-actions --allow-pending-retarget --pending-retarget-after-seconds 60
@@ -741,7 +742,7 @@ Current fill settings:
 | Guard snapshot HTTP timeout | 4 seconds, 1 attempt |
 | Negative-profit threshold | profit < 0 USD/day |
 | Negative-profit grace | 90 seconds |
-| Allocating rotation | 45 seconds |
+| Pending status rotation | 120 seconds default |
 | Poll interval | 15 seconds |
 | No-GPU sleep trigger | only after 1 hour with no GPU found |
 | No-GPU sleep duration | 15 minutes |

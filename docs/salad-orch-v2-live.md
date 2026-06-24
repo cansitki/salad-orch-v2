@@ -66,7 +66,7 @@ normal conservative Pearl fee: 0.05
 minimum new-candidate profit: 0.05 USD/day
 no-hash grace: 60 seconds
 negative live grace: 90 seconds
-pending retarget grace: 60 seconds for controlled tests
+pending status retarget grace: 120 seconds by default
 no-GPU sleep trigger: 3600 seconds
 no-GPU sleep duration: 900 seconds
 ```
@@ -151,12 +151,13 @@ creating/allocating slots across all orgs, but it does not pass
 `--guard-actionable-only` keeps fill moving while no-hash or negative slots are
 still inside grace, but switches immediately to guard once the read-only guard
 probe has a retarget/stop decision.
-`--pending-retarget-after-seconds` is also applied to the scheduler's
-pending-target protection window for that monitor tick, so target selection and
-live patching use the same grace period. When
-`PRL_PENDING_PROFILE_COOLDOWN_SECONDS` is not explicitly set, the monitor also
-uses this value for stale pending profile cooldowns so failed searches rotate
-again on the same cadence.
+`--pending-retarget-after-seconds` controls running slots that have no live pool
+hashrate. Creating/allocating/deploying slots use the separate
+`--pending-status-retarget-after-seconds` grace, defaulting to at least 120
+seconds, and the scheduler's pending-target protection follows that longer
+window. When `PRL_PENDING_PROFILE_COOLDOWN_SECONDS` is not explicitly set, the
+monitor keeps stale pending profile cooldowns on the shorter no-hash cadence so
+failed searches can rotate quickly after the longer pending wait.
 `--worker-parallelism 4` runs each organization in an isolated process, which is
 faster than the old sequential all-org scan without sharing watcher environment
 between orgs. The rollout layer only runs one organization per Salad API key in
@@ -226,7 +227,9 @@ Use this only after read-only shadow is safe:
 PRL_PEARL_FEE_RATE=0.01 python3 scripts/runtime_monitor.py --once --runner-timeout-seconds 90 --price 0.64 --fee 0.01 --require-secrets --apply-one-org --org kry1 --confirm-live-actions --allow-pending-retarget --pending-retarget-after-seconds 60
 ```
 
-This can patch stale creating/allocating mismatches after the grace period.
+This can patch stale creating/allocating mismatches after
+`--pending-status-retarget-after-seconds`, which defaults to at least 120
+seconds.
 Running profitable GPUs remain protected unless a separate live-retarget flag is
 used.
 

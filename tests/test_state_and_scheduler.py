@@ -525,6 +525,63 @@ class StateAndSchedulerTest(unittest.TestCase):
         self.assertEqual(plan["action"], "patch")
         self.assertIn("stale_pending_profile_mismatch", plan["reason"])
 
+    def test_org_worker_uses_longer_default_for_pending_status_than_running_no_hash(self) -> None:
+        class PendingWatch:
+            def slot_state(self, _slot_name):
+                return (
+                    {
+                        "priority": "batch",
+                        "container": {"resources": {"gpu_classes": ["gpu-rtx-3070"], "memory": 4096}},
+                        "current_state": {"instance_status_counts": {"allocating_count": 1}},
+                    },
+                    [],
+                )
+
+            GPU = {"3070": "gpu-rtx-3070"}
+
+        class RunningWatch:
+            def slot_state(self, _slot_name):
+                return (
+                    {
+                        "priority": "low",
+                        "container": {"resources": {"gpu_classes": ["gpu-rtx-4070tis"], "memory": 2048}},
+                        "current_state": {"instance_status_counts": {"running_count": 1}},
+                    },
+                    [{"id": "running-1", "ready": True, "started": True}],
+                )
+
+            GPU = {"4070tis": "gpu-rtx-4070tis"}
+
+        observed_at = (datetime.now(UTC) - timedelta(seconds=75)).isoformat(timespec="seconds")
+        pending_plan = org_worker.planned_action(
+            PendingWatch(),
+            "prl-kray-roi-01",
+            {
+                "profile_key": "4090:batch:2048",
+                "observed_status_since_utc": observed_at,
+            },
+            protect_pending=False,
+            pending_retarget_after_seconds=60,
+        )
+        running_plan = org_worker.planned_action(
+            RunningWatch(),
+            "prl-kray-roi-01",
+            {
+                "profile_key": "5090:low:2048",
+                "observed_profile_since_utc": observed_at,
+                "live_worker_count": 0,
+                "live_worker_th": 0,
+            },
+            protect_running=True,
+            pending_retarget_after_seconds=60,
+        )
+
+        self.assertEqual(pending_plan["action"], "observe")
+        self.assertIn("pending_profile_mismatch_wait", pending_plan["reason"])
+        self.assertIn("lt_120", pending_plan["reason"])
+        self.assertEqual(running_plan["action"], "patch")
+        self.assertIn("stale_running_no_hash_profile_mismatch", running_plan["reason"])
+
     def test_org_worker_waits_for_fresh_pending_profile_even_when_status_is_old(self) -> None:
         class Watch:
             def slot_state(self, _slot_name):

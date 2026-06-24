@@ -769,7 +769,7 @@ Safe default behavior:
 - no live changes unless `--apply` is passed
 - running slots are protected unless `--allow-live-retarget` is passed
 - creating/allocating slots are protected unless `--allow-pending-retarget` is passed
-- pending retargets still wait for `--pending-retarget-after-seconds` before patching stale creating/allocating profile mismatches
+- running no-hash retargets wait for `--pending-retarget-after-seconds`, while creating/allocating/deploying retargets wait for `--pending-status-retarget-after-seconds` defaulting to at least 120 seconds
 - this lets the new worker shadow existing runtime without churn
 - every worker tick writes observed slot status/profile/protection state into `slots`
 - `scripts/rollout.py` requires `--confirm-live-retarget` before passing live retarget authority to workers

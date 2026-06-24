@@ -137,6 +137,7 @@ class RuntimeMonitorTest(unittest.TestCase):
             confirm_live_actions=True,
             allow_pending_retarget=True,
             pending_retarget_after_seconds=75,
+            pending_status_retarget_after_seconds=125,
             runner=runner,
         )
 
@@ -146,6 +147,7 @@ class RuntimeMonitorTest(unittest.TestCase):
         self.assertTrue(calls[1]["skip_guard"])
         self.assertTrue(calls[1]["allow_pending_retarget"])
         self.assertEqual(calls[1]["pending_retarget_after_seconds"], 75)
+        self.assertEqual(calls[1]["pending_status_retarget_after_seconds"], 125)
 
     def test_all_orgs_pending_apply_uses_pending_retarget_only(self) -> None:
         calls = []
@@ -177,8 +179,10 @@ class RuntimeMonitorTest(unittest.TestCase):
     def test_pending_retarget_sets_scheduler_protection_and_default_profile_cooldown(self) -> None:
         calls = []
         original_protect = os.environ.get("PRL_PENDING_TARGET_PROTECT_SECONDS")
+        original_status = os.environ.get("PRL_PENDING_STATUS_RETARGET_AFTER_SECONDS")
         original_cooldown = os.environ.get("PRL_PENDING_PROFILE_COOLDOWN_SECONDS")
         os.environ["PRL_PENDING_TARGET_PROTECT_SECONDS"] = "999"
+        os.environ.pop("PRL_PENDING_STATUS_RETARGET_AFTER_SECONDS", None)
         os.environ.pop("PRL_PENDING_PROFILE_COOLDOWN_SECONDS", None)
 
         def runner(**kwargs):
@@ -186,6 +190,7 @@ class RuntimeMonitorTest(unittest.TestCase):
                 {
                     "stage": kwargs["stage"],
                     "protect_seconds": os.environ.get("PRL_PENDING_TARGET_PROTECT_SECONDS"),
+                    "status_seconds": os.environ.get("PRL_PENDING_STATUS_RETARGET_AFTER_SECONDS"),
                     "cooldown_seconds": os.environ.get("PRL_PENDING_PROFILE_COOLDOWN_SECONDS"),
                 }
             )
@@ -203,17 +208,22 @@ class RuntimeMonitorTest(unittest.TestCase):
             self.assertEqual(
                 calls,
                 [
-                    {"stage": "shadow", "protect_seconds": "60", "cooldown_seconds": "60"},
-                    {"stage": "all-orgs", "protect_seconds": "60", "cooldown_seconds": "60"},
+                    {"stage": "shadow", "protect_seconds": "120", "status_seconds": "120", "cooldown_seconds": "60"},
+                    {"stage": "all-orgs", "protect_seconds": "120", "status_seconds": "120", "cooldown_seconds": "60"},
                 ],
             )
             self.assertEqual(os.environ.get("PRL_PENDING_TARGET_PROTECT_SECONDS"), "999")
+            self.assertIsNone(os.environ.get("PRL_PENDING_STATUS_RETARGET_AFTER_SECONDS"))
             self.assertIsNone(os.environ.get("PRL_PENDING_PROFILE_COOLDOWN_SECONDS"))
         finally:
             if original_protect is None:
                 os.environ.pop("PRL_PENDING_TARGET_PROTECT_SECONDS", None)
             else:
                 os.environ["PRL_PENDING_TARGET_PROTECT_SECONDS"] = original_protect
+            if original_status is None:
+                os.environ.pop("PRL_PENDING_STATUS_RETARGET_AFTER_SECONDS", None)
+            else:
+                os.environ["PRL_PENDING_STATUS_RETARGET_AFTER_SECONDS"] = original_status
             if original_cooldown is None:
                 os.environ.pop("PRL_PENDING_PROFILE_COOLDOWN_SECONDS", None)
             else:
@@ -222,8 +232,10 @@ class RuntimeMonitorTest(unittest.TestCase):
     def test_pending_retarget_respects_explicit_profile_cooldown_override(self) -> None:
         calls = []
         original_protect = os.environ.get("PRL_PENDING_TARGET_PROTECT_SECONDS")
+        original_status = os.environ.get("PRL_PENDING_STATUS_RETARGET_AFTER_SECONDS")
         original_cooldown = os.environ.get("PRL_PENDING_PROFILE_COOLDOWN_SECONDS")
         os.environ.pop("PRL_PENDING_TARGET_PROTECT_SECONDS", None)
+        os.environ.pop("PRL_PENDING_STATUS_RETARGET_AFTER_SECONDS", None)
         os.environ["PRL_PENDING_PROFILE_COOLDOWN_SECONDS"] = "240"
 
         def runner(**kwargs):
@@ -231,6 +243,7 @@ class RuntimeMonitorTest(unittest.TestCase):
                 {
                     "stage": kwargs["stage"],
                     "protect_seconds": os.environ.get("PRL_PENDING_TARGET_PROTECT_SECONDS"),
+                    "status_seconds": os.environ.get("PRL_PENDING_STATUS_RETARGET_AFTER_SECONDS"),
                     "cooldown_seconds": os.environ.get("PRL_PENDING_PROFILE_COOLDOWN_SECONDS"),
                 }
             )
@@ -248,17 +261,22 @@ class RuntimeMonitorTest(unittest.TestCase):
             self.assertEqual(
                 calls,
                 [
-                    {"stage": "shadow", "protect_seconds": "60", "cooldown_seconds": "240"},
-                    {"stage": "all-orgs", "protect_seconds": "60", "cooldown_seconds": "240"},
+                    {"stage": "shadow", "protect_seconds": "120", "status_seconds": "120", "cooldown_seconds": "240"},
+                    {"stage": "all-orgs", "protect_seconds": "120", "status_seconds": "120", "cooldown_seconds": "240"},
                 ],
             )
             self.assertIsNone(os.environ.get("PRL_PENDING_TARGET_PROTECT_SECONDS"))
+            self.assertIsNone(os.environ.get("PRL_PENDING_STATUS_RETARGET_AFTER_SECONDS"))
             self.assertEqual(os.environ.get("PRL_PENDING_PROFILE_COOLDOWN_SECONDS"), "240")
         finally:
             if original_protect is None:
                 os.environ.pop("PRL_PENDING_TARGET_PROTECT_SECONDS", None)
             else:
                 os.environ["PRL_PENDING_TARGET_PROTECT_SECONDS"] = original_protect
+            if original_status is None:
+                os.environ.pop("PRL_PENDING_STATUS_RETARGET_AFTER_SECONDS", None)
+            else:
+                os.environ["PRL_PENDING_STATUS_RETARGET_AFTER_SECONDS"] = original_status
             if original_cooldown is None:
                 os.environ.pop("PRL_PENDING_PROFILE_COOLDOWN_SECONDS", None)
             else:

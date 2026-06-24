@@ -251,6 +251,16 @@ def pending_profile_age_seconds(target: dict[str, Any]) -> float | None:
     )
 
 
+def resolve_pending_status_retarget_after_seconds(
+    pending_retarget_after_seconds: int,
+    pending_status_retarget_after_seconds: int | None = None,
+) -> int:
+    no_hash_seconds = max(0, int(pending_retarget_after_seconds))
+    if pending_status_retarget_after_seconds is None:
+        return max(no_hash_seconds, 120)
+    return max(0, int(pending_status_retarget_after_seconds))
+
+
 def planned_action(
     watch: Any,
     slot_name: str,
@@ -259,7 +269,13 @@ def planned_action(
     protect_running: bool = True,
     protect_pending: bool = True,
     pending_retarget_after_seconds: int = 45,
+    pending_status_retarget_after_seconds: int | None = None,
 ) -> dict[str, Any]:
+    pending_retarget_after_seconds = max(0, int(pending_retarget_after_seconds))
+    pending_status_retarget_after_seconds = resolve_pending_status_retarget_after_seconds(
+        pending_retarget_after_seconds,
+        pending_status_retarget_after_seconds,
+    )
     try:
         group, instances = watch.slot_state(slot_name)
     except KeyError:
@@ -294,12 +310,12 @@ def planned_action(
             if protect_pending:
                 action = "observe"
                 reason = f"protected_pending_profile_mismatch:{current or 'unknown'}"
-            elif pending_age is None or pending_age < pending_retarget_after_seconds:
+            elif pending_age is None or pending_age < pending_status_retarget_after_seconds:
                 action = "observe"
                 age_text = "unknown" if pending_age is None else f"{pending_age:.1f}"
                 reason = (
                     f"pending_profile_mismatch_wait:{current or 'unknown'}:"
-                    f"age_{age_text}_lt_{pending_retarget_after_seconds}"
+                    f"age_{age_text}_lt_{pending_status_retarget_after_seconds}"
                 )
             else:
                 action = "patch"
@@ -312,13 +328,13 @@ def planned_action(
         reason = "target_stopped_or_empty"
     elif pending_active:
         pending_age = pending_profile_age_seconds(target)
-        if pending_age is not None and pending_age >= pending_retarget_after_seconds:
+        if pending_age is not None and pending_age >= pending_status_retarget_after_seconds:
             action = "cooldown_pending"
             reason = f"stale_pending_same_profile:{current or 'unknown'}:age_{pending_age:.1f}"
         else:
             action = "observe"
             age_text = "unknown" if pending_age is None else f"{pending_age:.1f}"
-            reason = f"target_pending_wait:age_{age_text}_lt_{pending_retarget_after_seconds}"
+            reason = f"target_pending_wait:age_{age_text}_lt_{pending_status_retarget_after_seconds}"
     else:
         action = "observe"
         reason = "target_already_active_or_pending"
@@ -399,6 +415,7 @@ def run_once(
     allow_live_retarget: bool = False,
     allow_pending_retarget: bool = False,
     pending_retarget_after_seconds: int = 45,
+    pending_status_retarget_after_seconds: int | None = None,
 ) -> dict[str, Any]:
     config = load_config()
     orgs = {org.label: org for org in config.enabled_orgs()}
@@ -424,6 +441,16 @@ def run_once(
     attempt_rows: list[dict[str, Any]] = []
     observation_rows: list[dict[str, Any]] = []
     cooldown_rows: list[dict[str, Any]] = []
+    pending_retarget_after_seconds = max(0, int(pending_retarget_after_seconds))
+    if pending_status_retarget_after_seconds is None:
+        pending_status_retarget_after_seconds = env_int(
+            "PRL_PENDING_STATUS_RETARGET_AFTER_SECONDS",
+            max(pending_retarget_after_seconds, 120),
+        )
+    pending_status_retarget_after_seconds = resolve_pending_status_retarget_after_seconds(
+        pending_retarget_after_seconds,
+        pending_status_retarget_after_seconds,
+    )
     pending_profile_cooldown_seconds = env_int("PRL_PENDING_PROFILE_COOLDOWN_SECONDS", 600)
     heartbeat_stale_after_seconds = env_int("PRL_ORG_WORKER_STALE_AFTER_SECONDS", 300)
     for target in targets:
@@ -440,6 +467,7 @@ def run_once(
                 protect_running=not allow_live_retarget,
                 protect_pending=not allow_pending_retarget,
                 pending_retarget_after_seconds=pending_retarget_after_seconds,
+                pending_status_retarget_after_seconds=pending_status_retarget_after_seconds,
             )
             try:
                 result = execute_action(watch, target, plan, apply=apply)
@@ -518,6 +546,7 @@ def run_once(
                 "allow_live_retarget": allow_live_retarget,
                 "allow_pending_retarget": allow_pending_retarget,
                 "pending_retarget_after_seconds": pending_retarget_after_seconds,
+                "pending_status_retarget_after_seconds": pending_status_retarget_after_seconds,
                 "targets": len(targets),
                 "actions": action_counts,
             },
@@ -532,6 +561,7 @@ def run_once(
                 "allow_live_retarget": allow_live_retarget,
                 "allow_pending_retarget": allow_pending_retarget,
                 "pending_retarget_after_seconds": pending_retarget_after_seconds,
+                "pending_status_retarget_after_seconds": pending_status_retarget_after_seconds,
                 "targets": len(targets),
                 "results": results,
             },
@@ -543,6 +573,7 @@ def run_once(
         "allow_live_retarget": allow_live_retarget,
         "allow_pending_retarget": allow_pending_retarget,
         "pending_retarget_after_seconds": pending_retarget_after_seconds,
+        "pending_status_retarget_after_seconds": pending_status_retarget_after_seconds,
         "targets": len(targets),
         "action_counts": action_counts,
         "results": results,
@@ -557,6 +588,12 @@ def main() -> None:
     parser.add_argument("--allow-live-retarget", action="store_true", help="Allow patching already running slots.")
     parser.add_argument("--allow-pending-retarget", action="store_true", help="Allow patching creating/allocating slots.")
     parser.add_argument("--pending-retarget-after-seconds", type=int, default=45)
+    parser.add_argument(
+        "--pending-status-retarget-after-seconds",
+        type=int,
+        default=None,
+        help="Grace for creating/allocating/deploying slots before recycling; defaults to max(pending retarget, 120).",
+    )
     parser.add_argument("--once", action="store_true")
     parser.add_argument("--loop", action="store_true")
     parser.add_argument("--interval", type=int, default=30)
@@ -579,6 +616,7 @@ def main() -> None:
                     allow_live_retarget=args.allow_live_retarget,
                     allow_pending_retarget=args.allow_pending_retarget,
                     pending_retarget_after_seconds=args.pending_retarget_after_seconds,
+                    pending_status_retarget_after_seconds=args.pending_status_retarget_after_seconds,
                 )
             )
             time.sleep(args.interval)
@@ -591,6 +629,7 @@ def main() -> None:
                 allow_live_retarget=args.allow_live_retarget,
                 allow_pending_retarget=args.allow_pending_retarget,
                 pending_retarget_after_seconds=args.pending_retarget_after_seconds,
+                pending_status_retarget_after_seconds=args.pending_status_retarget_after_seconds,
             )
         )
 

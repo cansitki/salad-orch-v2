@@ -366,7 +366,7 @@ unless `--apply-workers` or `--apply-guard` is passed.
    per-org capacity hints instead of rotating profitable profiles blindly:
 
    ```bash
-   PRL_PEARL_FEE_RATE=0.01 python3 scripts/availability_probe.py --loop --interval 300 --priorities batch,low --org-parallelism 2
+   PRL_PEARL_FEE_RATE=0.01 python3 scripts/availability_probe.py --loop --interval 60 --priorities batch,low --org-parallelism 2
    ```
 
    The probe uses the same API budget limiter as live workers, so it should

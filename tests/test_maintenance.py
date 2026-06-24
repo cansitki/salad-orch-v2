@@ -67,6 +67,10 @@ class MaintenanceTest(unittest.TestCase):
 
         self.assertIn("--priorities", probe["cmd"])
         self.assertIn("batch,low", probe["cmd"])
+        self.assertIn("--org-parallelism", probe["cmd"])
+        self.assertIn("2", probe["cmd"])
+        self.assertIn("--interval", probe["cmd"])
+        self.assertIn("60", probe["cmd"])
 
     def test_supervisor_tmux_sessions_load_dotenv(self) -> None:
         command = supervisor.tmux_command("salad-test", ["python3", "scripts/price_oracle.py", "--loop"])

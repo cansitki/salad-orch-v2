@@ -122,6 +122,31 @@ class RuntimeMonitorTest(unittest.TestCase):
         self.assertTrue(calls[1]["allow_pending_retarget"])
         self.assertEqual(calls[1]["pending_retarget_after_seconds"], 75)
 
+    def test_all_orgs_pending_apply_uses_pending_retarget_only(self) -> None:
+        calls = []
+
+        def runner(**kwargs):
+            calls.append(kwargs)
+            return rollout_payload(stage=kwargs["stage"])
+
+        payload = runtime_monitor.run_monitor_tick(
+            apply_all_orgs_pending=True,
+            confirm_live_actions=True,
+            require_secrets=True,
+            pending_retarget_after_seconds=75,
+            runner=runner,
+        )
+
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["action"], "all-orgs-pending")
+        self.assertEqual([call["stage"] for call in calls], ["shadow", "all-orgs"])
+        self.assertTrue(calls[1]["apply_workers"])
+        self.assertTrue(calls[1]["confirm_all_orgs"])
+        self.assertTrue(calls[1]["allow_pending_retarget"])
+        self.assertNotIn("allow_live_retarget", calls[1])
+        self.assertEqual(calls[1]["pending_retarget_after_seconds"], 75)
+        self.assertTrue(calls[1]["require_secrets"])
+
     def test_live_action_is_skipped_when_shadow_fails(self) -> None:
         calls = []
 
@@ -248,6 +273,15 @@ class RuntimeMonitorTest(unittest.TestCase):
                 apply_guard=True,
                 apply_one_org=True,
                 org="kry1",
+                confirm_live_actions=True,
+                runner=lambda **_: rollout_payload(stage="shadow"),
+            )
+
+    def test_all_orgs_pending_is_mutually_exclusive_with_other_live_actions(self) -> None:
+        with self.assertRaises(SystemExit):
+            runtime_monitor.run_monitor_tick(
+                apply_guard=True,
+                apply_all_orgs_pending=True,
                 confirm_live_actions=True,
                 runner=lambda **_: rollout_payload(stage="shadow"),
             )

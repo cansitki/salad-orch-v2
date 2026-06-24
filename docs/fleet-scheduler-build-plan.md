@@ -512,6 +512,7 @@ Default behavior is read-only. Live action modes are:
 
 - `--apply-guard --confirm-live-actions`
 - `--apply-one-org --org <label> --confirm-live-actions`
+- `--apply-all-orgs-pending --confirm-live-actions` to keep all orgs rotating stale creating/allocating slots without retargeting protected running slots
 - add `--allow-pending-retarget --pending-retarget-after-seconds N` to the one-org path when stale creating/allocating mismatches should rotate
 
 ### `rollback.py`
@@ -838,7 +839,7 @@ Current behavior:
 - `scripts/health.py --json` shows target coverage, stale heartbeats, runtime failures, and active guard issues from SQLite
 - `scripts/shadow_compare.py --json` reports missing targets, unsafe targets, target/observed mismatches, and diversification
 - `scripts/rollout.py` provides DB-only smoke, shadow, one-org apply, full-org apply with confirmation, and guard apply gates
-- `scripts/runtime_monitor.py --loop` repeatedly runs shadow gates, reports DB fallback status on runner timeout/error, and can perform one explicitly confirmed live action after a passing gate
+- `scripts/runtime_monitor.py --loop` repeatedly runs shadow gates, reports DB fallback status on runner timeout/error, and can perform one explicitly confirmed live action after a passing gate, including all-org pending retarget fill mode
 - `scripts/rollback.py` provides checkpoint list/restore for scheduler targets
 
 ### Phase 8: Shadow Mode

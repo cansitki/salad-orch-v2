@@ -136,6 +136,17 @@ Inspect it:
 tmux capture-pane -pt salad-orch-v2-monitor -S -80
 ```
 
+For active fill mode, use the pending-only live monitor after the read-only
+monitor has shown safe targets:
+
+```bash
+PRL_PEARL_FEE_RATE=0.01 python3 scripts/runtime_monitor.py --loop --interval 120 --runner-timeout-seconds 240 --price 0.64 --fee 0.01 --require-secrets --apply-all-orgs-pending --confirm-live-actions --pending-retarget-after-seconds 60
+```
+
+This still runs a shadow gate first. It can patch stale creating/allocating
+slots across all orgs, but it does not pass `--allow-live-retarget`, so running
+slots remain protected.
+
 Stop it:
 
 ```bash

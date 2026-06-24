@@ -187,6 +187,18 @@ def _run_action(
             apply_guard=True,
             require_secrets=require_secrets,
         )
+    if action == "all-orgs-pending":
+        return runner(
+            stage="all-orgs",
+            db_path=db_path,
+            price=price,
+            fee=fee,
+            apply_workers=True,
+            confirm_all_orgs=True,
+            allow_pending_retarget=True,
+            pending_retarget_after_seconds=pending_retarget_after_seconds,
+            require_secrets=require_secrets,
+        )
     if action == "one-org-apply":
         if not org:
             raise SystemExit("--org is required with --apply-one-org")
@@ -214,6 +226,7 @@ def run_monitor_tick(
     allow_degraded_shadow: bool = False,
     apply_guard: bool = False,
     apply_one_org: bool = False,
+    apply_all_orgs_pending: bool = False,
     org: str | None = None,
     allow_pending_retarget: bool = False,
     pending_retarget_after_seconds: int = 45,
@@ -222,9 +235,10 @@ def run_monitor_tick(
     hard_runner_timeout: bool = False,
     runner: RolloutRunner = rollout.run_rollout,
 ) -> dict[str, Any]:
-    if (apply_guard or apply_one_org) and not confirm_live_actions:
+    live_action_count = sum(1 for enabled in (apply_guard, apply_one_org, apply_all_orgs_pending) if enabled)
+    if live_action_count and not confirm_live_actions:
         raise SystemExit("live actions require --confirm-live-actions")
-    if apply_guard and apply_one_org:
+    if live_action_count > 1:
         raise SystemExit("choose only one live action per monitor tick")
     if apply_one_org and not org:
         raise SystemExit("--org is required with --apply-one-org")
@@ -253,6 +267,8 @@ def run_monitor_tick(
     if shadow_summary["ok"]:
         if apply_guard:
             action = "guard-apply"
+        elif apply_all_orgs_pending:
+            action = "all-orgs-pending"
         elif apply_one_org:
             action = "one-org-apply"
         if action != "none":
@@ -282,7 +298,7 @@ def run_monitor_tick(
         "action": action,
         "shadow": shadow_summary,
         "action_result": action_summary,
-        "skipped_live_action": bool((apply_guard or apply_one_org) and not shadow_summary["ok"]),
+        "skipped_live_action": bool(live_action_count and not shadow_summary["ok"]),
     }
 
 
@@ -341,6 +357,11 @@ def main() -> None:
     )
     parser.add_argument("--apply-guard", action="store_true", help="Run guard-apply after a passing shadow gate.")
     parser.add_argument("--apply-one-org", action="store_true", help="Run one-org worker apply after a passing shadow gate.")
+    parser.add_argument(
+        "--apply-all-orgs-pending",
+        action="store_true",
+        help="Run all-org worker apply after a passing shadow gate, limited to stale creating/allocating retargets.",
+    )
     parser.add_argument("--org", default=None, help="Organization label for --apply-one-org.")
     parser.add_argument("--allow-pending-retarget", action="store_true", help="Allow one-org apply to patch stale creating/allocating slots.")
     parser.add_argument("--pending-retarget-after-seconds", type=int, default=45)
@@ -369,6 +390,7 @@ def main() -> None:
             allow_degraded_shadow=args.allow_degraded_shadow,
             apply_guard=args.apply_guard,
             apply_one_org=args.apply_one_org,
+            apply_all_orgs_pending=args.apply_all_orgs_pending,
             org=args.org,
             allow_pending_retarget=args.allow_pending_retarget,
             pending_retarget_after_seconds=args.pending_retarget_after_seconds,

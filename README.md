@@ -310,6 +310,16 @@ unless `--apply-workers` or `--apply-guard` is passed.
    tick did not pass the live shadow gate; it only kept the operator summary
    useful while the external API was slow.
 
+   Continuous fill monitor with live pending retargets:
+
+   ```bash
+   PRL_PEARL_FEE_RATE=0.01 python3 scripts/runtime_monitor.py --loop --interval 120 --runner-timeout-seconds 240 --price 0.64 --fee 0.01 --require-secrets --apply-all-orgs-pending --confirm-live-actions --pending-retarget-after-seconds 60
+   ```
+
+   This mode still runs a shadow gate first. It can patch stale
+   creating/allocating slots across all orgs, but it does not pass
+   `--allow-live-retarget`, so running slots remain protected.
+
 3. Apply one org only:
 
    ```bash

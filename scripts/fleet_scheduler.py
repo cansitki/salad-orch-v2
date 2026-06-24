@@ -35,6 +35,7 @@ def build_targets(
     slot_rows: dict[tuple[str, str], dict[str, Any]] | None = None,
     availability: dict[str, dict[str, dict[str, Any]]] | None = None,
     cooldowns: set[tuple[str, str, str]] | None = None,
+    guard_targets: dict[tuple[str, str], dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     profiles = _top_eligible_profiles(scores, width=width)
     if not profiles:
@@ -42,6 +43,7 @@ def build_targets(
     slot_rows = slot_rows or {}
     availability = availability or {}
     cooldowns = cooldowns or set()
+    guard_targets = guard_targets or {}
     scores_by_key = {str(score["profile_key"]): score for score in scores}
     assigned_by_org_profile: dict[tuple[str, str], int] = {}
     targets: list[dict[str, Any]] = []
@@ -108,6 +110,33 @@ def build_targets(
         ordered_slots = sorted(org.slot_names(), key=lambda slot_name: slot_sort_key(org.label, slot_name))
         for slot_index, slot_name in enumerate(ordered_slots, start=1):
             slot_row = slot_rows.get((org.label, slot_name), {})
+            guard_target = guard_targets.get((org.label, slot_name))
+            if guard_target:
+                profile_key = str(guard_target["profile_key"])
+                score = scores_by_key.get(profile_key, {})
+                assigned_by_org_profile[(org.label, profile_key)] = (
+                    assigned_by_org_profile.get((org.label, profile_key), 0) + 1
+                )
+                targets.append(
+                    {
+                        "org_label": org.label,
+                        "slot_name": slot_name,
+                        "slot_index": slot_index,
+                        "profile_key": profile_key,
+                        "gpu_key": guard_target["gpu_key"],
+                        "priority": guard_target["priority"],
+                        "memory_mb": guard_target["memory_mb"],
+                        "mode": guard_target["mode"],
+                        "decision_price_usd": decision_price_usd,
+                        "expected_profit_day": float(
+                            score.get("expected_profit_day", guard_target["expected_profit_day"])
+                        ),
+                        "protected": False,
+                        "reason": guard_target["reason"],
+                        "assigned_at_utc": assigned_at,
+                    }
+                )
+                continue
             observed_profile = slot_row.get("observed_profile_key")
             protected = int(slot_row.get("protected") or 0) > 0
             if protected and observed_profile and observed_profile in scores_by_key:
@@ -184,6 +213,33 @@ def build_targets(
     return targets
 
 
+def active_guard_targets(conn) -> dict[tuple[str, str], dict[str, Any]]:
+    rows = conn.execute(
+        """
+        SELECT t.*, p.gpu_key, p.priority, p.memory_mb, p.label
+        FROM slot_targets t
+        JOIN guard_issues g ON g.org_label = t.org_label AND g.slot_name = t.slot_name
+        LEFT JOIN gpu_profiles p ON p.profile_key = t.profile_key
+        WHERE t.reason LIKE 'guard_%'
+        ORDER BY t.org_label, t.slot_name
+        """
+    ).fetchall()
+    targets = {}
+    for row in rows:
+        target = dict(row)
+        parts = str(target["profile_key"]).split(":")
+        if not target.get("gpu_key") and parts:
+            target["gpu_key"] = parts[0]
+        if not target.get("priority") and len(parts) > 1:
+            target["priority"] = parts[1]
+        if not target.get("memory_mb") and len(parts) > 2:
+            target["memory_mb"] = int(parts[2])
+        if not target.get("label"):
+            target["label"] = str(target["profile_key"])
+        targets[(str(row["org_label"]), str(row["slot_name"]))] = target
+    return targets
+
+
 def schedule_once(
     *,
     db_path: str | None = None,
@@ -205,6 +261,7 @@ def schedule_once(
         }
         availability = state_db.latest_profile_availability(conn)
         cooldowns = state_db.active_search_cooldowns(conn)
+        guard_targets = active_guard_targets(conn)
         db_mode = str(risk["mode"]) if risk else None
         db_price = float(risk["decision_price_usd"]) if risk else config.risk.decision_price_for_mode()
         selected_mode = _scheduler_mode(config, mode or db_mode)
@@ -228,6 +285,7 @@ def schedule_once(
         slot_rows=slot_rows,
         availability=availability,
         cooldowns=cooldowns,
+        guard_targets=guard_targets,
     )
 
     with state_db.connect(db_path) as conn:

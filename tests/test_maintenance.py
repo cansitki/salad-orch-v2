@@ -69,6 +69,8 @@ class MaintenanceTest(unittest.TestCase):
         self.assertIn("batch,low", probe["cmd"])
         self.assertIn("--org-parallelism", probe["cmd"])
         self.assertIn("2", probe["cmd"])
+        self.assertIn("--profile-parallelism", probe["cmd"])
+        self.assertIn("4", probe["cmd"])
         self.assertIn("--interval", probe["cmd"])
         self.assertIn("60", probe["cmd"])
 

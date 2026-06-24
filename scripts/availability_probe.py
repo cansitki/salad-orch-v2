@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import importlib.util
 import multiprocessing
 import os
@@ -55,11 +56,12 @@ def _probe_org_profiles(
     profiles: list[profit_model.Profile],
     *,
     db_path: str | None,
+    profile_parallelism: int = 1,
 ) -> list[dict[str, Any]]:
     watch = load_watch_module(org)
     install_rate_limited_request(watch, org, db_path=db_path)
-    rows: list[dict[str, Any]] = []
-    for profile in profiles:
+
+    def probe_profile(profile: profit_model.Profile) -> dict[str, Any]:
         checked_at = utc_now()
         candidate = candidate_from_profile(watch, profile)
         try:
@@ -70,17 +72,21 @@ def _probe_org_profiles(
             available = None
             ok = False
             error = type(exc).__name__
-        rows.append(
-            {
-                "org_label": org.label,
-                "profile_key": profile.profile_key,
-                "available_count": available,
-                "ok": ok,
-                "error": error,
-                "checked_at_utc": checked_at,
-            }
-        )
-    return rows
+        return {
+            "org_label": org.label,
+            "profile_key": profile.profile_key,
+            "available_count": available,
+            "ok": ok,
+            "error": error,
+            "checked_at_utc": checked_at,
+        }
+
+    if profile_parallelism <= 1 or len(profiles) <= 1:
+        return [probe_profile(profile) for profile in profiles]
+
+    max_workers = min(profile_parallelism, len(profiles))
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        return list(executor.map(probe_profile, profiles))
 
 
 def _probe_org_process(task: dict[str, Any], result_queue: Any) -> None:
@@ -154,8 +160,17 @@ def _probe_orgs(
     *,
     db_path: str | None,
     org_parallelism: int,
+    profile_parallelism: int,
 ) -> list[dict[str, Any]]:
-    tasks = [{"org": org, "profiles": profiles, "db_path": db_path} for org in orgs]
+    tasks = [
+        {
+            "org": org,
+            "profiles": profiles,
+            "db_path": db_path,
+            "profile_parallelism": profile_parallelism,
+        }
+        for org in orgs
+    ]
     if org_parallelism <= 1 or len(tasks) <= 1:
         rows: list[dict[str, Any]] = []
         for task in tasks:
@@ -176,12 +191,17 @@ def run_once(
     priorities: tuple[str, ...] = ("batch",),
     profile_limit: int | None = None,
     org_parallelism: int | None = None,
+    profile_parallelism: int | None = None,
 ) -> dict[str, Any]:
     config = load_config()
     no_gpu_sleep_after_seconds = env_int("PRL_NO_GPU_SLEEP_AFTER_SECONDS", 3600)
     no_gpu_sleep_seconds = env_int("PRL_NO_GPU_SLEEP_SECONDS", 900)
     heartbeat_stale_after_seconds = env_int("PRL_AVAILABILITY_STALE_AFTER_SECONDS", 1800)
     selected_org_parallelism = max(1, org_parallelism or env_int("PRL_AVAILABILITY_ORG_PARALLELISM", 2))
+    selected_profile_parallelism = max(
+        1,
+        profile_parallelism or env_int("PRL_AVAILABILITY_PROFILE_PARALLELISM", 4),
+    )
     profiles = [profile for profile in profit_model.load_profiles() if profile.priority in priorities]
     profiles.sort(
         key=lambda item: profit_model.expected_profit(
@@ -209,6 +229,7 @@ def run_once(
                 "priorities": priorities,
                 "profile_count": len(profiles),
                 "org_parallelism": selected_org_parallelism,
+                "profile_parallelism": selected_profile_parallelism,
             },
         )
         conn.commit()
@@ -218,6 +239,7 @@ def run_once(
         profiles,
         db_path=db_path,
         org_parallelism=selected_org_parallelism,
+        profile_parallelism=selected_profile_parallelism,
     )
     for row in org_rows:
         available = row.get("available_count")
@@ -302,7 +324,13 @@ def run_once(
             conn,
             "availability_probe",
             stale_after_seconds=heartbeat_stale_after_seconds,
-            payload={"probed": len(results), "priorities": priorities, "by_profile": by_profile},
+            payload={
+                "probed": len(results),
+                "priorities": priorities,
+                "by_profile": by_profile,
+                "org_parallelism": selected_org_parallelism,
+                "profile_parallelism": selected_profile_parallelism,
+            },
         )
         state_db.record_event(
             conn,
@@ -317,6 +345,7 @@ def run_once(
         "probed": len(results),
         "priorities": priorities,
         "org_parallelism": selected_org_parallelism,
+        "profile_parallelism": selected_profile_parallelism,
         "by_profile": by_profile,
         "results": results,
     }
@@ -328,6 +357,7 @@ def main() -> None:
     parser.add_argument("--priorities", default="batch", help="Comma-separated priorities to probe.")
     parser.add_argument("--profile-limit", type=int, default=None)
     parser.add_argument("--org-parallelism", type=int, default=None)
+    parser.add_argument("--profile-parallelism", type=int, default=None)
     parser.add_argument("--once", action="store_true")
     parser.add_argument("--loop", action="store_true")
     parser.add_argument("--interval", type=int, default=300)
@@ -350,6 +380,7 @@ def main() -> None:
                     priorities=priorities,
                     profile_limit=args.profile_limit,
                     org_parallelism=args.org_parallelism,
+                    profile_parallelism=args.profile_parallelism,
                 )
             )
             time.sleep(args.interval)
@@ -360,6 +391,7 @@ def main() -> None:
                 priorities=priorities,
                 profile_limit=args.profile_limit,
                 org_parallelism=args.org_parallelism,
+                profile_parallelism=args.profile_parallelism,
             )
         )
 

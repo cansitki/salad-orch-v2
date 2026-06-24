@@ -28,6 +28,22 @@ class FakeWatch:
         return 1
 
 
+class RecordingExecutor:
+    last_max_workers = None
+
+    def __init__(self, max_workers):
+        type(self).last_max_workers = max_workers
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return False
+
+    def map(self, func, items):
+        return [func(item) for item in items]
+
+
 class AvailabilityProbeTest(unittest.TestCase):
     def setUp(self) -> None:
         self.tmpdir = tempfile.TemporaryDirectory()
@@ -155,6 +171,78 @@ class AvailabilityProbeTest(unittest.TestCase):
             )
 
         self.assertEqual(payload["org_parallelism"], 3)
+
+    def test_run_once_reports_selected_profile_parallelism(self) -> None:
+        config = FleetConfig(
+            organizations=(
+                OrgConfig(
+                    label="test",
+                    slug="test",
+                    api_key_env="SALAD_API_KEY_TEST",
+                    slot_prefix="prl-test-roi",
+                ),
+            )
+        )
+        profile = profit_model.Profile(
+            profile_key="4090:batch:2048",
+            gpu_key="4090",
+            gpu_id="gpu-4090",
+            priority="batch",
+            label="RTX 4090 batch",
+            memory_mb=2048,
+            expected_th=230.0,
+            static_hourly_usd=0.16,
+        )
+
+        with (
+            mock.patch.object(availability_probe, "load_config", return_value=config),
+            mock.patch.object(availability_probe.profit_model, "load_profiles", return_value=[profile]),
+            mock.patch.object(availability_probe, "_probe_org_profiles", return_value=[]),
+        ):
+            payload = availability_probe.run_once(
+                db_path=self.db_path,
+                profile_limit=1,
+                profile_parallelism=5,
+            )
+
+        self.assertEqual(payload["profile_parallelism"], 5)
+
+    def test_probe_org_profiles_uses_profile_parallelism(self) -> None:
+        org = OrgConfig(
+            label="test",
+            slug="test",
+            api_key_env="SALAD_API_KEY_TEST",
+            slot_prefix="prl-test-roi",
+        )
+        profiles = [
+            profit_model.Profile(
+                profile_key=f"{gpu}:batch:2048",
+                gpu_key=gpu,
+                gpu_id=f"gpu-{gpu}",
+                priority="batch",
+                label=f"RTX {gpu} batch",
+                memory_mb=2048,
+                expected_th=230.0,
+                static_hourly_usd=0.16,
+            )
+            for gpu in ("4090", "4080", "4070")
+        ]
+
+        RecordingExecutor.last_max_workers = None
+        with (
+            mock.patch.object(availability_probe, "load_watch_module", return_value=FakeWatch()),
+            mock.patch.object(availability_probe, "install_rate_limited_request"),
+            mock.patch.object(availability_probe.concurrent.futures, "ThreadPoolExecutor", RecordingExecutor),
+        ):
+            rows = availability_probe._probe_org_profiles(
+                org,
+                profiles,
+                db_path=self.db_path,
+                profile_parallelism=2,
+            )
+
+        self.assertEqual(RecordingExecutor.last_max_workers, 2)
+        self.assertEqual([row["profile_key"] for row in rows], [profile.profile_key for profile in profiles])
 
 
 if __name__ == "__main__":

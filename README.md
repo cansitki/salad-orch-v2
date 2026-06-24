@@ -178,7 +178,7 @@ python3 scripts/reporter.py
 Probe live Salad availability for the highest-profit batch profile only:
 
 ```bash
-python3 scripts/availability_probe.py --profile-limit 1 --org-parallelism 2
+python3 scripts/availability_probe.py --profile-limit 1 --org-parallelism 2 --profile-parallelism 4
 ```
 
 Dry-run one organization worker:
@@ -366,7 +366,7 @@ unless `--apply-workers` or `--apply-guard` is passed.
    per-org capacity hints instead of rotating profitable profiles blindly:
 
    ```bash
-   PRL_PEARL_FEE_RATE=0.01 python3 scripts/availability_probe.py --loop --interval 60 --priorities batch,low --org-parallelism 2
+   PRL_PEARL_FEE_RATE=0.01 python3 scripts/availability_probe.py --loop --interval 60 --priorities batch,low --org-parallelism 2 --profile-parallelism 4
    ```
 
    The probe uses the same API budget limiter as live workers, so it should
@@ -374,8 +374,11 @@ unless `--apply-workers` or `--apply-guard` is passed.
    organizations in parallel only when they use different API key env vars;
    orgs sharing one key are automatically batched apart. The default
    organization parallelism is 2 and can also be set with
-   `PRL_AVAILABILITY_ORG_PARALLELISM`. The default availability heartbeat stale
-   window is 1800 seconds (`PRL_AVAILABILITY_STALE_AFTER_SECONDS`) because
+   `PRL_AVAILABILITY_ORG_PARALLELISM`. Inside each organization, the probe also
+   checks profiles concurrently under the same SQLite API limiter; the default
+   profile parallelism is 4 and can be set with
+   `PRL_AVAILABILITY_PROFILE_PARALLELISM`. The default availability heartbeat
+   stale window is 1800 seconds (`PRL_AVAILABILITY_STALE_AFTER_SECONDS`) because
    probing `batch,low` across multiple orgs can take longer than one monitor
    tick. The scheduler and guard use the same freshness window by default so
    they do not ignore slow-but-fresh capacity hints during long probe runs.

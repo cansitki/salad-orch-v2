@@ -51,6 +51,8 @@ def process_plan(
                     "batch,low",
                     "--org-parallelism",
                     "2",
+                    "--profile-parallelism",
+                    "4",
                 ],
                 db_path,
             ),

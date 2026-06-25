@@ -39,6 +39,7 @@ WALLET = os.environ.get("PRL_WALLET", "")
 USER_AGENT = "kray-prl-profit-snapshot/1.0"
 HTTP_TIMEOUT_SECONDS = float(os.environ.get("PRL_SNAPSHOT_HTTP_TIMEOUT_SECONDS", "8"))
 HTTP_ATTEMPTS = max(1, int(os.environ.get("PRL_SNAPSHOT_HTTP_ATTEMPTS", "3")))
+PRL_ATOMIC_UNITS = float(os.environ.get("PRL_ATOMIC_UNITS", "100000000"))
 STUCK_NON_LIVE_SECONDS = int(os.environ.get("PRL_STUCK_NON_LIVE_SECONDS", "3600"))
 EMPTY_STUCK_NON_LIVE_SECONDS = int(
     os.environ.get("PRL_EMPTY_STUCK_NON_LIVE_SECONDS", str(STUCK_NON_LIVE_SECONDS))
@@ -354,6 +355,58 @@ def pool_prl_per_th_day() -> tuple[float, int, float]:
     return gross * (1 - fee) * REWARD_CALIBRATION_FACTOR, points, fee
 
 
+def atomic_to_prl(value: Any) -> float:
+    try:
+        return float(value or 0) / PRL_ATOMIC_UNITS
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def amount_by_window_prl(payload: dict[str, Any], key: str) -> float:
+    values = payload.get(key) or {}
+    return atomic_to_prl(values.get("h24"))
+
+
+def wallet_observed_rewards(prl_per_th_day: float) -> dict[str, Any] | None:
+    try:
+        shares = external_json(f"https://pearlfortune.org/api/v1/miners/{WALLET}/hourly-shares?hours=24")
+        miner = external_json(f"https://pearlfortune.org/api/v1/miners/{WALLET}?hours=24")
+    except Exception as exc:
+        return {"error": f"{type(exc).__name__}: {str(exc)[:160]}"}
+
+    shares_data = shares.get("data") or {}
+    miner_data = miner.get("data") or {}
+    pending = miner_data.get("pending_shares") or {}
+    credited_24h = amount_by_window_prl(shares_data, "credited_amount_by_window_atomic")
+    pending_24h = amount_by_window_prl(pending, "pending_estimate_by_window_atomic")
+    total_24h = credited_24h + pending_24h
+
+    rolling = shares_data.get("rolling_hashrates") or []
+    hashrate_h24 = next(
+        (
+            float(item.get("hashrate") or 0)
+            for item in rolling
+            if int(float(item.get("hours") or 0)) == 24
+        ),
+        0.0,
+    )
+    th_24h = hashrate_h24 / 1e12
+    expected_24h = th_24h * prl_per_th_day if th_24h > 0 else 0.0
+    observed_per_th_day = total_24h / th_24h if th_24h > 0 else 0.0
+    ratio = total_24h / expected_24h if expected_24h > 0 else None
+
+    return {
+        "credited_prl_24h": round(credited_24h, 8),
+        "pending_prl_24h": round(pending_24h, 8),
+        "total_prl_24h": round(total_24h, 8),
+        "rolling_hashrate_th_24h": round(th_24h, 6),
+        "observed_prl_per_th_day_24h": round(observed_per_th_day, 8),
+        "model_prl_per_th_day": round(prl_per_th_day, 8),
+        "expected_prl_24h_at_rolling_hashrate": round(expected_24h, 8),
+        "observed_to_model_ratio_24h": round(ratio, 6) if ratio is not None else None,
+    }
+
+
 def price_catalog(org: str, api_key: str) -> dict[str, dict[str, float]]:
     catalog: dict[str, dict[str, float]] = {}
     payload = salad_json(f"/organizations/{org}/gpu-classes", api_key)
@@ -453,6 +506,13 @@ CSV_FIELDS = [
     "reward_calibration_factor",
     "hourly_points",
     "prl_per_th_day_net",
+    "wallet_observed_credited_prl_24h",
+    "wallet_observed_pending_prl_24h",
+    "wallet_observed_total_prl_24h",
+    "wallet_observed_rolling_hashrate_th_24h",
+    "wallet_observed_prl_per_th_day_24h",
+    "wallet_observed_to_model_ratio_24h",
+    "wallet_observed_error",
     "fresh_workers",
     "slot_count",
     "live_slot_count",
@@ -497,6 +557,7 @@ def append_snapshot_csv(snapshot: dict[str, Any]) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         totals = snapshot.get("totals") or {}
         unmapped_totals = snapshot.get("unmapped_totals") or {}
+        observed_rewards = snapshot.get("wallet_observed_rewards") or {}
         pending_slots = snapshot.get("pending_slots") or []
         live_slot_count = sum(1 for slot in pending_slots if slot.get("live"))
         pending_slot_count = sum(
@@ -512,6 +573,13 @@ def append_snapshot_csv(snapshot: dict[str, Any]) -> None:
             "reward_calibration_factor": snapshot.get("reward_calibration_factor"),
             "hourly_points": snapshot.get("hourly_points"),
             "prl_per_th_day_net": snapshot.get("prl_per_th_day_net"),
+            "wallet_observed_credited_prl_24h": observed_rewards.get("credited_prl_24h"),
+            "wallet_observed_pending_prl_24h": observed_rewards.get("pending_prl_24h"),
+            "wallet_observed_total_prl_24h": observed_rewards.get("total_prl_24h"),
+            "wallet_observed_rolling_hashrate_th_24h": observed_rewards.get("rolling_hashrate_th_24h"),
+            "wallet_observed_prl_per_th_day_24h": observed_rewards.get("observed_prl_per_th_day_24h"),
+            "wallet_observed_to_model_ratio_24h": observed_rewards.get("observed_to_model_ratio_24h"),
+            "wallet_observed_error": observed_rewards.get("error"),
             "fresh_workers": snapshot.get("fresh_workers"),
             "slot_count": len(pending_slots),
             "live_slot_count": live_slot_count,
@@ -564,6 +632,7 @@ def build_snapshot(price: float) -> dict[str, Any]:
     snapshot_at = datetime.now(UTC)
     prl_per_th_day, hourly_points, pool_fee_rate = pool_prl_per_th_day()
     market_price = market_prl_price_usd()
+    observed_rewards = wallet_observed_rewards(prl_per_th_day)
 
     catalogs: dict[str, dict[str, dict[str, float]]] = {}
     groups: dict[str, tuple[str, str, dict[str, Any]]] = {}
@@ -880,6 +949,7 @@ def build_snapshot(price: float) -> dict[str, Any]:
         "reward_calibration_factor": REWARD_CALIBRATION_FACTOR,
         "hourly_points": hourly_points,
         "prl_per_th_day_net": prl_per_th_day,
+        "wallet_observed_rewards": observed_rewards,
         "fresh_workers": len(workers),
         "pool_worker_count": len(pool_workers),
         "pool_stale_worker_count": sum(1 for worker in pool_workers if worker.get("stale")),

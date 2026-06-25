@@ -355,10 +355,26 @@ def build_targets(
                     )
                     if selected is not None:
                         profile_index, profile, used_probe_fallback = selected
-                        protected = False
-                        reason = f"{mode}:replace_nohash_observed_profile:{observed_profile}"
-                        if used_probe_fallback:
-                            reason += ":availability_probe_fallback"
+                        selected_profit = float(profile["expected_profit_day"])
+                        should_recycle_current_pending = (
+                            pending_observed
+                            and current_profit >= min_profit_day
+                            and current_profit >= selected_profit
+                            and not is_in_cooldown(org.label, slot_name, str(observed_profile))
+                        )
+                        if should_recycle_current_pending:
+                            profile = current
+                            profile_index = 0
+                            protected = False
+                            reason = (
+                                f"{mode}:pending_observed_profile_recycle_first:{observed_profile}:"
+                                f"replacement_profit_{selected_profit:.3f}_lte_current_{current_profit:.3f}"
+                            )
+                        else:
+                            protected = False
+                            reason = f"{mode}:replace_nohash_observed_profile:{observed_profile}"
+                            if used_probe_fallback:
+                                reason += ":availability_probe_fallback"
                     else:
                         profile = current
                         profile_index = 0

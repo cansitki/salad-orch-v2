@@ -1663,7 +1663,7 @@ class StateAndSchedulerTest(unittest.TestCase):
                     {
                         "org_label": "kray",
                         "slot_name": "prl-kray-roi-01",
-                        "observed_profile_key": "4090:batch:2048",
+                        "observed_profile_key": "3090:batch:2048",
                         "observed_status": "allocating",
                         "updated_at_utc": observed_at,
                     },
@@ -1685,9 +1685,42 @@ class StateAndSchedulerTest(unittest.TestCase):
                 """
             ).fetchone()
 
-        self.assertNotEqual(row["profile_key"], "4090:batch:2048")
+        self.assertNotEqual(row["profile_key"], "3090:batch:2048")
         self.assertEqual(row["protected"], 0)
         self.assertIn("replace_nohash_observed_profile", row["reason"])
+
+    def test_scheduler_keeps_profitable_stale_pending_when_replacement_is_weaker(self) -> None:
+        config = load_config()
+        observed_at = (datetime.now(UTC) - timedelta(minutes=5)).isoformat(timespec="seconds")
+        with state_db.connect(self.db_path) as conn:
+            state_db.init_db(conn)
+            state_db.sync_config(conn, config)
+            state_db.update_slot_observation(
+                conn,
+                {
+                    "org_label": "kray",
+                    "slot_name": "prl-kray-roi-01",
+                    "observed_profile_key": "5090:batch:2048",
+                    "observed_status": "allocating",
+                    "updated_at_utc": observed_at,
+                },
+            )
+            conn.commit()
+
+        fleet_scheduler.schedule_once(db_path=self.db_path, price=0.64, fee=0.01, dry_run=False)
+
+        with state_db.connect(self.db_path) as conn:
+            row = conn.execute(
+                """
+                SELECT profile_key, protected, reason
+                FROM slot_targets
+                WHERE org_label = 'kray' AND slot_name = 'prl-kray-roi-01'
+                """
+            ).fetchone()
+
+        self.assertEqual(row["profile_key"], "5090:batch:2048")
+        self.assertEqual(row["protected"], 0)
+        self.assertIn("pending_observed_profile_recycle_first", row["reason"])
 
     def test_scheduler_uses_fresh_existing_target_age_for_pending_protection(self) -> None:
         config = load_config()

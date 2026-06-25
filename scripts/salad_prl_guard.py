@@ -610,6 +610,45 @@ def pending_instances(module: Any, slot: str) -> list[dict[str, Any]]:
     ]
 
 
+def refresh_module_candidate_budgets(module: Any, org: str, slot: str, reason: str) -> bool:
+    if not all(hasattr(module, name) for name in ("fresh_workers", "capacity_workers", "refresh_candidate_budgets")):
+        return False
+    try:
+        workers = module.fresh_workers()
+        capacity_workers = module.capacity_workers(workers)
+        live_workers = [
+            worker
+            for worker in capacity_workers
+            if not worker.get("stale") and float(worker.get("reported_hashrate_th") or 0) > 0
+        ]
+        if hasattr(module, "LOW_LIVE_THIS_TICK"):
+            min_live = int(getattr(module, "LOW_LIVE_MIN_LIVE_WORKERS", 0) or 0)
+            module.LOW_LIVE_THIS_TICK = bool(min_live and len(live_workers) < min_live)
+        module.refresh_candidate_budgets(capacity_workers)
+        remaining = getattr(module, "CANDIDATE_BUDGET_REMAINING", {})
+        log(
+            "slot_retarget_budget_refreshed",
+            org=org,
+            slot=slot,
+            reason=reason,
+            live_workers=len(live_workers),
+            candidate_profiles=len(remaining),
+            remaining=sum(int(value or 0) for value in remaining.values()),
+            low_live=bool(getattr(module, "LOW_LIVE_THIS_TICK", False)),
+        )
+        return True
+    except Exception as exc:
+        log(
+            "slot_retarget_budget_refresh_failed",
+            org=org,
+            slot=slot,
+            reason=reason,
+            error=type(exc).__name__,
+            detail=str(exc)[:180],
+        )
+        return False
+
+
 def retarget_slot(org: str, slot: str, reason: str, *, prefer_best: bool = False) -> dict[str, Any] | None:
     module = watchers.get(org)
     if module is None:
@@ -634,6 +673,12 @@ def retarget_slot(org: str, slot: str, reason: str, *, prefer_best: bool = False
                 exclude=actual,
                 reason=f"{reason}_best_available",
             )
+            if candidate is None and refresh_module_candidate_budgets(module, org, slot, reason):
+                candidate = module.best_available_candidate(
+                    slot,
+                    exclude=actual,
+                    reason=f"{reason}_best_available_refreshed",
+                )
         elif actual is not None:
             module.set_current_candidate(slot, actual)
             candidate = module.advance_candidate(slot)
@@ -641,6 +686,7 @@ def retarget_slot(org: str, slot: str, reason: str, *, prefer_best: bool = False
             module.SLOT_CANDIDATE_INDEX[slot] = -1
             candidate = module.advance_candidate(slot)
         if candidate is None and not prefer_best:
+            refresh_module_candidate_budgets(module, org, slot, reason)
             candidate = module.best_available_candidate(
                 slot,
                 exclude=actual,

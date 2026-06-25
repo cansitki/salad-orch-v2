@@ -195,6 +195,37 @@ def guard_patch_cooldown_seconds() -> int:
     return max(60, value)
 
 
+def guard_retarget_cooldown_seconds() -> int:
+    raw = os.environ.get(
+        "PRL_GUARD_RETARGET_COOLDOWN_SECONDS",
+        os.environ.get("PRL_PENDING_PROFILE_COOLDOWN_SECONDS", "600"),
+    )
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        value = 600
+    return max(60, value)
+
+
+def recent_guard_action(conn, org_label: str, slot_name: str) -> dict[str, Any] | None:
+    row = conn.execute(
+        """
+        SELECT action, at_utc
+        FROM attempts
+        WHERE org_label = ?
+          AND slot_name = ?
+          AND ok = 1
+          AND action IN ('guard_retarget', 'guard_stop')
+        ORDER BY at_utc DESC
+        LIMIT 1
+        """,
+        (org_label, slot_name),
+    ).fetchone()
+    if not row:
+        return None
+    return {"action": row["action"], "at_utc": row["at_utc"], "age_seconds": age_seconds(row["at_utc"])}
+
+
 def record_guard_patch_cooldown(conn, target: dict[str, Any], *, reason: str) -> None:
     now = datetime.now(UTC)
     state_db.record_search_state(
@@ -401,9 +432,17 @@ def enforce_issues(
             }
             if issue_age >= float(issue["grace_seconds"]):
                 slot_key = (org_label, slot_name)
+                cooldown_seconds = guard_retarget_cooldown_seconds()
+                last_action = recent_guard_action(conn, org_label, slot_name)
                 if apply and slot_key in actioned_slots:
                     decision["action"] = "skip_duplicate"
                     decision["reason"] = "slot_already_actioned_this_tick"
+                elif last_action and float(last_action["age_seconds"]) < cooldown_seconds:
+                    decision["action"] = "cooldown"
+                    decision["reason"] = "recent_guard_action_cooldown"
+                    decision["cooldown_seconds"] = cooldown_seconds
+                    decision["last_guard_action"] = last_action["action"]
+                    decision["last_guard_action_age_seconds"] = round(float(last_action["age_seconds"]), 1)
                 elif target is not None:
                     state_db.set_slot_target(conn, target)
                     decision["action"] = "retarget"
@@ -411,7 +450,7 @@ def enforce_issues(
                 else:
                     decision["action"] = "stop"
                 if apply:
-                    if decision["action"] == "skip_duplicate":
+                    if decision["action"] in {"cooldown", "skip_duplicate"}:
                         pass
                     else:
                         actioned_slots.add(slot_key)

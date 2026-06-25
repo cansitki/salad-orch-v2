@@ -322,6 +322,37 @@ class GuardDecisionTest(unittest.TestCase):
         self.assertEqual(retry_decisions[0]["action"], "retarget")
         self.assertNotEqual(retry_decisions[0]["target_profile_key"], failed_profile)
 
+    def test_successful_guard_action_cooldowns_slot(self) -> None:
+        self.make_issue_old("no_hash")
+        analysis = {
+            "fresh_workers": 3,
+            "running_no_live_billable_slots": [
+                {"org": "kray", "slot": "prl-kray-roi-01", "cost_day": 1.0}
+            ],
+            "negative_slots": [],
+        }
+
+        with patch.dict("os.environ", {"PRL_GUARD_RETARGET_COOLDOWN_SECONDS": "600"}, clear=False):
+            with patch("guard.apply_guard_target", return_value={"action": "retarget", "applied": True}) as apply_mock:
+                first_decisions = guard.enforce_issues(
+                    db_path=self.db_path,
+                    decision_price=0.64,
+                    apply=True,
+                    analysis=analysis,
+                )
+                retry_decisions = guard.enforce_issues(
+                    db_path=self.db_path,
+                    decision_price=0.64,
+                    apply=True,
+                    analysis=analysis,
+                )
+
+        self.assertEqual(first_decisions[0]["action"], "retarget")
+        self.assertEqual(retry_decisions[0]["action"], "cooldown")
+        self.assertEqual(retry_decisions[0]["reason"], "recent_guard_action_cooldown")
+        self.assertEqual(retry_decisions[0]["last_guard_action"], "guard_retarget")
+        self.assertEqual(apply_mock.call_count, 1)
+
     def test_guard_applies_once_when_same_slot_has_multiple_issues(self) -> None:
         self.make_issue_old("no_hash")
         self.make_issue_old("negative")

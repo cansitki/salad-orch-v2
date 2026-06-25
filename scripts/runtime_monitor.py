@@ -200,6 +200,11 @@ def _has_guard_issues(summary: dict[str, Any]) -> bool:
     return int(summary.get("no_hash") or 0) > 0 or int(summary.get("negative") or 0) > 0
 
 
+def _shadow_allows_guard_repair(summary: dict[str, Any]) -> bool:
+    failed = {str(gate) for gate in summary.get("failed_gates") or [] if gate}
+    return bool(failed) and failed.issubset({"target_profit", "shadow_compare"}) and _has_guard_issues(summary)
+
+
 def _guard_due(tick_index: int, every: int) -> bool:
     if every <= 0:
         return False
@@ -404,9 +409,18 @@ def run_monitor_tick(
     action_summary = None
     guard_probe = None
 
-    if shadow_summary["ok"]:
+    shadow_allows_guard_repair = (
+        not shadow_summary["ok"]
+        and guard_on_issues
+        and guard_due
+        and apply_all_orgs_pending
+        and guard_actionable_only
+        and _shadow_allows_guard_repair(shadow_summary)
+    )
+
+    if shadow_summary["ok"] or shadow_allows_guard_repair:
         if apply_guard:
-            action = "guard-apply"
+            action = "guard-apply" if shadow_summary["ok"] else "none"
         elif guard_on_issues and guard_due and apply_all_orgs_pending:
             if guard_actionable_only:
                 guard_probe = _guard_actionable_probe(
@@ -416,7 +430,14 @@ def run_monitor_tick(
                     hard_timeout=hard_runner_timeout,
                 )
                 has_actionable_guard = not guard_probe["ok"] or int(guard_probe.get("actionable") or 0) > 0
-                action = "guard-apply" if has_actionable_guard else "all-orgs-pending"
+                if shadow_summary["ok"]:
+                    action = "guard-apply" if has_actionable_guard else "all-orgs-pending"
+                else:
+                    action = (
+                        "guard-apply"
+                        if guard_probe.get("ok") and int(guard_probe.get("actionable") or 0) > 0
+                        else "none"
+                    )
             elif _has_guard_issues(shadow_summary):
                 action = "guard-apply"
             else:
@@ -455,7 +476,7 @@ def run_monitor_tick(
         "shadow": shadow_summary,
         "action_result": action_summary,
         "guard_probe": guard_probe,
-        "skipped_live_action": bool(live_action_count and not shadow_summary["ok"]),
+        "skipped_live_action": bool(live_action_count and not shadow_summary["ok"] and action == "none"),
     }
 
 

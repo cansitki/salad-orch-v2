@@ -365,6 +365,74 @@ class RuntimeMonitorTest(unittest.TestCase):
         self.assertEqual([call["stage"] for call in calls], ["shadow", "guard-apply"])
         self.assertEqual(payload["guard_probe"]["actionable"], 1)
 
+    def test_guard_repair_runs_when_shadow_only_fails_repairable_gates(self) -> None:
+        calls = []
+
+        def runner(**kwargs):
+            calls.append(kwargs)
+            if kwargs["stage"] == "shadow":
+                payload = rollout_payload(stage="shadow", ok=False)
+                payload["gates"]["failed"] = [{"gate": "target_profit"}, {"gate": "shadow_compare"}]
+                payload["report"]["negative"] = 2
+                return payload
+            return rollout_payload(stage=kwargs["stage"])
+
+        with patch(
+            "runtime_monitor.guard_status.run_once",
+            return_value={
+                "issue_count": 2,
+                "decisions": [
+                    {"action": "retarget", "issue_type": "negative"},
+                    {"action": "wait", "issue_type": "negative"},
+                ],
+            },
+        ):
+            payload = runtime_monitor.run_monitor_tick(
+                apply_all_orgs_pending=True,
+                guard_on_issues=True,
+                guard_due=True,
+                guard_actionable_only=True,
+                confirm_live_actions=True,
+                runner=runner,
+            )
+
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["action"], "guard-apply")
+        self.assertFalse(payload["skipped_live_action"])
+        self.assertEqual([call["stage"] for call in calls], ["shadow", "guard-apply"])
+        self.assertEqual(payload["guard_probe"]["actionable"], 1)
+
+    def test_guard_repair_does_not_run_when_failed_shadow_has_no_actionable_guard(self) -> None:
+        calls = []
+
+        def runner(**kwargs):
+            calls.append(kwargs)
+            payload = rollout_payload(stage=kwargs["stage"], ok=False)
+            payload["gates"]["failed"] = [{"gate": "target_profit"}]
+            payload["report"]["negative"] = 1
+            return payload
+
+        with patch(
+            "runtime_monitor.guard_status.run_once",
+            return_value={
+                "issue_count": 1,
+                "decisions": [{"action": "wait", "issue_type": "negative"}],
+            },
+        ):
+            payload = runtime_monitor.run_monitor_tick(
+                apply_all_orgs_pending=True,
+                guard_on_issues=True,
+                guard_due=True,
+                guard_actionable_only=True,
+                confirm_live_actions=True,
+                runner=runner,
+            )
+
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["action"], "none")
+        self.assertTrue(payload["skipped_live_action"])
+        self.assertEqual([call["stage"] for call in calls], ["shadow"])
+
     def test_guard_on_issues_uses_fill_when_not_due(self) -> None:
         calls = []
 

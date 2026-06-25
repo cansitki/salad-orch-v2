@@ -272,7 +272,7 @@ def slot_action_with_age(entry: Any) -> dict[str, Any] | None:
     if not isinstance(entry, dict):
         return None
     try:
-        at_ts = float(entry.get("at_ts") or 0)
+        at_ts = float(entry.get("at") or entry.get("at_ts") or 0)
     except (TypeError, ValueError):
         at_ts = 0.0
     if at_ts <= 0:

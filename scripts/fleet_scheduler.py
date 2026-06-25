@@ -69,6 +69,7 @@ def build_targets(
     pending_target_protect_seconds = max(0, env_int("PRL_PENDING_TARGET_PROTECT_SECONDS", 120))
     recycle_current_pending_first = bool(env_int("PRL_FILL_RECYCLE_CURRENT_PENDING_FIRST", 1))
     prefer_reported_available_score_order = bool(env_int("PRL_FILL_PREFER_REPORTED_AVAILABLE_SCORE_ORDER", 1))
+    prefer_reported_available_capacity_first = bool(env_int("PRL_FILL_REPORTED_AVAILABLE_CAPACITY_FIRST", 0))
     min_profit_day = config.risk.min_profit_for_mode("optimize" if mode == "optimize" else "fill")
     assigned_by_org_profile: dict[tuple[str, str], int] = {}
     targets: list[dict[str, Any]] = []
@@ -114,6 +115,16 @@ def build_targets(
     def reported_available_candidates(org_label: str, candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if not prefer_reported_available_score_order:
             return candidates
+        if prefer_reported_available_capacity_first:
+            return sorted(
+                candidates,
+                key=lambda candidate: (
+                    max(0, reported_capacity_remaining(org_label, str(candidate["profile_key"])) or 0),
+                    float(candidate.get("score") or 0),
+                    float(candidate.get("expected_profit_day") or 0),
+                ),
+                reverse=True,
+            )
         return sorted(
             candidates,
             key=lambda candidate: (

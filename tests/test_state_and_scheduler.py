@@ -2554,6 +2554,62 @@ class StateAndSchedulerTest(unittest.TestCase):
 
         self.assertEqual([target["profile_key"] for target in targets], ["best:low:2048", "best:low:2048"])
 
+    def test_scheduler_can_prefer_reported_capacity_over_score_for_fill(self) -> None:
+        config = config_loader.FleetConfig(
+            organizations=(
+                config_loader.OrgConfig(
+                    label="kray",
+                    slug="kray",
+                    api_key_env="SALAD_API_KEY_TEST",
+                    slot_prefix="prl-kray-roi",
+                    slots=3,
+                ),
+            )
+        )
+        scores = [
+            {
+                "profile_key": "scarce:batch:2048",
+                "gpu_key": "scarce",
+                "priority": "batch",
+                "memory_mb": 2048,
+                "expected_profit_day": 2.0,
+                "score": 200.0,
+                "eligible": True,
+            },
+            {
+                "profile_key": "deep:low:2048",
+                "gpu_key": "deep",
+                "priority": "low",
+                "memory_mb": 2048,
+                "expected_profit_day": 0.2,
+                "score": 10.0,
+                "eligible": True,
+            },
+        ]
+        previous = os.environ.get("PRL_FILL_REPORTED_AVAILABLE_CAPACITY_FIRST")
+        os.environ["PRL_FILL_REPORTED_AVAILABLE_CAPACITY_FIRST"] = "1"
+        try:
+            targets = fleet_scheduler.build_targets(
+                config,
+                scores,
+                mode="base_fill",
+                decision_price_usd=0.64,
+                width=2,
+                availability={
+                    "kray": {
+                        "scarce:batch:2048": {"ok": True, "available_count": 1},
+                        "deep:low:2048": {"ok": True, "available_count": 100},
+                    }
+                },
+            )
+        finally:
+            if previous is None:
+                os.environ.pop("PRL_FILL_REPORTED_AVAILABLE_CAPACITY_FIRST", None)
+            else:
+                os.environ["PRL_FILL_REPORTED_AVAILABLE_CAPACITY_FIRST"] = previous
+
+        self.assertEqual([target["profile_key"] for target in targets], ["deep:low:2048"] * 3)
+
     def test_scheduler_uses_probe_fallback_to_keep_org_filled_when_all_profiles_report_zero(self) -> None:
         config = load_config()
         scores = profile_scorer.score_profiles(

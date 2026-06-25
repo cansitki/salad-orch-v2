@@ -175,7 +175,9 @@ def cooldown_profile_key_for_result(target: dict[str, Any], result: dict[str, An
     action = str(result.get("action") or "")
     if action in {"cooldown_pending", "cooldown_failed_patch", "restart_failed_patch_pending"}:
         return str(target["profile_key"])
-    if action == "patch" and str(result.get("reason") or "").startswith("stale_pending_profile_mismatch:"):
+    if action in {"patch", "restart_empty_pending_after_patch"} and str(result.get("reason") or "").startswith(
+        "stale_pending_profile_mismatch:"
+    ):
         current = result.get("current_profile_key")
         return str(current) if current else None
     return None
@@ -515,6 +517,19 @@ def is_pending_patch_plan(plan: dict[str, Any]) -> bool:
     )
 
 
+def should_restart_empty_pending_after_patch(plan: dict[str, Any]) -> bool:
+    if not env_bool("PRL_STALE_EMPTY_PENDING_PATCH_RESTART", False):
+        return False
+    if not is_pending_patch_plan(plan):
+        return False
+    if plan.get("pending_instance_ids") or plan.get("running_instance_ids"):
+        return False
+    counts = plan.get("counts") or {}
+    if int(counts.get("creating") or 0) > 0:
+        return False
+    return int(counts.get("allocating") or 0) > 0 or str(plan.get("observed_status") or "").lower() == "deploying"
+
+
 def start_error_for_result(watch: Any, slot_name: str) -> str:
     getter = getattr(watch, "start_slot_error", None)
     if callable(getter):
@@ -588,6 +603,30 @@ def execute_action(watch: Any, target: dict[str, Any], plan: dict[str, Any], *, 
                 "action": "cooldown_failed_patch",
                 "original_action": "patch",
                 "error": "patch_slot returned false",
+            }
+        if should_restart_empty_pending_after_patch(plan):
+            restart_reason = "empty_pending_after_patch"
+            watch.request("POST", f"/organizations/{watch.ORG}/projects/{watch.PROJECT}/containers/{slot_name}/stop")
+            start_result = watch.start_slot(slot_name, f"stale_pending_patch:{restart_reason}")
+            if start_result is False:
+                result = start_failed_result(watch, slot_name, plan, "patch")
+                result.update(
+                    {
+                        "patched": True,
+                        "restart_requested": True,
+                        "restart_reason": restart_reason,
+                    }
+                )
+                return result
+            return {
+                "ok": True,
+                "applied": True,
+                **plan,
+                "action": "restart_empty_pending_after_patch",
+                "original_action": "patch",
+                "patched": True,
+                "restart_requested": True,
+                "restart_reason": restart_reason,
             }
         if start_after_patch:
             start_result = watch.start_slot(slot_name, "after_patch:fleet_scheduler_target")
@@ -924,6 +963,7 @@ def run_once(
                         and str(result.get("action") or "") in {
                             "cooldown_pending",
                             "restart_failed_patch_pending",
+                            "restart_empty_pending_after_patch",
                             "restart_no_hash",
                         }
                     ),

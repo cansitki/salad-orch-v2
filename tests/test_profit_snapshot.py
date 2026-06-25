@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pathlib
+import json
 import sys
 import unittest
 from unittest.mock import patch
@@ -38,6 +39,39 @@ class ProfitSnapshotTest(unittest.TestCase):
         kray2_slots = accounts[1][3]
         self.assertIn("prl-kray2-roi-05b", kray2_slots)
         self.assertNotIn("prl-kray2-roi-05", kray2_slots)
+
+    def test_configured_accounts_uses_extra_org_key_env_for_unknown_fleet_org(self) -> None:
+        extra = [
+            {
+                "label": "kry2",
+                "slug": "kry2",
+                "api_key_env": "SALAD_API_KEY_KRY1",
+                "slot_prefix": "prl-kry2-roi",
+                "slots": 10,
+            }
+        ]
+        with patch.dict(
+            "os.environ",
+            {
+                "PRL_FLEET_ORGS": "kry2",
+                "PRL_FLEET_EXTRA_ORGS_JSON": json.dumps(extra),
+                "PRL_WATCH_DEFAULT_API_KEY_ENV": "SALAD_API_KEY_2",
+            },
+            clear=True,
+        ):
+            accounts = salad_prl_profit_snapshot.configured_accounts()
+
+        self.assertEqual(
+            accounts,
+            [
+                (
+                    "kry2",
+                    "kry2",
+                    "SALAD_API_KEY_KRY1",
+                    [f"prl-kry2-roi-{index:02d}" for index in range(1, 11)],
+                )
+            ],
+        )
 
     def test_pool_prl_per_th_day_applies_reward_calibration(self) -> None:
         payloads = {

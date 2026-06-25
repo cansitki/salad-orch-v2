@@ -55,7 +55,7 @@ The public org labels are:
 | `kry1` | 10 | `SALAD_API_KEY_KRY1` |
 | `kray2` | 10 | `SALAD_API_KEY_2` |
 | `kray3` | 10 | `SALAD_API_KEY_2` |
-| `kry2` | 10 | `SALAD_API_KEY_KRY2` |
+| `kry2` | 10 | `SALAD_API_KEY_KRY1` when sharing the kry1 token; otherwise `SALAD_API_KEY_KRY2` |
 | `kr1` | 10 | `SALAD_API_KEY_KR1` |
 | `kr2` | 10 | `SALAD_API_KEY_KR2` |
 | `kr3` | 10 | `SALAD_API_KEY_KR3` |

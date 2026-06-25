@@ -15,6 +15,8 @@ import urllib.request
 from datetime import UTC, datetime
 from typing import Any
 
+from config_loader import load_config
+
 
 SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parent
@@ -106,15 +108,29 @@ if os.environ.get("PRL_INCLUDE_BMU", "").lower() in {"1", "true", "yes"}:
 
 def configured_accounts() -> list[tuple[str, str, str, list[str]]]:
     fleet_orgs = [org.strip() for org in os.environ.get("PRL_FLEET_ORGS", "").split(",") if org.strip()]
+    config_accounts = {
+        org.label: (org.slug, org.api_key_env, org.slot_names())
+        for org in load_config().enabled_orgs()
+    }
     if not fleet_orgs:
-        return list(ACCOUNTS)
+        accounts = [
+            (label, slug, key_env, slots)
+            for label, (slug, key_env, slots) in config_accounts.items()
+        ]
+        if os.environ.get("PRL_INCLUDE_BMU", "").lower() in {"1", "true", "yes"}:
+            legacy_bmu = [account for account in ACCOUNTS if account[0].startswith("bmu")]
+            accounts = legacy_bmu + accounts
+        return accounts
     default_key_env = os.environ.get("PRL_WATCH_DEFAULT_API_KEY_ENV", "SALAD_API_KEY")
     defaults_by_label = {label: (slug, key_env, slots) for label, slug, key_env, slots in ACCOUNTS}
     accounts: list[tuple[str, str, str, list[str]]] = []
     for org in fleet_orgs:
         default_slug, default_org_key_env, default_slots = defaults_by_label.get(
             org,
-            (org, default_key_env, [f"prl-{org}-roi-{index:02d}" for index in range(1, 11)]),
+            config_accounts.get(
+                org,
+                (org, default_key_env, [f"prl-{org}-roi-{index:02d}" for index in range(1, 11)]),
+            ),
         )
         key_env = os.environ.get(f"PRL_WATCH_API_KEY_ENV_{org.upper()}", default_org_key_env)
         prefix = os.environ.get(f"PRL_WATCH_SLOT_PREFIX_{org.upper()}")

@@ -44,25 +44,24 @@ def parse_money(value: Any) -> float | None:
 
 
 def latest_slot_profit_by_org(conn) -> dict[str, dict[str, Any]]:
-    latest = conn.execute(
-        "SELECT at_utc FROM profit_snapshots WHERE scope = 'slot' ORDER BY at_utc DESC, id DESC LIMIT 1"
-    ).fetchone()
-    if latest is None:
-        return {}
-    rows = conn.execute(
-        """
-        SELECT org_label,
-               COUNT(*) AS billable_slots,
-               SUM(COALESCE(th, 0)) AS th,
-               SUM(COALESCE(cost_day, 0)) AS cost_day,
-               SUM(COALESCE(profit_day, 0)) AS profit_day
-        FROM profit_snapshots
-        WHERE scope = 'slot' AND at_utc = ?
-        GROUP BY org_label
-        """,
-        (latest["at_utc"],),
-    ).fetchall()
-    return {str(row["org_label"]): dict(row) for row in rows}
+    summary: dict[str, dict[str, Any]] = {}
+    for row in latest_slot_profit_by_key(conn).values():
+        org = str(row["org_label"])
+        item = summary.setdefault(
+            org,
+            {
+                "org_label": org,
+                "billable_slots": 0,
+                "th": 0.0,
+                "cost_day": 0.0,
+                "profit_day": 0.0,
+            },
+        )
+        item["billable_slots"] += 1
+        item["th"] += float(row.get("th") or 0)
+        item["cost_day"] += float(row.get("cost_day") or 0)
+        item["profit_day"] += float(row.get("profit_day") or 0)
+    return summary
 
 
 def latest_slot_profit_by_key(conn) -> dict[tuple[str, str], dict[str, Any]]:
@@ -73,9 +72,10 @@ def latest_slot_profit_by_key(conn) -> dict[tuple[str, str], dict[str, Any]]:
         return {}
     rows = conn.execute(
         """
-        SELECT org_label, slot_name, profile_key, th, cost_day, revenue_day, profit_day
+        SELECT id, org_label, slot_name, profile_key, th, cost_day, revenue_day, profit_day
         FROM profit_snapshots
         WHERE scope = 'slot' AND at_utc = ?
+        ORDER BY org_label, slot_name, id
         """,
         (latest["at_utc"],),
     ).fetchall()

@@ -223,6 +223,22 @@ class FleetAuditTest(unittest.TestCase):
                     "payload": {},
                 },
             )
+            state_db.record_profit_snapshot(
+                conn,
+                {
+                    "at_utc": "2026-06-24T10:00:00+00:00",
+                    "scope": "slot",
+                    "org_label": "kray",
+                    "slot_name": "prl-kray-roi-01",
+                    "profile_key": "4090:batch:2048",
+                    "decision_price_usd": 0.64,
+                    "th": 100.0,
+                    "cost_day": 1.2,
+                    "revenue_day": 1.6,
+                    "profit_day": 0.4,
+                    "payload": {},
+                },
+            )
             conn.commit()
 
         report = {

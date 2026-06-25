@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import pathlib
+import tempfile
+import time
 import sys
 import unittest
 from unittest.mock import patch
@@ -63,6 +65,44 @@ class ProfitSnapshotTest(unittest.TestCase):
         self.assertEqual(points, 2)
         self.assertEqual(fee, 0.01)
         self.assertAlmostEqual(value, 20 * 0.99 * 0.92)
+
+    def test_effective_state_age_prefers_recent_slot_action(self) -> None:
+        old_path = salad_prl_profit_snapshot.SLOT_ACTION_STATE_PATH
+        try:
+            with tempfile.TemporaryDirectory() as temp_dir:
+                salad_prl_profit_snapshot.SLOT_ACTION_STATE_PATH = pathlib.Path(temp_dir) / "prl_slot_actions.json"
+                detail_dir = salad_prl_profit_snapshot.SLOT_ACTION_STATE_PATH.parent / "prl_slot_actions.d"
+                detail_dir.mkdir()
+                detail_path = salad_prl_profit_snapshot.slot_action_detail_path("cantemir1", "prl-cantemir1-roi-01")
+                detail_path.write_text(
+                    '{"action":"patched","reason":"test","candidate":"RTX 4090 batch","at_ts":'
+                    + str(time.time() - 60)
+                    + "}",
+                    encoding="utf-8",
+                )
+
+                age, action = salad_prl_profit_snapshot.effective_state_age_seconds(
+                    "cantemir1", "prl-cantemir1-roi-01", 7200.0
+                )
+        finally:
+            salad_prl_profit_snapshot.SLOT_ACTION_STATE_PATH = old_path
+
+        self.assertIsNotNone(action)
+        self.assertLess(age or 0, 120.0)
+
+    def test_effective_state_age_keeps_observed_age_without_recent_action(self) -> None:
+        old_path = salad_prl_profit_snapshot.SLOT_ACTION_STATE_PATH
+        try:
+            with tempfile.TemporaryDirectory() as temp_dir:
+                salad_prl_profit_snapshot.SLOT_ACTION_STATE_PATH = pathlib.Path(temp_dir) / "missing.json"
+                age, action = salad_prl_profit_snapshot.effective_state_age_seconds(
+                    "cantemir1", "prl-cantemir1-roi-01", 7200.0
+                )
+        finally:
+            salad_prl_profit_snapshot.SLOT_ACTION_STATE_PATH = old_path
+
+        self.assertIsNone(action)
+        self.assertEqual(age, 7200.0)
 
 
 if __name__ == "__main__":

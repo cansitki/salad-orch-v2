@@ -15,7 +15,7 @@ import profile_scorer
 import salad_prl_profit_snapshot as snapshot
 import state_db
 from config_loader import load_config
-from fleet_common import env_int, json_dumps, utc_now
+from fleet_common import env_float, env_int, json_dumps, utc_now
 
 
 SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
@@ -48,10 +48,11 @@ def issue_age_seconds(issue_row: Any, payload_row: dict[str, Any]) -> float:
 def analyze_snapshot(payload: dict[str, Any]) -> dict[str, Any]:
     slots = payload.get("slots") or []
     no_hash = payload.get("running_no_live_billable_slots") or []
+    negative_min_loss = max(0.0, env_float("PRL_GUARD_NEGATIVE_MIN_LOSS_USD_DAY", 0.0))
     negative = [
         row
         for row in slots
-        if float(row.get("profit_day") or 0) < 0
+        if float(row.get("profit_day") or 0) < -negative_min_loss
     ]
     return {
         "totals": payload.get("totals") or {},

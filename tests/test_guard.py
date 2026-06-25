@@ -228,6 +228,19 @@ class GuardDecisionTest(unittest.TestCase):
         self.assertEqual(decisions[0]["grace_seconds"], 60)
         self.assertEqual(decisions[0]["action"], "retarget")
 
+    def test_guard_negative_loss_tolerance_filters_tiny_losses(self) -> None:
+        payload = {
+            "slots": [
+                {"org": "kray", "slot": "small-loss", "profit_day": -0.01},
+                {"org": "kray", "slot": "real-loss", "profit_day": -0.25},
+            ],
+            "running_no_live_billable_slots": [],
+        }
+        with patch.dict("os.environ", {"PRL_GUARD_NEGATIVE_MIN_LOSS_USD_DAY": "0.02"}, clear=False):
+            analysis = guard.analyze_snapshot(payload)
+
+        self.assertEqual([row["slot"] for row in analysis["negative_slots"]], ["real-loss"])
+
     def test_successful_apply_clears_slot_runtime_failure(self) -> None:
         self.make_issue_old("negative")
         with state_db.connect(self.db_path) as conn:

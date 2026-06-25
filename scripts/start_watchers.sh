@@ -157,6 +157,23 @@ slots() {
   printf '%s' "$out"
 }
 
+slots_for_org() {
+  local org=$1
+  local upper_org
+  local per_org_var
+  upper_org=$(printf '%s' "$org" | tr '[:lower:]-' '[:upper:]_')
+  per_org_var="PRL_WATCH_SLOTS_${upper_org}"
+  if [[ -n "${!per_org_var+x}" && -n "${!per_org_var}" ]]; then
+    printf '%s' "${!per_org_var}"
+    return
+  fi
+  if [[ "$org" == "kray2" ]]; then
+    printf 'prl-kray2-roi-01,prl-kray2-roi-02,prl-kray2-roi-03,prl-kray2-roi-04,prl-kray2-roi-05b,prl-kray2-roi-06,prl-kray2-roi-07,prl-kray2-roi-08,prl-kray2-roi-09,prl-kray2-roi-10'
+    return
+  fi
+  slots "prl-${org}-roi"
+}
+
 api_key_env_for_org() {
   local org=$1
   local key_env=$DEFAULT_API_KEY_ENV
@@ -321,12 +338,12 @@ if [[ -n "${PRL_FLEET_ORGS:-}" ]]; then
     [[ -n "$org" ]] || continue
     session="${org}-prl-watch"
     key_env=$(api_key_env_for_org "$org")
-    restart_tmux "$session" "$(watch_cmd "$session" "$LOG_DIR/${org}_prl_watch.log" "$org" "$org" "$(slots "prl-${org}-roi")" "${org}-prl-${org}" "${org}-prl" "${org}-roi-" "PearlFortune ${org^^}" "$key_env")"
+    restart_tmux "$session" "$(watch_cmd "$session" "$LOG_DIR/${org}_prl_watch.log" "$org" "$org" "$(slots_for_org "$org")" "${org}-prl-${org}" "${org}-prl" "${org}-roi-" "PearlFortune ${org^^}" "$key_env")"
   done
 else
   restart_tmux kray-prl-watch "$(watch_cmd kray-prl-watch "$LOG_DIR/kray_prl_watch.log" kray kray "$(slots prl-kray-roi)" kray-prl-kray kray-prl kray-roi- "PearlFortune KRAY" SALAD_API_KEY_2)"
   restart_tmux kry1-prl-watch "$(watch_cmd kry1-prl-watch "$LOG_DIR/kry1_prl_watch.log" "$KRY1_ORG_ID" kry1 "$(slots prl-kry1-roi)" kry1-prl-kry1 kry1-prl kry1-roi- "PearlFortune KRY1" SALAD_API_KEY_KRY1)"
-  restart_tmux kray2-prl-watch "$(watch_cmd kray2-prl-watch "$LOG_DIR/kray2_prl_watch.log" kray2 kray2 "$(slots prl-kray2-roi)" kray2-prl-kray2 kray2-prl kray2-roi- "PearlFortune KRAY2" SALAD_API_KEY_2)"
+  restart_tmux kray2-prl-watch "$(watch_cmd kray2-prl-watch "$LOG_DIR/kray2_prl_watch.log" kray2 kray2 "$(slots_for_org kray2)" kray2-prl-kray2 kray2-prl kray2-roi- "PearlFortune KRAY2" SALAD_API_KEY_2)"
   restart_tmux kray3-prl-watch "$(watch_cmd kray3-prl-watch "$LOG_DIR/kray3_prl_watch.log" kray3 kray3 "$(slots prl-kray3-roi)" kray3-prl-kray3 kray3-prl kray3-roi- "PearlFortune KRAY3" SALAD_API_KEY_2)"
 fi
 restart_tmux kray-prl-guard "$(guard_cmd)"

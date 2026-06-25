@@ -105,6 +105,8 @@ The runnable code lives in `scripts/`.
 | `scripts/salad_prl_nonstop_supervisor.py` | Keeps tmux sessions alive and switches fill/optimize mode. |
 | `scripts/start_watchers.sh` | Starts all org watchers and the guard. |
 | `scripts/start_supervisor.sh` | Starts the nonstop supervisor. |
+| `scripts/modal_pearl_miner.py` | Runs the PearlFortune miner on a Modal GPU for short benchmark/profit tests. |
+| `scripts/run_modal_pearl_gpu_matrix.sh` | Launches Modal Pearl tests across multiple GPU types. |
 | `scripts/state_db.py` | SQLite state DB, schema, heartbeats, events, targets, scores. |
 | `scripts/config_loader.py` | Multi-org config loader. Defaults to 4 orgs * 10 slots, supports JSON org config. |
 | `scripts/price_oracle.py` | Samples PearlFortune/SafeTrade price and writes trailing risk mode. |
@@ -544,6 +546,17 @@ Generate a profit snapshot:
 ```bash
 python3 scripts/salad_prl_profit_snapshot.py --price 0.64
 ```
+
+Modal GPU smoke matrix:
+
+```bash
+MODAL_PEARL_GPU_LIST="T4 L4 A10G L40S" MODAL_PEARL_MATRIX_DURATION=300 scripts/run_modal_pearl_gpu_matrix.sh
+```
+
+If Modal returns `workspace billing cycle spend limit reached`, fix the
+workspace or environment budget in Modal before retrying. The Modal billing
+report shows gross usage before credits, so promotional credits can exist while
+a hard budget still blocks new app creation.
 
 Each snapshot appends one row to `state/prl_profit_snapshots.csv` by default.
 Use `PRL_SNAPSHOT_CSV_PATH=/path/to/file.csv` to choose another file, or

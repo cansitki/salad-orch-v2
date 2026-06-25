@@ -101,13 +101,22 @@ WATCH_COMMON_ENV = {
 }
 
 
+def roi_slots(org: str) -> str:
+    if org == "kray2":
+        names = [f"prl-{org}-roi-{index:02d}" for index in range(1, 5)]
+        names.append(f"prl-{org}-roi-05b")
+        names.extend(f"prl-{org}-roi-{index:02d}" for index in range(6, 11))
+        return ",".join(names)
+    return ",".join(f"prl-{org}-roi-{index:02d}" for index in range(1, 11))
+
+
 KRAY_WATCH_ENV = {
     **WATCH_COMMON_ENV,
     "PRL_WATCH_NAME": "kray-prl-watch",
     "PRL_WATCH_LOG": str(STATE_DIR / "logs" / "kray_prl_watch.log"),
     "PRL_WATCH_ORG": "kray",
     "PRL_WATCH_API_KEY_ENV": "SALAD_API_KEY_2",
-    "PRL_WATCH_SLOTS": ",".join(f"prl-kray-roi-{index:02d}" for index in range(1, 11)),
+    "PRL_WATCH_SLOTS": roi_slots("kray"),
     "PRL_WATCH_WORKER_PREFIX": "kray-prl",
     "PRL_WATCH_WORKER_SLOT_PREFIX": "kray-roi-",
     "PRL_WATCH_POOL_WORKER_PREFIX": "kray-prl-kray",
@@ -122,7 +131,7 @@ KRY1_WATCH_ENV = {
     "PRL_WATCH_ORG": "kry1",
     "PRL_WATCH_PUBLIC_ORG": "kry1",
     "PRL_WATCH_API_KEY_ENV": "SALAD_API_KEY_KRY1",
-    "PRL_WATCH_SLOTS": ",".join(f"prl-kry1-roi-{index:02d}" for index in range(1, 11)),
+    "PRL_WATCH_SLOTS": roi_slots("kry1"),
     "PRL_WATCH_WORKER_PREFIX": "kry1-prl",
     "PRL_WATCH_WORKER_SLOT_PREFIX": "kry1-roi-",
     "PRL_WATCH_POOL_WORKER_PREFIX": "kry1-prl-kry1",
@@ -137,7 +146,7 @@ KRAY2_WATCH_ENV = {
     "PRL_WATCH_ORG": "kray2",
     "PRL_WATCH_PUBLIC_ORG": "kray2",
     "PRL_WATCH_API_KEY_ENV": "SALAD_API_KEY_2",
-    "PRL_WATCH_SLOTS": ",".join(f"prl-kray2-roi-{index:02d}" for index in range(1, 11)),
+    "PRL_WATCH_SLOTS": roi_slots("kray2"),
     "PRL_WATCH_WORKER_PREFIX": "kray2-prl",
     "PRL_WATCH_WORKER_SLOT_PREFIX": "kray2-roi-",
     "PRL_WATCH_POOL_WORKER_PREFIX": "kray2-prl-kray2",
@@ -398,7 +407,7 @@ KRAY3_WATCH_ENV = {
     "PRL_WATCH_LOG": str(STATE_DIR / "logs" / "kray3_prl_watch.log"),
     "PRL_WATCH_ORG": "kray3",
     "PRL_WATCH_API_KEY_ENV": "SALAD_API_KEY_2",
-    "PRL_WATCH_SLOTS": ",".join(f"prl-kray3-roi-{index:02d}" for index in range(1, 11)),
+    "PRL_WATCH_SLOTS": roi_slots("kray3"),
     "PRL_WATCH_WORKER_PREFIX": "kray3-prl",
     "PRL_WATCH_WORKER_SLOT_PREFIX": "kray3-roi-",
     "PRL_WATCH_POOL_WORKER_PREFIX": "kray3-prl-kray3",
@@ -413,7 +422,7 @@ def bmu_extra_watch_env(org: str) -> dict[str, str]:
         "PRL_WATCH_LOG": str(STATE_DIR / "logs" / f"{org}_prl_watch.log"),
         "PRL_WATCH_ORG": org,
         "PRL_WATCH_API_KEY_ENV": "SALAD_API_KEY",
-        "PRL_WATCH_SLOTS": ",".join(f"prl-{org}-roi-{index:02d}" for index in range(1, 11)),
+        "PRL_WATCH_SLOTS": roi_slots(org),
         "PRL_WATCH_WORKER_PREFIX": f"{org}-prl",
         "PRL_WATCH_WORKER_SLOT_PREFIX": f"{org}-roi-",
         "PRL_WATCH_POOL_WORKER_PREFIX": f"{org}-prl-{org}",
@@ -430,7 +439,7 @@ def generic_watch_env(org: str) -> dict[str, str]:
         "PRL_WATCH_ORG": org,
         "PRL_WATCH_PUBLIC_ORG": org,
         "PRL_WATCH_API_KEY_ENV": key_env,
-        "PRL_WATCH_SLOTS": ",".join(f"prl-{org}-roi-{index:02d}" for index in range(1, 11)),
+        "PRL_WATCH_SLOTS": roi_slots(org),
         "PRL_WATCH_WORKER_PREFIX": f"{org}-prl",
         "PRL_WATCH_WORKER_SLOT_PREFIX": f"{org}-roi-",
         "PRL_WATCH_POOL_WORKER_PREFIX": f"{org}-prl-{org}",

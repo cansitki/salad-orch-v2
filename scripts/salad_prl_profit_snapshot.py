@@ -47,9 +47,19 @@ EMPTY_STUCK_NON_LIVE_SECONDS = int(
 SALAD_FETCH_WORKERS = int(os.environ.get("PRL_SNAPSHOT_SALAD_FETCH_WORKERS", "12"))
 RUNNING_NO_LIVE_GRACE_SECONDS = int(os.environ.get("PRL_NOHASH_GRACE_SECONDS", "900"))
 REWARD_CALIBRATION_FACTOR = float(os.environ.get("PRL_REWARD_CALIBRATION_FACTOR", "1.0"))
+WALLET_OBSERVED_YIELD_MIN_TH_24H = float(
+    os.environ.get("PRL_WALLET_OBSERVED_YIELD_MIN_TH_24H", "100")
+)
 SLOT_ACTION_STATE_PATH = pathlib.Path(
     os.environ.get("PRL_SLOT_ACTION_STATE_PATH", str(STATE_DIR / "prl_slot_actions.json"))
 )
+
+
+def env_bool(key: str, default: bool = False) -> bool:
+    value = os.environ.get(key)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
 def default_snapshot_price() -> float:
@@ -407,6 +417,26 @@ def wallet_observed_rewards(prl_per_th_day: float) -> dict[str, Any] | None:
     }
 
 
+def effective_prl_per_th_day(
+    pool_model_prl_per_th_day: float,
+    observed_rewards: dict[str, Any] | None,
+) -> tuple[float, str, str | None]:
+    if not env_bool("PRL_USE_WALLET_OBSERVED_YIELD", True):
+        return pool_model_prl_per_th_day, "pool_model", "disabled"
+    if not observed_rewards or observed_rewards.get("error"):
+        return pool_model_prl_per_th_day, "pool_model", "wallet_observed_unavailable"
+    try:
+        observed_prl_per_th_day = float(observed_rewards.get("observed_prl_per_th_day_24h") or 0)
+        rolling_th = float(observed_rewards.get("rolling_hashrate_th_24h") or 0)
+    except (TypeError, ValueError):
+        return pool_model_prl_per_th_day, "pool_model", "wallet_observed_invalid"
+    if rolling_th < WALLET_OBSERVED_YIELD_MIN_TH_24H:
+        return pool_model_prl_per_th_day, "pool_model", "wallet_observed_low_hashrate"
+    if observed_prl_per_th_day <= 0:
+        return pool_model_prl_per_th_day, "pool_model", "wallet_observed_zero_yield"
+    return observed_prl_per_th_day, "wallet_observed_24h", None
+
+
 def price_catalog(org: str, api_key: str) -> dict[str, dict[str, float]]:
     catalog: dict[str, dict[str, float]] = {}
     payload = salad_json(f"/organizations/{org}/gpu-classes", api_key)
@@ -506,6 +536,9 @@ CSV_FIELDS = [
     "reward_calibration_factor",
     "hourly_points",
     "prl_per_th_day_net",
+    "prl_per_th_day_source",
+    "prl_per_th_day_fallback_reason",
+    "pool_model_prl_per_th_day_net",
     "wallet_observed_credited_prl_24h",
     "wallet_observed_pending_prl_24h",
     "wallet_observed_total_prl_24h",
@@ -573,6 +606,9 @@ def append_snapshot_csv(snapshot: dict[str, Any]) -> None:
             "reward_calibration_factor": snapshot.get("reward_calibration_factor"),
             "hourly_points": snapshot.get("hourly_points"),
             "prl_per_th_day_net": snapshot.get("prl_per_th_day_net"),
+            "prl_per_th_day_source": snapshot.get("prl_per_th_day_source"),
+            "prl_per_th_day_fallback_reason": snapshot.get("prl_per_th_day_fallback_reason"),
+            "pool_model_prl_per_th_day_net": snapshot.get("pool_model_prl_per_th_day_net"),
             "wallet_observed_credited_prl_24h": observed_rewards.get("credited_prl_24h"),
             "wallet_observed_pending_prl_24h": observed_rewards.get("pending_prl_24h"),
             "wallet_observed_total_prl_24h": observed_rewards.get("total_prl_24h"),
@@ -630,9 +666,13 @@ def build_snapshot(price: float) -> dict[str, Any]:
         raise RuntimeError("PRL_WALLET must be set in the environment or .env file")
     accounts = configured_accounts()
     snapshot_at = datetime.now(UTC)
-    prl_per_th_day, hourly_points, pool_fee_rate = pool_prl_per_th_day()
+    pool_model_prl_per_th_day, hourly_points, pool_fee_rate = pool_prl_per_th_day()
     market_price = market_prl_price_usd()
-    observed_rewards = wallet_observed_rewards(prl_per_th_day)
+    observed_rewards = wallet_observed_rewards(pool_model_prl_per_th_day)
+    prl_per_th_day, prl_per_th_day_source, prl_per_th_day_fallback_reason = effective_prl_per_th_day(
+        pool_model_prl_per_th_day,
+        observed_rewards,
+    )
 
     catalogs: dict[str, dict[str, dict[str, float]]] = {}
     groups: dict[str, tuple[str, str, dict[str, Any]]] = {}
@@ -949,6 +989,9 @@ def build_snapshot(price: float) -> dict[str, Any]:
         "reward_calibration_factor": REWARD_CALIBRATION_FACTOR,
         "hourly_points": hourly_points,
         "prl_per_th_day_net": prl_per_th_day,
+        "prl_per_th_day_source": prl_per_th_day_source,
+        "prl_per_th_day_fallback_reason": prl_per_th_day_fallback_reason,
+        "pool_model_prl_per_th_day_net": pool_model_prl_per_th_day,
         "wallet_observed_rewards": observed_rewards,
         "fresh_workers": len(workers),
         "pool_worker_count": len(pool_workers),

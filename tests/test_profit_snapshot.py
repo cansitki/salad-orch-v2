@@ -97,6 +97,38 @@ class ProfitSnapshotTest(unittest.TestCase):
         self.assertEqual(observed["expected_prl_24h_at_rolling_hashrate"], 50)
         self.assertEqual(observed["observed_to_model_ratio_24h"], 0.8)
 
+    def test_effective_prl_per_th_day_prefers_observed_wallet_yield(self) -> None:
+        observed = {
+            "observed_prl_per_th_day_24h": 0.02,
+            "rolling_hashrate_th_24h": 2000,
+        }
+
+        with patch.dict("os.environ", {"PRL_USE_WALLET_OBSERVED_YIELD": "1"}, clear=False):
+            value, source, fallback_reason = salad_prl_profit_snapshot.effective_prl_per_th_day(
+                0.03,
+                observed,
+            )
+
+        self.assertEqual(value, 0.02)
+        self.assertEqual(source, "wallet_observed_24h")
+        self.assertIsNone(fallback_reason)
+
+    def test_effective_prl_per_th_day_falls_back_when_observed_hashrate_is_low(self) -> None:
+        observed = {
+            "observed_prl_per_th_day_24h": 0.02,
+            "rolling_hashrate_th_24h": 10,
+        }
+
+        with patch.dict("os.environ", {"PRL_USE_WALLET_OBSERVED_YIELD": "1"}, clear=False):
+            value, source, fallback_reason = salad_prl_profit_snapshot.effective_prl_per_th_day(
+                0.03,
+                observed,
+            )
+
+        self.assertEqual(value, 0.03)
+        self.assertEqual(source, "pool_model")
+        self.assertEqual(fallback_reason, "wallet_observed_low_hashrate")
+
     def test_slot_action_detail_path_matches_existing_writers(self) -> None:
         org = "cantemir1"
         slot = "prl-cantemir1-roi-01"

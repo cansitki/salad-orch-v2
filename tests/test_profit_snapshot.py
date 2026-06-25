@@ -104,9 +104,30 @@ class ProfitSnapshotTest(unittest.TestCase):
                 detail_dir.mkdir()
                 detail_path = salad_prl_profit_snapshot.slot_action_detail_path("cantemir1", "prl-cantemir1-roi-01")
                 detail_path.write_text(
-                    '{"action":"patched","reason":"test","candidate":"RTX 4090 batch","at_ts":'
+                    '{"action":"patched","reason":"test","candidate":"RTX 4090 batch","at":'
                     + str(time.time() - 60)
                     + "}",
+                    encoding="utf-8",
+                )
+
+                age, action = salad_prl_profit_snapshot.effective_state_age_seconds(
+                    "cantemir1", "prl-cantemir1-roi-01", 7200.0
+                )
+        finally:
+            salad_prl_profit_snapshot.SLOT_ACTION_STATE_PATH = old_path
+
+        self.assertIsNotNone(action)
+        self.assertLess(age or 0, 120.0)
+
+    def test_effective_state_age_accepts_legacy_at_ts_slot_action(self) -> None:
+        old_path = salad_prl_profit_snapshot.SLOT_ACTION_STATE_PATH
+        try:
+            with tempfile.TemporaryDirectory() as temp_dir:
+                salad_prl_profit_snapshot.SLOT_ACTION_STATE_PATH = pathlib.Path(temp_dir) / "prl_slot_actions.json"
+                salad_prl_profit_snapshot.SLOT_ACTION_STATE_PATH.write_text(
+                    '{"cantemir1/prl-cantemir1-roi-01":{"action":"patched","at_ts":'
+                    + str(time.time() - 60)
+                    + "}}",
                     encoding="utf-8",
                 )
 

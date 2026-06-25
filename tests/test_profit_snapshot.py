@@ -5,6 +5,7 @@ import tempfile
 import time
 import sys
 import unittest
+from datetime import UTC, datetime, timedelta
 from unittest.mock import patch
 
 
@@ -128,6 +129,63 @@ class ProfitSnapshotTest(unittest.TestCase):
         self.assertEqual(value, 0.03)
         self.assertEqual(source, "pool_model")
         self.assertEqual(fallback_reason, "wallet_observed_low_hashrate")
+
+    def test_estimated_cost_usd_from_snapshot_csv_integrates_24h_window(self) -> None:
+        snapshot_at = datetime(2026, 6, 25, 12, tzinfo=UTC)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = pathlib.Path(temp_dir) / "snapshots.csv"
+            path.write_text(
+                "\n".join(
+                    [
+                        "at_utc,total_cost_day",
+                        (snapshot_at - timedelta(hours=24)).isoformat() + ",24",
+                        (snapshot_at - timedelta(hours=12)).isoformat() + ",48",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            result = salad_prl_profit_snapshot.estimated_cost_usd_from_snapshot_csv(
+                path,
+                snapshot_at,
+                72,
+            )
+
+        self.assertEqual(result["coverage_hours"], 24)
+        self.assertEqual(result["coverage_ratio"], 1)
+        self.assertEqual(result["sample_count"], 3)
+        self.assertEqual(result["estimated_cost_usd"], 48)
+
+    def test_wallet_observed_economics_reports_realized_profit_and_break_even(self) -> None:
+        snapshot_at = datetime(2026, 6, 25, 12, tzinfo=UTC)
+        observed = {"total_prl_24h": 100}
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = pathlib.Path(temp_dir) / "snapshots.csv"
+            path.write_text(
+                "\n".join(
+                    [
+                        "at_utc,total_cost_day",
+                        (snapshot_at - timedelta(hours=24)).isoformat() + ",24",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            with patch.object(salad_prl_profit_snapshot, "snapshot_csv_path", return_value=path):
+                result = salad_prl_profit_snapshot.wallet_observed_economics_24h(
+                    observed,
+                    snapshot_at=snapshot_at,
+                    current_cost_day=24,
+                    assumed_price=0.6,
+                    market_price=0.7,
+                )
+
+        self.assertEqual(result["realized_prl_24h"], 100)
+        self.assertEqual(result["estimated_cost_usd"], 24)
+        self.assertEqual(result["profit_usd_at_assumed_price"], 36)
+        self.assertEqual(result["profit_usd_at_market_price"], 46)
+        self.assertEqual(result["break_even_price_usd"], 0.24)
 
     def test_slot_action_detail_path_matches_existing_writers(self) -> None:
         org = "cantemir1"

@@ -12,7 +12,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 
@@ -417,6 +417,146 @@ def wallet_observed_rewards(prl_per_th_day: float) -> dict[str, Any] | None:
     }
 
 
+def parse_snapshot_time(value: Any) -> datetime | None:
+    if not value:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
+
+
+def float_or_none(value: Any) -> float | None:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed
+
+
+def estimated_cost_usd_from_snapshot_csv(
+    path: pathlib.Path | None,
+    snapshot_at: datetime,
+    current_cost_day: float,
+    *,
+    hours: float = 24.0,
+) -> dict[str, Any]:
+    window_seconds = max(0.0, hours * 3600.0)
+    window_start = snapshot_at - timedelta(seconds=window_seconds)
+    points: list[tuple[datetime, float]] = []
+    previous: tuple[datetime, float] | None = None
+
+    if path is not None and path.exists():
+        try:
+            with path.open(newline="") as handle:
+                for row in csv.DictReader(handle):
+                    at = parse_snapshot_time(row.get("at_utc"))
+                    cost_day = float_or_none(row.get("total_cost_day"))
+                    if at is None or cost_day is None:
+                        continue
+                    if at < window_start:
+                        if previous is None or at > previous[0]:
+                            previous = (at, cost_day)
+                        continue
+                    if at <= snapshot_at:
+                        points.append((at, cost_day))
+        except (OSError, csv.Error):
+            points = []
+            previous = None
+
+    if previous is not None:
+        points.insert(0, (window_start, previous[1]))
+    points.append((snapshot_at, current_cost_day))
+    points.sort(key=lambda item: item[0])
+
+    deduped: list[tuple[datetime, float]] = []
+    for at, cost_day in points:
+        if deduped and at == deduped[-1][0]:
+            deduped[-1] = (at, cost_day)
+        else:
+            deduped.append((at, cost_day))
+
+    if len(deduped) < 2:
+        return {
+            "estimated_cost_usd": None,
+            "coverage_seconds": 0.0,
+            "coverage_hours": 0.0,
+            "coverage_ratio": 0.0,
+            "sample_count": len(deduped),
+        }
+
+    cost = 0.0
+    coverage_seconds = 0.0
+    for (left_at, left_cost_day), (right_at, right_cost_day) in zip(deduped, deduped[1:]):
+        left = max(left_at, window_start)
+        right = min(right_at, snapshot_at)
+        seconds = (right - left).total_seconds()
+        if seconds <= 0:
+            continue
+        coverage_seconds += seconds
+        average_cost_day = (left_cost_day + right_cost_day) / 2
+        cost += average_cost_day * seconds / 86400.0
+
+    coverage_ratio = coverage_seconds / window_seconds if window_seconds > 0 else 0.0
+    return {
+        "estimated_cost_usd": round(cost, 6),
+        "coverage_seconds": round(coverage_seconds, 1),
+        "coverage_hours": round(coverage_seconds / 3600.0, 4),
+        "coverage_ratio": round(coverage_ratio, 6),
+        "sample_count": len(deduped),
+    }
+
+
+def wallet_observed_economics_24h(
+    observed_rewards: dict[str, Any] | None,
+    *,
+    snapshot_at: datetime,
+    current_cost_day: float,
+    assumed_price: float,
+    market_price: float,
+) -> dict[str, Any]:
+    total_prl = float_or_none((observed_rewards or {}).get("total_prl_24h"))
+    if not observed_rewards or observed_rewards.get("error") or total_prl is None:
+        return {
+            "source": "wallet_observed_rewards+snapshot_csv_cost",
+            "error": "wallet_observed_unavailable",
+        }
+
+    cost = estimated_cost_usd_from_snapshot_csv(
+        snapshot_csv_path(),
+        snapshot_at,
+        current_cost_day,
+        hours=24.0,
+    )
+    estimated_cost = float_or_none(cost.get("estimated_cost_usd"))
+    assumed_revenue = total_prl * assumed_price
+    market_revenue = total_prl * market_price
+    result: dict[str, Any] = {
+        "source": "wallet_observed_rewards+snapshot_csv_cost",
+        "realized_prl_24h": round(total_prl, 8),
+        "assumed_price_usd": assumed_price,
+        "market_price_usd": market_price,
+        "revenue_usd_at_assumed_price": round(assumed_revenue, 6),
+        "revenue_usd_at_market_price": round(market_revenue, 6),
+        **cost,
+    }
+    if estimated_cost is not None:
+        result.update(
+            {
+                "profit_usd_at_assumed_price": round(assumed_revenue - estimated_cost, 6),
+                "profit_usd_at_market_price": round(market_revenue - estimated_cost, 6),
+                "break_even_price_usd": round(estimated_cost / total_prl, 6) if total_prl > 0 else None,
+            }
+        )
+    return result
+
+
 def effective_prl_per_th_day(
     pool_model_prl_per_th_day: float,
     observed_rewards: dict[str, Any] | None,
@@ -546,6 +686,15 @@ CSV_FIELDS = [
     "wallet_observed_prl_per_th_day_24h",
     "wallet_observed_to_model_ratio_24h",
     "wallet_observed_error",
+    "wallet_realized_prl_24h",
+    "wallet_realized_revenue_usd_at_assumed_price_24h",
+    "wallet_realized_revenue_usd_at_market_price_24h",
+    "wallet_estimated_cost_usd_24h",
+    "wallet_realized_profit_usd_at_assumed_price_24h",
+    "wallet_realized_profit_usd_at_market_price_24h",
+    "wallet_realized_break_even_price_usd_24h",
+    "wallet_cost_coverage_hours_24h",
+    "wallet_cost_coverage_ratio_24h",
     "fresh_workers",
     "slot_count",
     "live_slot_count",
@@ -591,6 +740,7 @@ def append_snapshot_csv(snapshot: dict[str, Any]) -> None:
         totals = snapshot.get("totals") or {}
         unmapped_totals = snapshot.get("unmapped_totals") or {}
         observed_rewards = snapshot.get("wallet_observed_rewards") or {}
+        observed_economics = snapshot.get("wallet_observed_economics_24h") or {}
         pending_slots = snapshot.get("pending_slots") or []
         live_slot_count = sum(1 for slot in pending_slots if slot.get("live"))
         pending_slot_count = sum(
@@ -616,6 +766,23 @@ def append_snapshot_csv(snapshot: dict[str, Any]) -> None:
             "wallet_observed_prl_per_th_day_24h": observed_rewards.get("observed_prl_per_th_day_24h"),
             "wallet_observed_to_model_ratio_24h": observed_rewards.get("observed_to_model_ratio_24h"),
             "wallet_observed_error": observed_rewards.get("error"),
+            "wallet_realized_prl_24h": observed_economics.get("realized_prl_24h"),
+            "wallet_realized_revenue_usd_at_assumed_price_24h": observed_economics.get(
+                "revenue_usd_at_assumed_price"
+            ),
+            "wallet_realized_revenue_usd_at_market_price_24h": observed_economics.get(
+                "revenue_usd_at_market_price"
+            ),
+            "wallet_estimated_cost_usd_24h": observed_economics.get("estimated_cost_usd"),
+            "wallet_realized_profit_usd_at_assumed_price_24h": observed_economics.get(
+                "profit_usd_at_assumed_price"
+            ),
+            "wallet_realized_profit_usd_at_market_price_24h": observed_economics.get(
+                "profit_usd_at_market_price"
+            ),
+            "wallet_realized_break_even_price_usd_24h": observed_economics.get("break_even_price_usd"),
+            "wallet_cost_coverage_hours_24h": observed_economics.get("coverage_hours"),
+            "wallet_cost_coverage_ratio_24h": observed_economics.get("coverage_ratio"),
             "fresh_workers": snapshot.get("fresh_workers"),
             "slot_count": len(pending_slots),
             "live_slot_count": live_slot_count,
@@ -648,7 +815,9 @@ def append_snapshot_csv(snapshot: dict[str, Any]) -> None:
         if path.exists() and path.stat().st_size > 0:
             try:
                 with path.open(newline="") as existing:
-                    write_header = not any(line.strip() for line in existing)
+                    reader = csv.reader(existing)
+                    header = next(reader, [])
+                    write_header = header != CSV_FIELDS
             except OSError:
                 write_header = True
         with path.open("a", newline="") as handle:
@@ -964,6 +1133,13 @@ def build_snapshot(price: float) -> dict[str, Any]:
 
     totals = {key: sum(float(row[key]) for row in rows) for key in ("th", "prl_day", "revenue_day", "cost_day", "profit_day")}
     market_revenue_day = totals["prl_day"] * market_price
+    wallet_economics = wallet_observed_economics_24h(
+        observed_rewards,
+        snapshot_at=snapshot_at,
+        current_cost_day=totals["cost_day"],
+        assumed_price=price,
+        market_price=market_price,
+    )
     unmapped_totals = {
         "count": len(unmapped_workers),
         "th": sum(float(row["th"]) for row in unmapped_workers),
@@ -993,6 +1169,7 @@ def build_snapshot(price: float) -> dict[str, Any]:
         "prl_per_th_day_fallback_reason": prl_per_th_day_fallback_reason,
         "pool_model_prl_per_th_day_net": pool_model_prl_per_th_day,
         "wallet_observed_rewards": observed_rewards,
+        "wallet_observed_economics_24h": wallet_economics,
         "fresh_workers": len(workers),
         "pool_worker_count": len(pool_workers),
         "pool_stale_worker_count": sum(1 for worker in pool_workers if worker.get("stale")),

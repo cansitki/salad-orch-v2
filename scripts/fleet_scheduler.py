@@ -67,6 +67,7 @@ def build_targets(
     existing_targets = existing_targets or {}
     scores_by_key = {str(score["profile_key"]): score for score in scores}
     pending_target_protect_seconds = max(0, env_int("PRL_PENDING_TARGET_PROTECT_SECONDS", 120))
+    prefer_reported_available_score_order = bool(env_int("PRL_FILL_PREFER_REPORTED_AVAILABLE_SCORE_ORDER", 1))
     min_profit_day = config.risk.min_profit_for_mode("optimize" if mode == "optimize" else "fill")
     assigned_by_org_profile: dict[tuple[str, str], int] = {}
     targets: list[dict[str, Any]] = []
@@ -108,6 +109,19 @@ def build_targets(
             return False
         remaining = reported_capacity_remaining(org_label, profile_key)
         return remaining is not None and remaining > 0
+
+    def reported_available_candidates(org_label: str, candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        if not prefer_reported_available_score_order:
+            return candidates
+        return sorted(
+            candidates,
+            key=lambda candidate: (
+                float(candidate.get("score") or 0),
+                float(candidate.get("expected_profit_day") or 0),
+                max(0, reported_capacity_remaining(org_label, str(candidate["profile_key"])) or 0),
+            ),
+            reverse=True,
+        )
 
     def has_capacity(
         org_label: str,
@@ -155,8 +169,13 @@ def build_targets(
         candidate_profiles: list[dict[str, Any]] | None = None,
     ) -> tuple[int, dict[str, Any]] | None:
         candidates = candidate_profiles or profiles
+        if require_reported_available:
+            candidates = reported_available_candidates(org_label, candidates)
         for offset in range(len(candidates)):
-            profile_index = (slot_index - 1 + org_index * 3 + offset) % len(candidates)
+            if require_reported_available and prefer_reported_available_score_order:
+                profile_index = offset
+            else:
+                profile_index = (slot_index - 1 + org_index * 3 + offset) % len(candidates)
             candidate = candidates[profile_index]
             candidate_key = str(candidate["profile_key"])
             if skip_profile_key and candidate_key == skip_profile_key:

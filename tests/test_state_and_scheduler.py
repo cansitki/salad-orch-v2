@@ -1877,6 +1877,62 @@ class StateAndSchedulerTest(unittest.TestCase):
         self.assertEqual(targets[0]["profile_key"], "available:batch:2048")
         self.assertNotIn("availability_probe_fallback", targets[0]["reason"])
 
+    def test_scheduler_prefers_best_reported_available_profile_before_diversifying(self) -> None:
+        config = config_loader.FleetConfig(
+            organizations=(
+                config_loader.OrgConfig(
+                    label="kray",
+                    slug="kray",
+                    api_key_env="SALAD_API_KEY_TEST",
+                    slot_prefix="prl-kray-roi",
+                    slots=2,
+                ),
+            )
+        )
+        scores = [
+            {
+                "profile_key": "best:low:2048",
+                "gpu_key": "best",
+                "priority": "low",
+                "memory_mb": 2048,
+                "expected_profit_day": 2.0,
+                "score": 200.0,
+                "eligible": True,
+            },
+            {
+                "profile_key": "second:low:2048",
+                "gpu_key": "second",
+                "priority": "low",
+                "memory_mb": 2048,
+                "expected_profit_day": 1.0,
+                "score": 100.0,
+                "eligible": True,
+            },
+        ]
+        previous = os.environ.get("PRL_FILL_PREFER_REPORTED_AVAILABLE_SCORE_ORDER")
+        os.environ["PRL_FILL_PREFER_REPORTED_AVAILABLE_SCORE_ORDER"] = "1"
+        try:
+            targets = fleet_scheduler.build_targets(
+                config,
+                scores,
+                mode="base_fill",
+                decision_price_usd=0.64,
+                width=2,
+                availability={
+                    "kray": {
+                        "best:low:2048": {"ok": True, "available_count": 2},
+                        "second:low:2048": {"ok": True, "available_count": 2},
+                    }
+                },
+            )
+        finally:
+            if previous is None:
+                os.environ.pop("PRL_FILL_PREFER_REPORTED_AVAILABLE_SCORE_ORDER", None)
+            else:
+                os.environ["PRL_FILL_PREFER_REPORTED_AVAILABLE_SCORE_ORDER"] = previous
+
+        self.assertEqual([target["profile_key"] for target in targets], ["best:low:2048", "best:low:2048"])
+
     def test_scheduler_uses_probe_fallback_to_keep_org_filled_when_all_profiles_report_zero(self) -> None:
         config = load_config()
         scores = profile_scorer.score_profiles(

@@ -102,6 +102,29 @@ class GuardDecisionTest(unittest.TestCase):
         self.assertEqual(decisions[0]["action"], "retarget")
         self.assertEqual(decisions[0]["age_seconds"], 600)
 
+    def test_guard_can_force_restart_prolonged_no_hash(self) -> None:
+        with patch.dict("os.environ", {"PRL_GUARD_RESTART_NOHASH_AFTER_SECONDS": "60"}, clear=False):
+            decisions = guard.enforce_issues(
+                db_path=self.db_path,
+                decision_price=0.64,
+                apply=False,
+                analysis={
+                    "fresh_workers": 3,
+                    "running_no_live_billable_slots": [
+                        {
+                            "org": "kray",
+                            "slot": "prl-kray-roi-01",
+                            "cost_day": 1.0,
+                            "state_age_seconds": 600,
+                        }
+                    ],
+                    "negative_slots": [],
+                },
+            )
+
+        self.assertEqual(decisions[0]["action"], "retarget")
+        self.assertEqual(decisions[0]["target"]["force_restart_reason"], "prolonged_no_hash")
+
     def test_guard_uses_probe_fallback_when_all_profiles_report_zero_availability(self) -> None:
         scores = profile_scorer.score_profiles(
             db_path=self.db_path,

@@ -347,6 +347,8 @@ def enforce_issues(
     decisions: list[dict[str, Any]] = []
     active_keys: set[tuple[str, str, str]] = set()
     actioned_slots: set[tuple[str, str]] = set()
+    restart_no_hash_after_actions = env_int("PRL_GUARD_RESTART_AFTER_NOHASH_ACTIONS", 1)
+    restart_no_hash_after_seconds = env_int("PRL_GUARD_RESTART_NOHASH_AFTER_SECONDS", 0)
     with state_db.connect(db_path) as conn:
         state_db.init_db(conn)
         profile_scorer.score_profiles(db_path=db_path, decision_price_usd=decision_price, write=True)
@@ -380,11 +382,11 @@ def enforce_issues(
             )
             if target is not None:
                 target["snapshot_instance_id"] = snapshot.worker_instance_id(str(row.get("worker") or ""))
-                if issue_type == "no_hash" and int(issue_row["action_count"] or 0) >= env_int(
-                    "PRL_GUARD_RESTART_AFTER_NOHASH_ACTIONS",
-                    1,
-                ):
-                    target["force_restart_reason"] = "repeated_no_hash_after_guard_action"
+                if issue_type == "no_hash":
+                    if int(issue_row["action_count"] or 0) >= restart_no_hash_after_actions:
+                        target["force_restart_reason"] = "repeated_no_hash_after_guard_action"
+                    elif restart_no_hash_after_seconds > 0 and issue_age >= restart_no_hash_after_seconds:
+                        target["force_restart_reason"] = "prolonged_no_hash"
             decision = {
                 "org_label": org_label,
                 "slot_name": slot_name,

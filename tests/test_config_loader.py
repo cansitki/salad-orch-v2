@@ -89,6 +89,28 @@ class ConfigLoaderTest(unittest.TestCase):
                 "display_prefix": "PearlFortune KR3",
                 "slots": 10,
             },
+            {
+                "label": "alpha1",
+                "slug": "alpha1",
+                "api_key_env": "SALAD_API_KEY_ALPHA",
+                "slot_prefix": "prl-alpha1-roi",
+                "worker_prefix": "alpha1-prl",
+                "worker_slot_prefix": "alpha1-roi-",
+                "pool_worker_prefix": "alpha1-prl-alpha1",
+                "display_prefix": "PearlFortune ALPHA1",
+                "slots": 10,
+            },
+            {
+                "label": "alpha2",
+                "slug": "alpha2",
+                "api_key_env": "SALAD_API_KEY_ALPHA",
+                "slot_prefix": "prl-alpha2-roi",
+                "worker_prefix": "alpha2-prl",
+                "worker_slot_prefix": "alpha2-roi-",
+                "pool_worker_prefix": "alpha2-prl-alpha2",
+                "display_prefix": "PearlFortune ALPHA2",
+                "slots": 10,
+            },
         ]
         with patch.object(config_loader, "load_env_file", lambda: None), patch.dict(
             config_loader.os.environ,
@@ -97,10 +119,10 @@ class ConfigLoaderTest(unittest.TestCase):
         ):
             config = config_loader.load_config()
 
-        self.assertEqual(config.target_slot_count(), 80)
+        self.assertEqual(config.target_slot_count(), 100)
         self.assertEqual(
-            [org.label for org in config.enabled_orgs()[-4:]],
-            ["kry2", "kr1", "kr2", "kr3"],
+            [org.label for org in config.enabled_orgs()[-6:]],
+            ["kry2", "kr1", "kr2", "kr3", "alpha1", "alpha2"],
         )
 
     def test_validate_config_catches_duplicate_slot_prefix(self) -> None:

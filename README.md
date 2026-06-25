@@ -229,7 +229,7 @@ python3 scripts/config_loader.py --check-secrets
 Current full expansion:
 
 ```bash
-export SALAD_FLEET_EXTRA_ORGS_JSON='[{"label":"kry2","slug":"kry2","api_key_env":"SALAD_API_KEY_KRY1","slot_prefix":"prl-kry2-roi","worker_prefix":"kry2-prl","worker_slot_prefix":"kry2-roi-","pool_worker_prefix":"kry2-prl-kry2","display_prefix":"PearlFortune KRY2","slots":10,"enabled":true},{"label":"kr1","slug":"kr1","api_key_env":"SALAD_API_KEY_KR1","slot_prefix":"prl-kr1-roi","worker_prefix":"kr1-prl","worker_slot_prefix":"kr1-roi-","pool_worker_prefix":"kr1-prl-kr1","display_prefix":"PearlFortune KR1","slots":10,"enabled":true},{"label":"kr2","slug":"kr2","api_key_env":"SALAD_API_KEY_KR1","slot_prefix":"prl-kr2-roi","worker_prefix":"kr2-prl","worker_slot_prefix":"kr2-roi-","pool_worker_prefix":"kr2-prl-kr2","display_prefix":"PearlFortune KR2","slots":10,"enabled":true},{"label":"kr3","slug":"kr3","api_key_env":"SALAD_API_KEY_KR1","slot_prefix":"prl-kr3-roi","worker_prefix":"kr3-prl","worker_slot_prefix":"kr3-roi-","pool_worker_prefix":"kr3-prl-kr3","display_prefix":"PearlFortune KR3","slots":10,"enabled":true}]'
+export SALAD_FLEET_EXTRA_ORGS_JSON='[{"label":"kry2","slug":"kry2","api_key_env":"SALAD_API_KEY_KRY1","slot_prefix":"prl-kry2-roi","worker_prefix":"kry2-prl","worker_slot_prefix":"kry2-roi-","pool_worker_prefix":"kry2-prl-kry2","display_prefix":"PearlFortune KRY2","slots":10,"enabled":true},{"label":"kr1","slug":"kr1","api_key_env":"SALAD_API_KEY_KR1","slot_prefix":"prl-kr1-roi","worker_prefix":"kr1-prl","worker_slot_prefix":"kr1-roi-","pool_worker_prefix":"kr1-prl-kr1","display_prefix":"PearlFortune KR1","slots":10,"enabled":true},{"label":"kr2","slug":"kr2","api_key_env":"SALAD_API_KEY_KR1","slot_prefix":"prl-kr2-roi","worker_prefix":"kr2-prl","worker_slot_prefix":"kr2-roi-","pool_worker_prefix":"kr2-prl-kr2","display_prefix":"PearlFortune KR2","slots":10,"enabled":true},{"label":"kr3","slug":"kr3","api_key_env":"SALAD_API_KEY_KR1","slot_prefix":"prl-kr3-roi","worker_prefix":"kr3-prl","worker_slot_prefix":"kr3-roi-","pool_worker_prefix":"kr3-prl-kr3","display_prefix":"PearlFortune KR3","slots":10,"enabled":true},{"label":"alpha1","slug":"alpha1","api_key_env":"SALAD_API_KEY_ALPHA","slot_prefix":"prl-alpha1-roi","worker_prefix":"alpha1-prl","worker_slot_prefix":"alpha1-roi-","pool_worker_prefix":"alpha1-prl-alpha1","display_prefix":"PearlFortune ALPHA1","slots":10,"enabled":true},{"label":"alpha2","slug":"alpha2","api_key_env":"SALAD_API_KEY_ALPHA","slot_prefix":"prl-alpha2-roi","worker_prefix":"alpha2-prl","worker_slot_prefix":"alpha2-roi-","pool_worker_prefix":"alpha2-prl-alpha2","display_prefix":"PearlFortune ALPHA2","slots":10,"enabled":true}]'
 ```
 
 When two orgs share the same actual Salad token, configure both orgs to use the
@@ -237,7 +237,8 @@ same env var name so the SQLite API budget is shared. For example, `kry2`
 currently uses `SALAD_API_KEY_KRY1` when it belongs to the same account as
 `kry1`. `kr1`, `kr2`, and `kr3` should all use `SALAD_API_KEY_KR1` when they
 share one actual token. Do not reuse that key for `kray`, `kray2`, `kray3`,
-`kry1`, or `kry2`.
+`kry1`, or `kry2`. `alpha1` and `alpha2` should both use
+`SALAD_API_KEY_ALPHA` when they share the same actual token.
 
 The validator catches duplicate labels, slugs, slot prefixes, slot names,
 non-positive slot counts, and missing key env vars when `--check-secrets` is

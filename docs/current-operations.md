@@ -59,9 +59,11 @@ The public org labels are:
 | `kr1` | 10 | `SALAD_API_KEY_KR1` |
 | `kr2` | 10 | `SALAD_API_KEY_KR1` when sharing the kr1 token; otherwise `SALAD_API_KEY_KR2` |
 | `kr3` | 10 | `SALAD_API_KEY_KR1` when sharing the kr1 token; otherwise `SALAD_API_KEY_KR3` |
+| `alpha1` | 10 | `SALAD_API_KEY_ALPHA` |
+| `alpha2` | 10 | `SALAD_API_KEY_ALPHA` when sharing the alpha1 token |
 
 Base target capacity is 40 active or pending slots. With `kry2`, `kr1`, `kr2`,
-and `kr3` enabled, target capacity is 80 slots.
+`kr3`, `alpha1`, and `alpha2` enabled, target capacity is 100 slots.
 
 Slot names follow:
 
@@ -74,6 +76,8 @@ prl-kry2-roi-01  ... prl-kry2-roi-10
 prl-kr1-roi-01   ... prl-kr1-roi-10
 prl-kr2-roi-01   ... prl-kr2-roi-10
 prl-kr3-roi-01   ... prl-kr3-roi-10
+prl-alpha1-roi-01 ... prl-alpha1-roi-10
+prl-alpha2-roi-01 ... prl-alpha2-roi-10
 ```
 
 ## Script Map

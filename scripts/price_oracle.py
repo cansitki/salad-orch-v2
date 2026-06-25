@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import time
 import urllib.error
 import urllib.request
@@ -66,6 +67,13 @@ def fetch_gross_prl_per_th_day(hours: int = 24) -> tuple[float | None, int]:
     return (gross if points else None), points
 
 
+def reward_calibration_factor() -> float:
+    try:
+        return float(os.environ.get("PRL_REWARD_CALIBRATION_FACTOR", "1.0"))
+    except ValueError:
+        return 1.0
+
+
 def sample_price(config_fee_rate: float) -> dict[str, Any]:
     errors: list[str] = []
     pearl_price: float | None = None
@@ -97,6 +105,8 @@ def sample_price(config_fee_rate: float) -> dict[str, Any]:
     price_values = [value for value in (pearl_price, safetrade.get("selected")) if value and value > 0]
     selected = min(price_values) if price_values else None
     source_spread = (max(price_values) - min(price_values)) if len(price_values) > 1 else None
+    calibration = reward_calibration_factor()
+    calibrated_gross_prl = gross_prl * calibration if gross_prl is not None else None
 
     return {
         "sampled_at_utc": utc_now(),
@@ -106,7 +116,9 @@ def sample_price(config_fee_rate: float) -> dict[str, Any]:
         "safetrade_sell_usd": safetrade.get("sell"),
         "selected_price_usd": selected,
         "source_spread_usd": source_spread,
-        "gross_prl_per_th_day": gross_prl,
+        "gross_prl_per_th_day": calibrated_gross_prl,
+        "raw_gross_prl_per_th_day": gross_prl,
+        "reward_calibration_factor": calibration,
         "pool_fee_rate": pool_fee,
         "configured_pearl_fee_rate": config_fee_rate,
         "pool_summary_points": points,

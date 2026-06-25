@@ -130,6 +130,7 @@ PRICE_GUARD_PRICE_BAND_USD = float(os.environ.get("PRL_WATCH_PRICE_BAND_USD", "0
 PRICE_GUARD_DECISION_PRICE_CAP_USD = float(os.environ.get("PRL_WATCH_DECISION_PRICE_CAP_USD", "0.63"))
 PRICE_GUARD_FIXED_DECISION_PRICE_USD = float(os.environ.get("PRL_WATCH_FIXED_DECISION_PRICE_USD", "0.62"))
 PRICE_GUARD_CACHE_SECONDS = int(os.environ.get("PRL_WATCH_PRICE_GUARD_CACHE_SECONDS", "300"))
+PRICE_GUARD_REWARD_CALIBRATION_FACTOR = float(os.environ.get("PRL_REWARD_CALIBRATION_FACTOR", "1.0"))
 PRICE_CATALOG_CACHE_SECONDS = int(os.environ.get("PRL_WATCH_PRICE_CATALOG_CACHE_SECONDS", "900"))
 MINER_RELEASE_TAG = os.environ.get("PRL_WATCH_MINER_RELEASE_TAG", "v.1.1.8")
 MINER_PACKAGE_VERSION = os.environ.get("PRL_WATCH_MINER_PACKAGE_VERSION", "v1.1.8")
@@ -785,7 +786,7 @@ def pool_prl_per_th_day_net() -> float | None:
         points += 1
     if points <= 0:
         return None
-    return gross * (1 - fee)
+    return gross * (1 - fee) * PRICE_GUARD_REWARD_CALIBRATION_FACTOR
 
 
 def market_prl_price_usd() -> float | None:
@@ -882,6 +883,7 @@ def revenue_usd_per_th_day() -> float | None:
             "decision_price_cap_usd": PRICE_GUARD_DECISION_PRICE_CAP_USD,
             "fixed_decision_price_usd": PRICE_GUARD_FIXED_DECISION_PRICE_USD,
             "prl_per_th_day": prl_per_th_day,
+            "reward_calibration_factor": PRICE_GUARD_REWARD_CALIBRATION_FACTOR,
             "usd_per_th_day": value,
         }
     )
@@ -893,6 +895,7 @@ def revenue_usd_per_th_day() -> float | None:
         decision_price_cap_usd=round(PRICE_GUARD_DECISION_PRICE_CAP_USD, 6),
         fixed_decision_price_usd=round(PRICE_GUARD_FIXED_DECISION_PRICE_USD, 6),
         prl_per_th_day=round(prl_per_th_day, 8),
+        reward_calibration_factor=round(PRICE_GUARD_REWARD_CALIBRATION_FACTOR, 6),
         usd_per_th_day=round(value, 6),
     )
     return value

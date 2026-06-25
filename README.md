@@ -739,8 +739,12 @@ The net PRL per TH per day is derived from recent PearlFortune pool stats:
 
 ```text
 gross_prl_per_th = hourly_pool_reward / (hourly_pool_hashrate / 1e12)
-net_prl_per_th   = gross_prl_per_th * (1 - pool_fee_rate)
+net_prl_per_th   = gross_prl_per_th * (1 - pool_fee_rate) * PRL_REWARD_CALIBRATION_FACTOR
 ```
+
+`PRL_REWARD_CALIBRATION_FACTOR` defaults to `1.0`. Set it below `1.0` when
+confirmed plus pending PRL consistently trails the reported-hashrate estimate;
+for example, `0.92` applies an 8% haircut to expected PRL/day and profit gates.
 
 The pool worker list is matched to Salad slots through the worker name pattern.
 If Salad shows a billable running slot but the matching PearlFortune worker is

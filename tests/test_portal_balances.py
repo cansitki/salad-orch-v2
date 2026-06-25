@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import json
 import os
 import pathlib
@@ -117,6 +118,31 @@ class PortalBalancesTest(unittest.TestCase):
         http_mock.assert_called_once()
         eval_mock.assert_not_called()
 
+    def test_fetch_portal_balances_http_can_force_login(self) -> None:
+        calls = []
+
+        def fake_http_json_request(**kwargs):
+            calls.append(kwargs)
+            if kwargs["url"].endswith("/users/login"):
+                return {"ok": True, "status": 200}
+            if kwargs["url"].endswith("/organizations"):
+                return {"ok": True, "status": 200, "items": []}
+            raise AssertionError(kwargs["url"])
+
+        with mock.patch.object(portal_balances, "http_json_request", side_effect=fake_http_json_request):
+            payload = portal_balances.fetch_portal_balances_http(
+                cookie_jar=self.tmp_path / "portal_cookies.txt",
+                email="user@example.com",
+                password="test-password",
+                force_login=True,
+            )
+
+        self.assertTrue(payload["ok"])
+        self.assertTrue(calls[0]["url"].endswith("/users/login"))
+        self.assertEqual(calls[0]["method"], "POST")
+        self.assertEqual(calls[0]["body"], {"email": "user@example.com", "password": "test-password"})
+        self.assertTrue(calls[1]["url"].endswith("/organizations"))
+
     def test_fetch_portal_balances_opens_portal_after_unauthorized_eval(self) -> None:
         expected = {"ok": True, "status": 200, "balances": []}
 
@@ -156,6 +182,36 @@ class PortalBalancesTest(unittest.TestCase):
             portal_balances.main()
 
         self.assertEqual(run_mock.call_args.kwargs["cookie_jar"], cookie_path)
+
+    def test_main_can_read_portal_credentials_from_stdin(self) -> None:
+        balance_file = self.tmp_path / "balances.json"
+
+        with (
+            mock.patch.object(
+                sys,
+                "argv",
+                [
+                    "portal_balances.py",
+                    "--once",
+                    "--balance-file",
+                    str(balance_file),
+                    "--force-login",
+                    "--portal-credentials-stdin",
+                ],
+            ),
+            mock.patch.object(sys, "stdin", io.StringIO("user@example.com\ntest-password\n")),
+            mock.patch.object(
+                portal_balances,
+                "run_once",
+                return_value={"status": "ok", "org_count": 0, "missing_enabled_orgs": [], "balances": {}},
+            ) as run_mock,
+            mock.patch("builtins.print"),
+        ):
+            portal_balances.main()
+
+        self.assertEqual(run_mock.call_args.kwargs["portal_email"], "user@example.com")
+        self.assertEqual(run_mock.call_args.kwargs["portal_password"], "test-password")
+        self.assertTrue(run_mock.call_args.kwargs["force_login"])
 
     def test_record_refresh_marks_missing_enabled_orgs_degraded(self) -> None:
         payload = {"status": 200, "checked_at_utc": "2026-06-25T00:00:00Z", "balances": [{"org": "kray"}]}

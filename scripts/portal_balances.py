@@ -7,6 +7,7 @@ import json
 import os
 import pathlib
 import subprocess
+import sys
 import time
 from typing import Any
 import urllib.error
@@ -151,9 +152,23 @@ def fetch_portal_balances_http(
     cookie_jar: pathlib.Path,
     email: str | None = None,
     password: str | None = None,
+    force_login: bool = False,
     timeout: int = 30,
 ) -> dict[str, Any]:
     jar = load_cookie_jar(cookie_jar)
+    if force_login:
+        if not email or not password:
+            raise PortalBalanceError("portal force-login requested without credentials")
+        login_payload = http_json_request(
+            url=f"{PORTAL_API}/users/login",
+            jar=jar,
+            method="POST",
+            body={"email": email, "password": password},
+            timeout=timeout,
+        )
+        if not login_payload.get("ok"):
+            raise PortalBalanceError(f"portal login failed status {login_payload.get('status')}")
+        save_cookie_jar(jar, cookie_jar)
     org_payload = http_json_request(url=f"{PORTAL_API}/organizations", jar=jar, timeout=timeout)
     if int(org_payload.get("status") or 0) in {401, 403} and email and password:
         login_payload = http_json_request(
@@ -209,6 +224,7 @@ def fetch_portal_balances(
     cookie_jar: pathlib.Path | None = None,
     portal_email: str | None = None,
     portal_password: str | None = None,
+    force_login: bool = False,
 ) -> dict[str, Any]:
     run_cwd = cwd or pathlib.Path.cwd()
     if cookie_jar is not None:
@@ -216,6 +232,7 @@ def fetch_portal_balances(
             cookie_jar=cookie_jar,
             email=portal_email,
             password=portal_password,
+            force_login=force_login,
             timeout=min(timeout, 30),
         )
     js = f"""
@@ -406,6 +423,7 @@ def run_once(
     cookie_jar: pathlib.Path | None = None,
     portal_email: str | None = None,
     portal_password: str | None = None,
+    force_login: bool = False,
 ) -> dict[str, Any]:
     payload = fetch_portal_balances(
         session=session,
@@ -414,6 +432,7 @@ def run_once(
         cookie_jar=cookie_jar,
         portal_email=portal_email,
         portal_password=portal_password,
+        force_login=force_login,
     )
     balances = normalize_balances(payload)
     balances, stale_balance_orgs = merge_existing_balances_for_partial_failures(
@@ -442,11 +461,21 @@ def main() -> None:
     parser.add_argument("--cookie-jar", default=os.environ.get("SALAD_PORTAL_COOKIE_JAR"))
     parser.add_argument("--portal-email-env", default=DEFAULT_PORTAL_EMAIL_ENV)
     parser.add_argument("--portal-password-env", default=DEFAULT_PORTAL_PASSWORD_ENV)
+    parser.add_argument("--portal-credentials-stdin", action="store_true")
+    parser.add_argument("--force-login", action="store_true")
     parser.add_argument("--once", action="store_true")
     parser.add_argument("--loop", action="store_true")
     parser.add_argument("--interval", type=int, default=900)
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
+    portal_email = os.environ.get(args.portal_email_env)
+    portal_password = os.environ.get(args.portal_password_env)
+    if args.portal_credentials_stdin:
+        lines = sys.stdin.read().splitlines()
+        if len(lines) < 2:
+            raise SystemExit("--portal-credentials-stdin requires email and password lines")
+        portal_email = lines[0].strip()
+        portal_password = lines[1]
 
     while True:
         try:
@@ -457,8 +486,9 @@ def main() -> None:
                 cwd=pathlib.Path(args.cwd),
                 timeout=args.timeout,
                 cookie_jar=pathlib.Path(args.cookie_jar) if args.cookie_jar else None,
-                portal_email=os.environ.get(args.portal_email_env),
-                portal_password=os.environ.get(args.portal_password_env),
+                portal_email=portal_email,
+                portal_password=portal_password,
+                force_login=args.force_login,
             )
         except Exception as exc:
             record_failure(args.db, exc)

@@ -43,8 +43,19 @@ class ConfigLoaderTest(unittest.TestCase):
         self.assertEqual(config.target_slot_count(), 50)
         self.assertIn("kray4", [org.label for org in config.enabled_orgs()])
 
-    def test_extra_orgs_accept_long_inline_json(self) -> None:
+    def test_extra_orgs_accept_requested_expansion_inline_json(self) -> None:
         extra = [
+            {
+                "label": "kry2",
+                "slug": "kry2",
+                "api_key_env": "SALAD_API_KEY_KRY2",
+                "slot_prefix": "prl-kry2-roi",
+                "worker_prefix": "kry2-prl",
+                "worker_slot_prefix": "kry2-roi-",
+                "pool_worker_prefix": "kry2-prl-kry2",
+                "display_prefix": "PearlFortune KRY2",
+                "slots": 10,
+            },
             {
                 "label": "kr1",
                 "slug": "kr1",
@@ -67,6 +78,17 @@ class ConfigLoaderTest(unittest.TestCase):
                 "display_prefix": "PearlFortune KR2",
                 "slots": 10,
             },
+            {
+                "label": "kr3",
+                "slug": "kr3",
+                "api_key_env": "SALAD_API_KEY_KR3",
+                "slot_prefix": "prl-kr3-roi",
+                "worker_prefix": "kr3-prl",
+                "worker_slot_prefix": "kr3-roi-",
+                "pool_worker_prefix": "kr3-prl-kr3",
+                "display_prefix": "PearlFortune KR3",
+                "slots": 10,
+            },
         ]
         with patch.object(config_loader, "load_env_file", lambda: None), patch.dict(
             config_loader.os.environ,
@@ -75,10 +97,10 @@ class ConfigLoaderTest(unittest.TestCase):
         ):
             config = config_loader.load_config()
 
-        self.assertEqual(config.target_slot_count(), 60)
+        self.assertEqual(config.target_slot_count(), 80)
         self.assertEqual(
-            [org.label for org in config.enabled_orgs()[-2:]],
-            ["kr1", "kr2"],
+            [org.label for org in config.enabled_orgs()[-4:]],
+            ["kry2", "kr1", "kr2", "kr3"],
         )
 
     def test_validate_config_catches_duplicate_slot_prefix(self) -> None:

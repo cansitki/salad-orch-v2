@@ -44,6 +44,7 @@ EMPTY_STUCK_NON_LIVE_SECONDS = int(
 )
 SALAD_FETCH_WORKERS = int(os.environ.get("PRL_SNAPSHOT_SALAD_FETCH_WORKERS", "12"))
 RUNNING_NO_LIVE_GRACE_SECONDS = int(os.environ.get("PRL_NOHASH_GRACE_SECONDS", "900"))
+REWARD_CALIBRATION_FACTOR = float(os.environ.get("PRL_REWARD_CALIBRATION_FACTOR", "1.0"))
 
 
 def default_snapshot_price() -> float:
@@ -56,7 +57,15 @@ def default_snapshot_price() -> float:
     ):
         value = os.environ.get(key)
         if value:
-            return float(value)
+            price = float(value)
+            if price > 0:
+                return price
+    try:
+        live_price = market_prl_price_usd()
+    except Exception:
+        live_price = 0.0
+    if live_price > 0:
+        return live_price
     return 0.62
 
 DEFAULT_ACCOUNTS = [
@@ -263,7 +272,7 @@ def pool_prl_per_th_day() -> tuple[float, int, float]:
             continue
         gross += float(item.get("pool_reward") or 0) / (pool_hashrate / 1e12)
         points += 1
-    return gross * (1 - fee), points, fee
+    return gross * (1 - fee) * REWARD_CALIBRATION_FACTOR, points, fee
 
 
 def price_catalog(org: str, api_key: str) -> dict[str, dict[str, float]]:
@@ -362,6 +371,7 @@ CSV_FIELDS = [
     "assumed_prl_price",
     "live_market_prl_price",
     "pool_fee_rate",
+    "reward_calibration_factor",
     "hourly_points",
     "prl_per_th_day_net",
     "fresh_workers",
@@ -420,6 +430,7 @@ def append_snapshot_csv(snapshot: dict[str, Any]) -> None:
             "assumed_prl_price": snapshot.get("assumed_prl_price"),
             "live_market_prl_price": snapshot.get("live_market_prl_price"),
             "pool_fee_rate": snapshot.get("pool_fee_rate"),
+            "reward_calibration_factor": snapshot.get("reward_calibration_factor"),
             "hourly_points": snapshot.get("hourly_points"),
             "prl_per_th_day_net": snapshot.get("prl_per_th_day_net"),
             "fresh_workers": snapshot.get("fresh_workers"),
@@ -779,6 +790,7 @@ def build_snapshot(price: float) -> dict[str, Any]:
         "assumed_prl_price": price,
         "live_market_prl_price": market_price,
         "pool_fee_rate": pool_fee_rate,
+        "reward_calibration_factor": REWARD_CALIBRATION_FACTOR,
         "hourly_points": hourly_points,
         "prl_per_th_day_net": prl_per_th_day,
         "fresh_workers": len(workers),

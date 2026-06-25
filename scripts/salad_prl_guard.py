@@ -723,6 +723,7 @@ def reallocate_slot(org: str, slot: str, reason: str, *, retarget: bool = True) 
         instances_by_id.setdefault(instance_id, instance)
     for instance_id, instance in instances_by_id.items():
         module.reallocate(slot, instance_id, reason)
+        record_guard_slot_action(org, slot, "reallocated", reason)
         actions.append(
             {
                 "org": org,
@@ -838,7 +839,15 @@ def seen_since_from_state_age(store: dict[tuple[str, str], float], key: tuple[st
         state_age_seconds = float(item.get("state_age_seconds") or 0)
     except (TypeError, ValueError):
         state_age_seconds = 0.0
-    if state_age_seconds > 0:
+    org, slot = key
+    recent_action = recent_slot_action(org, slot)
+    try:
+        recent_action_age = float(recent_action.get("age_seconds") or 0) if recent_action else 0.0
+    except (TypeError, ValueError):
+        recent_action_age = 0.0
+    if recent_action_age > 0 and (state_age_seconds <= 0 or recent_action_age < state_age_seconds):
+        store[key] = max(0.0, now_ts - recent_action_age)
+    elif state_age_seconds > 0:
         store[key] = max(0.0, now_ts - state_age_seconds)
     else:
         store[key] = now_ts

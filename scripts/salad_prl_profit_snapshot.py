@@ -20,6 +20,7 @@ SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parent
 ENV = pathlib.Path(os.environ.get("SALAD_PRL_ENV", str(REPO_ROOT / ".env")))
 DEFAULT_SNAPSHOT_CSV = REPO_ROOT / "state" / "prl_profit_snapshots.csv"
+STATE_DIR = pathlib.Path(os.environ.get("PRL_STATE_DIR", str(REPO_ROOT / "state")))
 
 
 def load_env_file() -> None:
@@ -45,6 +46,9 @@ EMPTY_STUCK_NON_LIVE_SECONDS = int(
 SALAD_FETCH_WORKERS = int(os.environ.get("PRL_SNAPSHOT_SALAD_FETCH_WORKERS", "12"))
 RUNNING_NO_LIVE_GRACE_SECONDS = int(os.environ.get("PRL_NOHASH_GRACE_SECONDS", "900"))
 REWARD_CALIBRATION_FACTOR = float(os.environ.get("PRL_REWARD_CALIBRATION_FACTOR", "1.0"))
+SLOT_ACTION_STATE_PATH = pathlib.Path(
+    os.environ.get("PRL_SLOT_ACTION_STATE_PATH", str(STATE_DIR / "prl_slot_actions.json"))
+)
 
 
 def default_snapshot_price() -> float:
@@ -253,6 +257,56 @@ def gpu_from_model(model: str) -> tuple[str | None, str | None]:
 def gpu_names(gpu_ids: list[Any]) -> list[str]:
     by_id = {gpu_id: token for token, gpu_id in GPU_IDS.items()}
     return [by_id.get(str(gpu_id), str(gpu_id)) for gpu_id in gpu_ids]
+
+
+def safe_slot_action_token(org: str, slot: str) -> str:
+    return re.sub(r"[^A-Za-z0-9_.-]+", "_", f"{org}_{slot}").strip("_") or "slot"
+
+
+def slot_action_detail_path(org: str, slot: str) -> pathlib.Path:
+    return SLOT_ACTION_STATE_PATH.parent / f"{SLOT_ACTION_STATE_PATH.stem}.d" / f"{safe_slot_action_token(org, slot)}.json"
+
+
+def slot_action_with_age(entry: Any) -> dict[str, Any] | None:
+    if not isinstance(entry, dict):
+        return None
+    try:
+        at_ts = float(entry.get("at_ts") or 0)
+    except (TypeError, ValueError):
+        at_ts = 0.0
+    if at_ts <= 0:
+        return None
+    action = dict(entry)
+    action["age_seconds"] = max(0.0, time.time() - at_ts)
+    return action
+
+
+def recent_slot_action(org: str, slot: str) -> dict[str, Any] | None:
+    try:
+        detail = json.loads(slot_action_detail_path(org, slot).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        detail = None
+    action = slot_action_with_age(detail)
+    if action:
+        return action
+    try:
+        state = json.loads(SLOT_ACTION_STATE_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return slot_action_with_age(state.get(f"{org}/{slot}") or state.get(slot))
+
+
+def effective_state_age_seconds(org: str, slot: str, observed_age: float | None) -> tuple[float | None, dict[str, Any] | None]:
+    action = recent_slot_action(org, slot)
+    if observed_age is None:
+        return None, action
+    try:
+        action_age = float(action.get("age_seconds") or 0) if action else 0.0
+    except (TypeError, ValueError):
+        action_age = 0.0
+    if action_age > 0 and action_age < observed_age:
+        return action_age, action
+    return observed_age, action
 
 
 def pool_prl_per_th_day() -> tuple[float, int, float]:
@@ -657,17 +711,25 @@ def build_snapshot(price: float) -> dict[str, Any]:
             if age is not None and age >= stuck_after:
                 stuck_non_live.append(stuck_item)
         if running > 0 and slot not in known_slots and age is not None and age >= RUNNING_NO_LIVE_GRACE_SECONDS:
+            effective_age, recent_action = effective_state_age_seconds(public_org or "", slot, age)
             cost_day = 24 * fallback_hourly(group, public_org, catalogs) * running
-            running_no_live.append(
-                {
-                    "slot": slot,
-                    "org": public_org,
-                    "priority": priority,
-                    "cost_day": cost_day,
-                    "state_age_seconds": round(age, 1),
-                    "grace_seconds": RUNNING_NO_LIVE_GRACE_SECONDS,
+            item = {
+                "slot": slot,
+                "org": public_org,
+                "priority": priority,
+                "cost_day": cost_day,
+                "state_age_seconds": round(age, 1),
+                "effective_age_seconds": round(effective_age, 1) if effective_age is not None else None,
+                "grace_seconds": RUNNING_NO_LIVE_GRACE_SECONDS,
+            }
+            if recent_action:
+                item["recent_action"] = {
+                    "action": recent_action.get("action"),
+                    "reason": recent_action.get("reason"),
+                    "candidate": recent_action.get("candidate"),
+                    "age_seconds": round(float(recent_action.get("age_seconds") or 0), 1),
                 }
-            )
+            running_no_live.append(item)
             rows.append(
                 {
                     "worker": "NO_POOL_HASHRATE",

@@ -610,7 +610,7 @@ def pending_instances(module: Any, slot: str) -> list[dict[str, Any]]:
     ]
 
 
-def retarget_slot(org: str, slot: str, reason: str) -> dict[str, Any] | None:
+def retarget_slot(org: str, slot: str, reason: str, *, prefer_best: bool = False) -> dict[str, Any] | None:
     module = watchers.get(org)
     if module is None:
         return None
@@ -628,12 +628,19 @@ def retarget_slot(org: str, slot: str, reason: str) -> dict[str, Any] | None:
         log("slot_retarget_match_failed", org=org, slot=slot, reason=reason, error=type(exc).__name__, detail=str(exc)[:180])
 
     try:
-        if actual is not None:
+        if prefer_best:
+            candidate = module.best_available_candidate(
+                slot,
+                exclude=actual,
+                reason=f"{reason}_best_available",
+            )
+        elif actual is not None:
             module.set_current_candidate(slot, actual)
+            candidate = module.advance_candidate(slot)
         else:
             module.SLOT_CANDIDATE_INDEX[slot] = -1
-        candidate = module.advance_candidate(slot)
-        if candidate is None:
+            candidate = module.advance_candidate(slot)
+        if candidate is None and not prefer_best:
             candidate = module.best_available_candidate(
                 slot,
                 exclude=actual,
@@ -703,13 +710,20 @@ def stop_slot(org: str, slot: str, reason: str) -> dict[str, Any] | None:
         return None
 
 
-def reallocate_slot(org: str, slot: str, reason: str, *, retarget: bool = True) -> list[dict[str, Any]]:
+def reallocate_slot(
+    org: str,
+    slot: str,
+    reason: str,
+    *,
+    retarget: bool = True,
+    prefer_best_retarget: bool = False,
+) -> list[dict[str, Any]]:
     module = watchers.get(org)
     if module is None:
         return []
     pre_retarget_instances = running_instances(module, slot)
     pre_retarget_ids = {str(instance.get("id") or "") for instance in pre_retarget_instances}
-    retargeted = retarget_slot(org, slot, reason) if retarget else None
+    retargeted = retarget_slot(org, slot, reason, prefer_best=prefer_best_retarget) if retarget else None
     if retarget and retargeted is None:
         stopped = stop_slot(org, slot, f"{reason}:no_retarget_candidate")
         if stopped is not None:
@@ -1045,7 +1059,7 @@ def tick() -> None:
             )
             continue
         reason = f"auto_negative_slot_guard_{NEGATIVE_SLOT_GRACE_SECONDS}s"
-        slot_actions = reallocate_slot(org, slot, reason, retarget=False)
+        slot_actions = reallocate_slot(org, slot, reason, retarget=True, prefer_best_retarget=True)
         if slot_actions:
             log(
                 "negative_slot_reallocated",
@@ -1120,7 +1134,7 @@ def tick() -> None:
             )
             continue
         reason = f"auto_underperform_slot_guard_{UNDERPERFORM_GRACE_SECONDS}s"
-        slot_actions = reallocate_slot(org, slot, reason, retarget=False)
+        slot_actions = reallocate_slot(org, slot, reason, retarget=True, prefer_best_retarget=True)
         if slot_actions:
             log(
                 "underperform_slot_reallocated",

@@ -10,7 +10,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from config_loader import FleetConfig, load_config
-from fleet_common import STATE_DIR, compact_json, env_int, json_dumps, safe_public_payload, utc_now
+from fleet_common import STATE_DIR, compact_json, env_bool, env_int, json_dumps, safe_public_payload, utc_now
 
 
 DEFAULT_DB = pathlib.Path(__file__).resolve().parent.parent / "state" / "fleet_scheduler.db"
@@ -766,15 +766,21 @@ def reserve_api_request(
 
 
 def active_search_cooldowns(conn: sqlite3.Connection) -> set[tuple[str, str, str]]:
+    ignore_availability_zero = env_bool("PRL_IGNORE_AVAILABILITY_ZERO_COOLDOWN", False)
     rows = conn.execute(
         """
-        SELECT org_label, slot_name, profile_key
+        SELECT org_label, slot_name, profile_key, reason
         FROM search_cooldowns
         WHERE sleep_until_utc IS NOT NULL
           AND julianday(sleep_until_utc) > julianday('now')
         """
     ).fetchall()
-    return {(str(row["org_label"]), str(row["slot_name"]), str(row["profile_key"])) for row in rows}
+    cooldowns = set()
+    for row in rows:
+        if ignore_availability_zero and str(row["reason"] or "") == "availability_zero":
+            continue
+        cooldowns.add((str(row["org_label"]), str(row["slot_name"]), str(row["profile_key"])))
+    return cooldowns
 
 
 def update_slot_observation(conn: sqlite3.Connection, row: dict[str, Any]) -> None:

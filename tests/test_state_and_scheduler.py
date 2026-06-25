@@ -2548,6 +2548,41 @@ class StateAndSchedulerTest(unittest.TestCase):
             )
         )
 
+    def test_scheduler_can_ignore_availability_zero_cooldown_for_fill(self) -> None:
+        config = load_config()
+        with state_db.connect(self.db_path) as conn:
+            state_db.init_db(conn)
+            state_db.sync_config(conn, config)
+            state_db.record_search_state(
+                conn,
+                {
+                    "org_label": "kray",
+                    "slot_name": "*",
+                    "profile_key": "4090:batch:2048",
+                    "sleep_until_utc": (datetime.now(UTC) + timedelta(minutes=10)).isoformat(timespec="seconds"),
+                    "attempts": 20,
+                    "reason": "availability_zero",
+                },
+            )
+            conn.commit()
+
+        previous = os.environ.get("PRL_IGNORE_AVAILABILITY_ZERO_COOLDOWN")
+        os.environ["PRL_IGNORE_AVAILABILITY_ZERO_COOLDOWN"] = "1"
+        try:
+            payload = fleet_scheduler.schedule_once(db_path=self.db_path, price=0.64, fee=0.01, dry_run=False)
+        finally:
+            if previous is None:
+                os.environ.pop("PRL_IGNORE_AVAILABILITY_ZERO_COOLDOWN", None)
+            else:
+                os.environ["PRL_IGNORE_AVAILABILITY_ZERO_COOLDOWN"] = previous
+
+        self.assertTrue(
+            any(
+                target["org_label"] == "kray" and target["profile_key"] == "4090:batch:2048"
+                for target in payload["targets"]
+            )
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

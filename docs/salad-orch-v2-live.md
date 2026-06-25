@@ -194,6 +194,13 @@ be refreshed by a portal/browser provider outside git:
 {"kray": 100.0, "kry1": 100.0, "kray2": 100.0, "kray3": 100.0}
 ```
 
+When a fresh balance file contains an enabled org with an explicit `0.00`
+balance, live org workers skip start/patch actions for that org. This prevents
+burning Salad API time on slots that cannot instantiate because the org is not
+funded. Missing orgs are not treated as zero, so an org like `kry1` keeps
+running when the active Portal account cannot see its balance. Set
+`PRL_SKIP_ZERO_BALANCE_ORGS=0` only for an intentional manual override.
+
 When the file is missing, the audit keeps recording active GPUs and writes
 `unavailable` balance rows instead of stopping, unless `PRL_AUDIT_MONITOR_DB` or
 `--monitor-db` points to an existing `salad-pearl-monitor` DB.

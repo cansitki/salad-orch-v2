@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import pathlib
 import os
 import sys
@@ -264,6 +265,61 @@ class StateAndSchedulerTest(unittest.TestCase):
             ).fetchone()
         self.assertIsNotNone(heartbeat)
         self.assertEqual(heartbeat["stale_after_seconds"], 0)
+
+    def test_org_worker_skips_live_actions_for_explicit_zero_balance(self) -> None:
+        fleet_scheduler.schedule_once(db_path=self.db_path, price=0.64, fee=0.01, dry_run=False)
+        balance_file = pathlib.Path(self.tmpdir.name) / "balances.json"
+        balance_file.write_text(json.dumps({"kray": 0.0}), encoding="utf-8")
+
+        original_balance_file = os.environ.get("PRL_BALANCE_FILE")
+        original_skip = os.environ.get("PRL_SKIP_ZERO_BALANCE_ORGS")
+        original_load_watch_module = org_worker.load_watch_module
+        original_install_rate_limited_request = org_worker.install_rate_limited_request
+        os.environ["PRL_BALANCE_FILE"] = str(balance_file)
+        os.environ["PRL_SKIP_ZERO_BALANCE_ORGS"] = "1"
+        org_worker.load_watch_module = lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("zero balance org should not load Salad watcher")
+        )
+        org_worker.install_rate_limited_request = lambda *_args, **_kwargs: None
+        try:
+            payload = org_worker.run_once(
+                org_label="kray",
+                db_path=self.db_path,
+                apply=True,
+                schedule_if_empty=False,
+                heartbeat_stale_after_seconds=0,
+            )
+        finally:
+            if original_balance_file is None:
+                os.environ.pop("PRL_BALANCE_FILE", None)
+            else:
+                os.environ["PRL_BALANCE_FILE"] = original_balance_file
+            if original_skip is None:
+                os.environ.pop("PRL_SKIP_ZERO_BALANCE_ORGS", None)
+            else:
+                os.environ["PRL_SKIP_ZERO_BALANCE_ORGS"] = original_skip
+            org_worker.load_watch_module = original_load_watch_module
+            org_worker.install_rate_limited_request = original_install_rate_limited_request
+
+        self.assertEqual(payload["action_counts"], {"skip_zero_balance": 10})
+        self.assertEqual(payload["targets"], 10)
+        self.assertTrue(all(result["action"] == "skip_zero_balance" for result in payload["results"]))
+        with state_db.connect(self.db_path) as conn:
+            attempts = conn.execute(
+                "SELECT COUNT(*) FROM attempts WHERE org_label='kray' AND action='skip_zero_balance'"
+            ).fetchone()[0]
+            heartbeat = conn.execute(
+                "SELECT payload_json FROM heartbeats WHERE process_name = 'org_worker:kray'"
+            ).fetchone()
+        self.assertEqual(attempts, 10)
+        self.assertIn("zero_balance_skip", heartbeat["payload_json"])
+
+    def test_zero_balance_skip_requires_explicit_fresh_org_balance(self) -> None:
+        balance_file = pathlib.Path(self.tmpdir.name) / "balances.json"
+        balance_file.write_text(json.dumps({"kray3": 0.0}), encoding="utf-8")
+
+        self.assertIsNotNone(org_worker.explicit_zero_balance_skip("kray3", path=balance_file))
+        self.assertIsNone(org_worker.explicit_zero_balance_skip("kry1", path=balance_file))
 
     def test_slot_observation_preserves_hashrate_when_omitted(self) -> None:
         with state_db.connect(self.db_path) as conn:

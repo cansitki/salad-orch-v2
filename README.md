@@ -275,6 +275,12 @@ the logged-in Salad account cannot see an enabled org. That is expected for orgs
 funded through another account; the hourly fleet audit records those orgs as
 `unavailable` instead of treating them as zero balance.
 
+Live org workers also read this file. If a fresh file explicitly reports an org
+balance at `0.00`, the worker skips start/patch actions for that org until the
+next balance refresh shows positive funds. Missing orgs are not skipped, which
+keeps API-key-visible orgs such as `kry1` active even when the current Portal
+account cannot read their balance.
+
 If the older local monitor is running, the audit can also read balances directly
 from its SQLite DB:
 

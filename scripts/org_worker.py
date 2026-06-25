@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import json
 import os
 import pathlib
 import sys
@@ -13,12 +14,13 @@ from typing import Any
 import fleet_scheduler
 import state_db
 from config_loader import OrgConfig, load_config
-from fleet_common import env_int, json_dumps, utc_now
+from fleet_common import env_bool, env_float, env_int, json_dumps, utc_now
 from profit_model import profile_key
 
 
 SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
 WATCH_PATH = SCRIPT_DIR / "salad_prl_watch.py"
+DEFAULT_BALANCE_FILE = pathlib.Path("state/salad_balances.json")
 
 
 def load_watch_module(org: OrgConfig, *, decision_price: float, min_profit_day: float) -> Any:
@@ -258,6 +260,70 @@ def age_seconds(value: str | None) -> float | None:
     return max(0.0, (datetime.now(UTC) - at).total_seconds())
 
 
+def balance_file_path() -> pathlib.Path:
+    raw = (
+        os.environ.get("PRL_ORG_BALANCE_FILE")
+        or os.environ.get("PRL_BALANCE_FILE")
+        or os.environ.get("SALAD_BALANCE_FILE")
+    )
+    return pathlib.Path(raw) if raw else DEFAULT_BALANCE_FILE
+
+
+def explicit_zero_balance_skip(org_label: str, *, path: pathlib.Path | None = None) -> dict[str, Any] | None:
+    if not env_bool("PRL_SKIP_ZERO_BALANCE_ORGS", True):
+        return None
+    selected_path = path or balance_file_path()
+    if not selected_path.exists():
+        return None
+    max_age = env_float("PRL_ZERO_BALANCE_SKIP_MAX_AGE_SECONDS", 1800.0)
+    age = max(0.0, time.time() - selected_path.stat().st_mtime)
+    if max_age >= 0 and age > max_age:
+        return None
+    try:
+        payload = json.loads(selected_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict) or org_label not in payload:
+        return None
+    try:
+        balance = float(payload[org_label])
+    except (TypeError, ValueError):
+        return None
+    threshold = env_float("PRL_ZERO_BALANCE_SKIP_THRESHOLD_USD", 0.0)
+    if balance > threshold:
+        return None
+    return {
+        "org_label": org_label,
+        "balance_usd": balance,
+        "threshold_usd": threshold,
+        "balance_file": str(selected_path),
+        "balance_age_seconds": round(age, 1),
+    }
+
+
+def zero_balance_skip_result(target: dict[str, Any], skip: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "slot_name": str(target["slot_name"]),
+        "action": "skip_zero_balance",
+        "reason": (
+            f"explicit_org_balance_{float(skip['balance_usd']):.2f}"
+            f"_lte_{float(skip['threshold_usd']):.2f}"
+        ),
+        "target_profile_key": target["profile_key"],
+        "current_profile_key": target.get("slot_observed_profile_key"),
+        "observed_status": target.get("slot_observed_status") or "unknown",
+        "protected": False,
+        "counts": {"running": 0, "creating": 0, "allocating": 0, "stopping": 0},
+        "instance_count": 0,
+        "pending_instance_ids": [],
+        "running_instance_ids": [],
+        "ok": True,
+        "applied": False,
+        "balance_usd": skip["balance_usd"],
+        "balance_file": skip["balance_file"],
+    }
+
+
 def pending_profile_age_seconds(target: dict[str, Any]) -> float | None:
     return age_seconds(
         target.get("observed_profile_since_utc")
@@ -483,12 +549,6 @@ def run_once(
         targets = target_rows(conn, org_label)
         conn.commit()
 
-    watch = load_watch_module(org, decision_price=decision_price, min_profit_day=min_profit)
-    install_rate_limited_request(watch, org, db_path=db_path)
-    results: list[dict[str, Any]] = []
-    attempt_rows: list[dict[str, Any]] = []
-    observation_rows: list[dict[str, Any]] = []
-    cooldown_rows: list[dict[str, Any]] = []
     pending_retarget_after_seconds = max(0, int(pending_retarget_after_seconds))
     if pending_status_retarget_after_seconds is None:
         pending_status_retarget_after_seconds = env_int(
@@ -499,9 +559,78 @@ def run_once(
         pending_retarget_after_seconds,
         pending_status_retarget_after_seconds,
     )
-    pending_profile_cooldown_seconds = env_int("PRL_PENDING_PROFILE_COOLDOWN_SECONDS", 600)
     if heartbeat_stale_after_seconds is None:
         heartbeat_stale_after_seconds = env_int("PRL_ORG_WORKER_STALE_AFTER_SECONDS", 300)
+
+    zero_balance_skip = explicit_zero_balance_skip(org_label) if apply else None
+    if zero_balance_skip is not None:
+        results = [zero_balance_skip_result(target, zero_balance_skip) for target in targets]
+        action_counts = {"skip_zero_balance": len(results)}
+        with state_db.connect(db_path) as conn:
+            state_db.init_db(conn)
+            for target, result in zip(targets, results, strict=False):
+                state_db.record_attempt(
+                    conn,
+                    {
+                        "at_utc": utc_now(),
+                        "org_label": org_label,
+                        "slot_name": str(target["slot_name"]),
+                        "action": "skip_zero_balance",
+                        "profile_key": str(target["profile_key"]),
+                        "ok": True,
+                        "duration_ms": 0,
+                        "error": None,
+                        "payload": result,
+                    },
+                )
+            state_db.write_heartbeat(
+                conn,
+                f"org_worker:{org_label}",
+                stale_after_seconds=heartbeat_stale_after_seconds,
+                payload={
+                    "apply": apply,
+                    "allow_live_retarget": allow_live_retarget,
+                    "allow_pending_retarget": allow_pending_retarget,
+                    "pending_retarget_after_seconds": pending_retarget_after_seconds,
+                    "pending_status_retarget_after_seconds": pending_status_retarget_after_seconds,
+                    "targets": len(targets),
+                    "actions": action_counts,
+                    "zero_balance_skip": zero_balance_skip,
+                },
+            )
+            state_db.record_event(
+                conn,
+                "org_worker_zero_balance_skip",
+                source=f"org_worker:{org_label}",
+                message="org worker skipped live actions for explicit zero balance",
+                payload={
+                    "apply": apply,
+                    "targets": len(targets),
+                    "actions": action_counts,
+                    "zero_balance_skip": zero_balance_skip,
+                },
+            )
+            conn.commit()
+        return {
+            "org": org_label,
+            "apply": apply,
+            "allow_live_retarget": allow_live_retarget,
+            "allow_pending_retarget": allow_pending_retarget,
+            "pending_retarget_after_seconds": pending_retarget_after_seconds,
+            "pending_status_retarget_after_seconds": pending_status_retarget_after_seconds,
+            "targets": len(targets),
+            "action_counts": action_counts,
+            "zero_balance_skip": zero_balance_skip,
+            "results": results,
+        }
+
+    watch = load_watch_module(org, decision_price=decision_price, min_profit_day=min_profit)
+    install_rate_limited_request(watch, org, db_path=db_path)
+    results: list[dict[str, Any]] = []
+    attempt_rows: list[dict[str, Any]] = []
+    observation_rows: list[dict[str, Any]] = []
+    cooldown_rows: list[dict[str, Any]] = []
+    pending_profile_cooldown_seconds = env_int("PRL_PENDING_PROFILE_COOLDOWN_SECONDS", 600)
     for target in targets:
         started = time.monotonic()
         if should_skip_live_hashing_target(target, apply=apply, allow_live_retarget=allow_live_retarget):

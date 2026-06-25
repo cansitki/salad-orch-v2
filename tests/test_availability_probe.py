@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import os
 import pathlib
 import sys
 import tempfile
@@ -206,6 +208,56 @@ class AvailabilityProbeTest(unittest.TestCase):
             )
 
         self.assertEqual(payload["profile_parallelism"], 5)
+
+    def test_run_once_skips_only_explicit_zero_balance_orgs(self) -> None:
+        config = FleetConfig(
+            organizations=(
+                OrgConfig(
+                    label="kray",
+                    slug="kray",
+                    api_key_env="SALAD_API_KEY_2",
+                    slot_prefix="prl-kray-roi",
+                ),
+                OrgConfig(
+                    label="kry1",
+                    slug="kry1",
+                    api_key_env="SALAD_API_KEY_KRY1",
+                    slot_prefix="prl-kry1-roi",
+                ),
+            )
+        )
+        profile = profit_model.Profile(
+            profile_key="4090:batch:2048",
+            gpu_key="4090",
+            gpu_id="gpu-4090",
+            priority="batch",
+            label="RTX 4090 batch",
+            memory_mb=2048,
+            expected_th=230.0,
+            static_hourly_usd=0.16,
+        )
+        balance_file = pathlib.Path(self.tmpdir.name) / "balances.json"
+        balance_file.write_text(json.dumps({"kray": 0.0}), encoding="utf-8")
+        original_balance_file = os.environ.get("PRL_BALANCE_FILE")
+        os.environ["PRL_BALANCE_FILE"] = str(balance_file)
+        try:
+            with (
+                mock.patch.object(availability_probe, "load_config", return_value=config),
+                mock.patch.object(availability_probe.profit_model, "load_profiles", return_value=[profile]),
+                mock.patch.object(availability_probe, "load_watch_module", return_value=FakeWatch()) as load_watch,
+                mock.patch.object(availability_probe, "install_rate_limited_request"),
+            ):
+                payload = availability_probe.run_once(db_path=self.db_path, profile_limit=1)
+        finally:
+            if original_balance_file is None:
+                os.environ.pop("PRL_BALANCE_FILE", None)
+            else:
+                os.environ["PRL_BALANCE_FILE"] = original_balance_file
+
+        self.assertEqual(payload["probed"], 1)
+        self.assertEqual(payload["results"][0]["org_label"], "kry1")
+        self.assertEqual([item["org_label"] for item in payload["skipped_zero_balance_orgs"]], ["kray"])
+        load_watch.assert_called_once_with(config.organizations[1])
 
     def test_probe_org_profiles_uses_profile_parallelism(self) -> None:
         org = OrgConfig(

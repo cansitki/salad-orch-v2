@@ -200,6 +200,8 @@ burning Salad API time on slots that cannot instantiate because the org is not
 funded. Missing orgs are not treated as zero, so an org like `kry1` keeps
 running when the active Portal account cannot see its balance. Set
 `PRL_SKIP_ZERO_BALANCE_ORGS=0` only for an intentional manual override.
+The availability probe uses the same rule, so unfunded orgs do not consume GPU
+capacity probe requests on shared Salad API keys.
 
 When the file is missing, the audit keeps recording active GPUs and writes
 `unavailable` balance rows instead of stopping, unless `PRL_AUDIT_MONITOR_DB` or

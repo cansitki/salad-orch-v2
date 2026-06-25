@@ -17,7 +17,7 @@ import profit_model
 import state_db
 from config_loader import OrgConfig, load_config
 from fleet_common import env_int, json_dumps, utc_now
-from org_worker import install_rate_limited_request
+from org_worker import explicit_zero_balance_skip, install_rate_limited_request
 
 
 SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
@@ -215,6 +215,14 @@ def run_once(
     if profile_limit is not None:
         profiles = profiles[:profile_limit]
     results: list[dict[str, Any]] = []
+    enabled_orgs = config.enabled_orgs()
+    skipped_zero_balance = [
+        skip
+        for org in enabled_orgs
+        if (skip := explicit_zero_balance_skip(org.label)) is not None
+    ]
+    skipped_zero_balance_labels = {str(skip["org_label"]) for skip in skipped_zero_balance}
+    probe_orgs = [org for org in enabled_orgs if org.label not in skipped_zero_balance_labels]
 
     with state_db.connect(db_path) as conn:
         state_db.init_db(conn)
@@ -230,12 +238,13 @@ def run_once(
                 "profile_count": len(profiles),
                 "org_parallelism": selected_org_parallelism,
                 "profile_parallelism": selected_profile_parallelism,
+                "skipped_zero_balance_orgs": skipped_zero_balance,
             },
         )
         conn.commit()
 
     org_rows = _probe_orgs(
-        config.enabled_orgs(),
+        probe_orgs,
         profiles,
         db_path=db_path,
         org_parallelism=selected_org_parallelism,
@@ -330,6 +339,7 @@ def run_once(
                 "by_profile": by_profile,
                 "org_parallelism": selected_org_parallelism,
                 "profile_parallelism": selected_profile_parallelism,
+                "skipped_zero_balance_orgs": skipped_zero_balance,
             },
         )
         state_db.record_event(
@@ -337,7 +347,11 @@ def run_once(
             "availability_probed",
             source="availability_probe",
             message="Salad GPU availability probed",
-            payload={"probed": len(results), "profiles": by_profile},
+            payload={
+                "probed": len(results),
+                "profiles": by_profile,
+                "skipped_zero_balance_orgs": skipped_zero_balance,
+            },
         )
         conn.commit()
 
@@ -346,6 +360,7 @@ def run_once(
         "priorities": priorities,
         "org_parallelism": selected_org_parallelism,
         "profile_parallelism": selected_profile_parallelism,
+        "skipped_zero_balance_orgs": skipped_zero_balance,
         "by_profile": by_profile,
         "results": results,
     }

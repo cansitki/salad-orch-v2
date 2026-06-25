@@ -7,6 +7,7 @@ import sys
 import tempfile
 import unittest
 from datetime import UTC, datetime, timedelta
+from unittest.mock import patch
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -964,6 +965,68 @@ class StateAndSchedulerTest(unittest.TestCase):
         self.assertFalse(result["applied"])
         self.assertEqual(result["action"], "cooldown_failed_patch")
         self.assertEqual(result["original_action"], "patch")
+
+    def test_org_worker_can_restart_pending_when_patch_fails(self) -> None:
+        class Watch:
+            ORG = "kray"
+            PROJECT = "default"
+
+            class Candidate:
+                def __init__(self, label, priority, gpu_keys, memory):
+                    self.label = label
+                    self.priority = priority
+                    self.gpu_keys = gpu_keys
+                    self.memory = memory
+
+            def __init__(self):
+                self.requests = []
+                self.starts = []
+
+            def patch_slot(self, _slot_name, _candidate, _reason, *, start_after=True):
+                return False
+
+            def request(self, method, path):
+                self.requests.append((method, path))
+
+            def start_slot(self, slot_name, reason):
+                self.starts.append((slot_name, reason))
+                return True
+
+        watch = Watch()
+        with patch.dict("os.environ", {"PRL_PENDING_PATCH_FAIL_RESTART": "1"}, clear=False):
+            result = org_worker.execute_action(
+                watch,
+                {
+                    "slot_name": "prl-kray-roi-01",
+                    "label": "RTX 4090 batch",
+                    "priority": "batch",
+                    "gpu_key": "4090",
+                    "memory_mb": 2048,
+                },
+                {
+                    "slot_name": "prl-kray-roi-01",
+                    "action": "patch",
+                    "reason": "stale_pending_profile_mismatch:4080:batch:2048:age_300.0",
+                    "target_profile_key": "4090:batch:2048",
+                    "current_profile_key": "4080:batch:2048",
+                    "observed_status": "allocating",
+                    "protected": False,
+                    "counts": {"allocating": 1, "creating": 0, "running": 0, "stopping": 0},
+                    "instance_count": 0,
+                },
+                apply=True,
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["applied"])
+        self.assertEqual(result["action"], "restart_failed_patch_pending")
+        self.assertEqual(result["original_action"], "patch")
+        self.assertEqual(result["restart_reason"], "patch_failed_pending")
+        self.assertEqual(
+            watch.requests,
+            [("POST", "/organizations/kray/projects/default/containers/prl-kray-roi-01/stop")],
+        )
+        self.assertEqual(watch.starts, [("prl-kray-roi-01", "patch_failed:patch_failed_pending")])
 
     def test_org_worker_start_failure_is_reported(self) -> None:
         class Watch:

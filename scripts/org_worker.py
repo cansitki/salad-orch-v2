@@ -173,7 +173,7 @@ def observed_profile_key_for_result(target: dict[str, Any], result: dict[str, An
 
 def cooldown_profile_key_for_result(target: dict[str, Any], result: dict[str, Any]) -> str | None:
     action = str(result.get("action") or "")
-    if action in {"cooldown_pending", "cooldown_failed_patch"}:
+    if action in {"cooldown_pending", "cooldown_failed_patch", "restart_failed_patch_pending"}:
         return str(target["profile_key"])
     if action == "patch" and str(result.get("reason") or "").startswith("stale_pending_profile_mismatch:"):
         current = result.get("current_profile_key")
@@ -505,6 +505,16 @@ def has_active_instances(plan: dict[str, Any]) -> bool:
     return any(int(counts.get(key) or 0) > 0 for key in ("allocating", "creating", "running", "stopping"))
 
 
+def is_pending_patch_plan(plan: dict[str, Any]) -> bool:
+    counts = plan.get("counts") or {}
+    status = str(plan.get("observed_status") or "").lower()
+    return (
+        int(counts.get("allocating") or 0) > 0
+        or int(counts.get("creating") or 0) > 0
+        or status == "deploying"
+    )
+
+
 def start_error_for_result(watch: Any, slot_name: str) -> str:
     getter = getattr(watch, "start_slot_error", None)
     if callable(getter):
@@ -547,6 +557,30 @@ def execute_action(watch: Any, target: dict[str, Any], plan: dict[str, Any], *, 
             start_after=not start_after_patch,
         )
         if not ok:
+            if env_bool("PRL_PENDING_PATCH_FAIL_RESTART", False) and is_pending_patch_plan(plan):
+                restart_reason = "patch_failed_pending"
+                watch.request("POST", f"/organizations/{watch.ORG}/projects/{watch.PROJECT}/containers/{slot_name}/stop")
+                start_result = watch.start_slot(slot_name, f"patch_failed:{restart_reason}")
+                if start_result is False:
+                    result = start_failed_result(watch, slot_name, plan, "patch_failed_pending")
+                    result.update(
+                        {
+                            "patch_failed": True,
+                            "restart_requested": True,
+                            "restart_reason": restart_reason,
+                        }
+                    )
+                    return result
+                return {
+                    "ok": True,
+                    "applied": True,
+                    **plan,
+                    "action": "restart_failed_patch_pending",
+                    "original_action": "patch",
+                    "patch_failed": True,
+                    "restart_requested": True,
+                    "restart_reason": restart_reason,
+                }
             return {
                 "ok": True,
                 "applied": False,
@@ -887,7 +921,11 @@ def run_once(
                     "reset_observed_age": bool(
                         apply
                         and result.get("applied")
-                        and str(result.get("action") or "") in {"cooldown_pending", "restart_no_hash"}
+                        and str(result.get("action") or "") in {
+                            "cooldown_pending",
+                            "restart_failed_patch_pending",
+                            "restart_no_hash",
+                        }
                     ),
                 }
             )

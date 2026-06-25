@@ -6,6 +6,7 @@ import multiprocessing
 import os
 import queue
 import sys
+import time
 from typing import Any
 
 import fleet_scheduler
@@ -308,6 +309,14 @@ def _join_worker_process(process: Any) -> None:
         process.join(5)
 
 
+def _org_worker_timeout_seconds() -> float:
+    raw = os.environ.get("PRL_ORG_WORKER_TIMEOUT_SECONDS", "180")
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        return 180.0
+
+
 def _run_org_worker_batch(tasks: list[dict[str, Any]]) -> list[dict[str, Any]]:
     ctx = multiprocessing.get_context("fork")
     workers = []
@@ -318,22 +327,35 @@ def _run_org_worker_batch(tasks: list[dict[str, Any]]) -> list[dict[str, Any]]:
         workers.append((task, process, result_queue))
 
     results: list[dict[str, Any]] = []
-    for task, process, result_queue in workers:
-        while True:
-            try:
-                item = result_queue.get(timeout=0.5)
-                break
-            except queue.Empty:
-                if not process.is_alive():
-                    process.join(5)
-                    raise RuntimeError(
-                        f"org worker {task['org_label']} exited without result rc={process.exitcode}"
-                    )
-        _join_worker_process(process)
-        if item[0] == "ok":
-            results.append(item[1])
-        else:
-            raise RuntimeError(f"org worker {task['org_label']} failed: {item[1]}: {item[2]}")
+    timeout_seconds = _org_worker_timeout_seconds()
+    try:
+        for task, process, result_queue in workers:
+            deadline = time.monotonic() + timeout_seconds if timeout_seconds > 0 else None
+            while True:
+                try:
+                    item = result_queue.get(timeout=0.5)
+                    break
+                except queue.Empty:
+                    if not process.is_alive():
+                        process.join(5)
+                        raise RuntimeError(
+                            f"org worker {task['org_label']} exited without result rc={process.exitcode}"
+                        )
+                    if deadline is not None and time.monotonic() >= deadline:
+                        _join_worker_process(process)
+                        raise TimeoutError(
+                            f"org worker {task['org_label']} timed out after {timeout_seconds:.1f}s"
+                        )
+            _join_worker_process(process)
+            if item[0] == "ok":
+                results.append(item[1])
+            else:
+                raise RuntimeError(f"org worker {task['org_label']} failed: {item[1]}: {item[2]}")
+    except BaseException:
+        for _, process, _ in workers:
+            if process.is_alive():
+                _join_worker_process(process)
+        raise
     return results
 
 

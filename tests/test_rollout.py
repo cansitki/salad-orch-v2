@@ -3,6 +3,7 @@ from __future__ import annotations
 import pathlib
 import sys
 import tempfile
+import time
 import unittest
 from unittest import mock
 
@@ -451,6 +452,33 @@ class RolloutTest(unittest.TestCase):
             [[task["org_label"] for task in batch] for batch in batches],
             [["kray", "kry1"], ["kray2"], ["kray3"]],
         )
+
+    def test_parallel_org_worker_times_out_stuck_child(self) -> None:
+        def stuck_run_once(**kwargs):
+            time.sleep(5)
+            return {
+                "org": kwargs["org_label"],
+                "apply": kwargs["apply"],
+                "targets": 10,
+                "action_counts": {"observe": 1},
+                "results": [{"slot_name": "roi01", "action": "observe"}],
+            }
+
+        with (
+            mock.patch.object(rollout.org_worker, "run_once", side_effect=stuck_run_once),
+            mock.patch.object(rollout, "_org_worker_timeout_seconds", return_value=0.1),
+        ):
+            with self.assertRaisesRegex(TimeoutError, "org worker kry1 timed out"):
+                rollout._run_org_workers(
+                    ["kry1", "kray"],
+                    db_path=self.db_path,
+                    apply_workers=False,
+                    allow_live_retarget=False,
+                    allow_pending_retarget=False,
+                    pending_retarget_after_seconds=60,
+                    pending_status_retarget_after_seconds=None,
+                    worker_parallelism=2,
+                )
 
 
 if __name__ == "__main__":

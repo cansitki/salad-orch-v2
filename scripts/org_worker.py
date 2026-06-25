@@ -175,9 +175,9 @@ def cooldown_profile_key_for_result(target: dict[str, Any], result: dict[str, An
     action = str(result.get("action") or "")
     if action in {"cooldown_pending", "cooldown_failed_patch", "restart_failed_patch_pending"}:
         return str(target["profile_key"])
-    if action in {"patch", "restart_empty_pending_after_patch"} and str(result.get("reason") or "").startswith(
-        "stale_pending_profile_mismatch:"
-    ):
+    if action in {"patch", "reallocate_pending_after_patch", "restart_empty_pending_after_patch"} and str(
+        result.get("reason") or ""
+    ).startswith("stale_pending_profile_mismatch:"):
         current = result.get("current_profile_key")
         return str(current) if current else None
     return None
@@ -530,6 +530,14 @@ def should_restart_empty_pending_after_patch(plan: dict[str, Any]) -> bool:
     return int(counts.get("allocating") or 0) > 0 or str(plan.get("observed_status") or "").lower() == "deploying"
 
 
+def should_reallocate_pending_after_patch(plan: dict[str, Any]) -> bool:
+    if not env_bool("PRL_STALE_PENDING_PATCH_REALLOCATE", False):
+        return False
+    if not is_pending_patch_plan(plan):
+        return False
+    return bool(plan.get("pending_instance_ids"))
+
+
 def start_error_for_result(watch: Any, slot_name: str) -> str:
     getter = getattr(watch, "start_slot_error", None)
     if callable(getter):
@@ -627,6 +635,20 @@ def execute_action(watch: Any, target: dict[str, Any], plan: dict[str, Any], *, 
                 "patched": True,
                 "restart_requested": True,
                 "restart_reason": restart_reason,
+            }
+        if should_reallocate_pending_after_patch(plan):
+            reallocated = []
+            for instance_id in plan.get("pending_instance_ids") or []:
+                watch.reallocate(slot_name, str(instance_id), "stale_pending_patch")
+                reallocated.append(str(instance_id))
+            return {
+                "ok": True,
+                "applied": True,
+                **plan,
+                "action": "reallocate_pending_after_patch",
+                "original_action": "patch",
+                "patched": True,
+                "reallocated_pending_instances": reallocated,
             }
         if start_after_patch:
             start_result = watch.start_slot(slot_name, "after_patch:fleet_scheduler_target")
@@ -962,6 +984,7 @@ def run_once(
                         and result.get("applied")
                         and str(result.get("action") or "") in {
                             "cooldown_pending",
+                            "reallocate_pending_after_patch",
                             "restart_failed_patch_pending",
                             "restart_empty_pending_after_patch",
                             "restart_no_hash",

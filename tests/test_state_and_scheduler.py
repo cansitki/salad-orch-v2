@@ -1094,11 +1094,80 @@ class StateAndSchedulerTest(unittest.TestCase):
         )
         self.assertEqual(watch.starts, [("prl-kray-roi-01", "stale_pending_patch:empty_pending_after_patch")])
 
+    def test_org_worker_can_reallocate_pending_instance_after_successful_patch(self) -> None:
+        class Watch:
+            class Candidate:
+                def __init__(self, label, priority, gpu_keys, memory):
+                    self.label = label
+                    self.priority = priority
+                    self.gpu_keys = gpu_keys
+                    self.memory = memory
+
+            def __init__(self):
+                self.patches = []
+                self.reallocations = []
+
+            def patch_slot(self, slot_name, candidate, reason, *, start_after=True):
+                self.patches.append((slot_name, candidate.gpu_keys, reason, start_after))
+                return True
+
+            def reallocate(self, slot_name, instance_id, reason):
+                self.reallocations.append((slot_name, instance_id, reason))
+
+        watch = Watch()
+        with patch.dict("os.environ", {"PRL_STALE_PENDING_PATCH_REALLOCATE": "1"}, clear=False):
+            result = org_worker.execute_action(
+                watch,
+                {
+                    "slot_name": "prl-kray-roi-01",
+                    "label": "RTX 4090 batch",
+                    "priority": "batch",
+                    "gpu_key": "4090",
+                    "memory_mb": 2048,
+                },
+                {
+                    "slot_name": "prl-kray-roi-01",
+                    "action": "patch",
+                    "reason": "stale_pending_profile_mismatch:4080:batch:2048:age_300.0",
+                    "target_profile_key": "4090:batch:2048",
+                    "current_profile_key": "4080:batch:2048",
+                    "observed_status": "creating",
+                    "protected": False,
+                    "counts": {"allocating": 0, "creating": 1, "running": 0, "stopping": 0},
+                    "instance_count": 1,
+                    "pending_instance_ids": ["pending-instance"],
+                    "running_instance_ids": [],
+                },
+                apply=True,
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["applied"])
+        self.assertEqual(result["action"], "reallocate_pending_after_patch")
+        self.assertEqual(result["original_action"], "patch")
+        self.assertEqual(result["reallocated_pending_instances"], ["pending-instance"])
+        self.assertEqual(
+            watch.reallocations,
+            [("prl-kray-roi-01", "pending-instance", "stale_pending_patch")],
+        )
+
     def test_org_worker_cooldowns_source_profile_after_empty_pending_restart(self) -> None:
         profile_key = org_worker.cooldown_profile_key_for_result(
             {"profile_key": "4090:batch:2048"},
             {
                 "action": "restart_empty_pending_after_patch",
+                "reason": "stale_pending_profile_mismatch:4080:batch:2048:age_300.0",
+                "current_profile_key": "4080:batch:2048",
+            },
+        )
+
+        self.assertEqual(profile_key, "4080:batch:2048")
+
+    def test_org_worker_cooldowns_source_profile_after_pending_reallocate(self) -> None:
+        profile_key = org_worker.cooldown_profile_key_for_result(
+            {"profile_key": "4090:batch:2048"},
+            {
+                "action": "reallocate_pending_after_patch",
                 "reason": "stale_pending_profile_mismatch:4080:batch:2048:age_300.0",
                 "current_profile_key": "4080:batch:2048",
             },

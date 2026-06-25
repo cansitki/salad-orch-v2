@@ -67,6 +67,7 @@ def build_targets(
     existing_targets = existing_targets or {}
     scores_by_key = {str(score["profile_key"]): score for score in scores}
     pending_target_protect_seconds = max(0, env_int("PRL_PENDING_TARGET_PROTECT_SECONDS", 120))
+    recycle_current_pending_first = bool(env_int("PRL_FILL_RECYCLE_CURRENT_PENDING_FIRST", 1))
     prefer_reported_available_score_order = bool(env_int("PRL_FILL_PREFER_REPORTED_AVAILABLE_SCORE_ORDER", 1))
     min_profit_day = config.risk.min_profit_for_mode("optimize" if mode == "optimize" else "fill")
     assigned_by_org_profile: dict[tuple[str, str], int] = {}
@@ -357,7 +358,8 @@ def build_targets(
                         profile_index, profile, used_probe_fallback = selected
                         selected_profit = float(profile["expected_profit_day"])
                         should_recycle_current_pending = (
-                            pending_observed
+                            recycle_current_pending_first
+                            and pending_observed
                             and current_profit >= min_profit_day
                             and current_profit >= selected_profit
                             and not is_in_cooldown(org.label, slot_name, str(observed_profile))

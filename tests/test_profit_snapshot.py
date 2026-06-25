@@ -66,6 +66,35 @@ class ProfitSnapshotTest(unittest.TestCase):
         self.assertEqual(fee, 0.01)
         self.assertAlmostEqual(value, 20 * 0.99 * 0.92)
 
+    def test_wallet_observed_rewards_compares_realized_to_model(self) -> None:
+        def fake_external_json(url: str):
+            if "hourly-shares" in url:
+                return {
+                    "data": {
+                        "credited_amount_by_window_atomic": {"h24": 3000000000},
+                        "rolling_hashrates": [{"hours": 24, "hashrate": 2_000_000_000_000_000}],
+                    }
+                }
+            return {
+                "data": {
+                    "pending_shares": {
+                        "pending_estimate_by_window_atomic": {"h24": 1000000000},
+                    }
+                }
+            }
+
+        with patch.object(salad_prl_profit_snapshot, "external_json", side_effect=fake_external_json):
+            observed = salad_prl_profit_snapshot.wallet_observed_rewards(0.025)
+
+        self.assertIsNotNone(observed)
+        assert observed is not None
+        self.assertEqual(observed["credited_prl_24h"], 30)
+        self.assertEqual(observed["pending_prl_24h"], 10)
+        self.assertEqual(observed["total_prl_24h"], 40)
+        self.assertEqual(observed["rolling_hashrate_th_24h"], 2000)
+        self.assertEqual(observed["expected_prl_24h_at_rolling_hashrate"], 50)
+        self.assertEqual(observed["observed_to_model_ratio_24h"], 0.8)
+
     def test_effective_state_age_prefers_recent_slot_action(self) -> None:
         old_path = salad_prl_profit_snapshot.SLOT_ACTION_STATE_PATH
         try:

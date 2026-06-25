@@ -275,6 +275,30 @@ class GuardDecisionTest(unittest.TestCase):
         self.assertEqual(apply_mock.call_count, 1)
         self.assertEqual([decision["action"] for decision in decisions], ["retarget", "skip_duplicate"])
 
+    def test_repeated_no_hash_marks_target_for_forced_restart(self) -> None:
+        self.make_issue_old("no_hash")
+        with state_db.connect(self.db_path) as conn:
+            state_db.increment_guard_issue_action(conn, "kray", "prl-kray-roi-01", "no_hash")
+            conn.commit()
+
+        with patch("guard.apply_guard_target", return_value={"action": "retarget", "applied": True}) as apply_mock:
+            decisions = guard.enforce_issues(
+                db_path=self.db_path,
+                decision_price=0.64,
+                apply=True,
+                analysis={
+                    "fresh_workers": 3,
+                    "running_no_live_billable_slots": [
+                        {"org": "kray", "slot": "prl-kray-roi-01", "cost_day": 1.0}
+                    ],
+                    "negative_slots": [],
+                },
+            )
+
+        self.assertEqual(decisions[0]["action"], "retarget")
+        target = apply_mock.call_args.args[0]
+        self.assertEqual(target["force_restart_reason"], "repeated_no_hash_after_guard_action")
+
     def test_apply_guard_target_reallocates_pre_patch_and_snapshot_instances(self) -> None:
         class FakeCandidate:
             def __init__(self, label, priority, gpu_ids, memory):
@@ -471,6 +495,72 @@ class GuardDecisionTest(unittest.TestCase):
         self.assertEqual(
             watch.start_calls,
             [("prl-kray-roi-01", "guard_no_hash:retarget_without_visible_instances")],
+        )
+
+    def test_apply_guard_target_restarts_for_repeated_no_hash_even_with_visible_instance(self) -> None:
+        class FakeCandidate:
+            def __init__(self, label, priority, gpu_ids, memory):
+                self.label = label
+                self.priority = priority
+                self.gpu_ids = gpu_ids
+                self.memory = memory
+
+        class FakeWatch:
+            ORG = "kray"
+            PROJECT = "default"
+            Candidate = FakeCandidate
+
+            def __init__(self) -> None:
+                self.reallocate_calls = []
+                self.request_calls = []
+                self.start_calls = []
+
+            def slot_state(self, slot_name):
+                return {}, [{"id": "visible-instance"}]
+
+            def patch_slot(self, slot_name, candidate, reason, *, start_after=True):
+                return True
+
+            def reallocate(self, slot_name, instance_id, reason):
+                self.reallocate_calls.append((slot_name, instance_id, reason))
+
+            def request(self, method, path, *args, **kwargs):
+                self.request_calls.append((method, path))
+                return {}
+
+            def start_slot(self, slot_name, reason):
+                self.start_calls.append((slot_name, reason))
+
+        watch = FakeWatch()
+        target = {
+            "org_label": "kray",
+            "slot_name": "prl-kray-roi-01",
+            "profile_key": "5090:low:2048",
+            "gpu_key": "5090",
+            "priority": "low",
+            "memory_mb": 2048,
+            "label": "PearlFortune RTX 5090 low",
+            "decision_price_usd": 0.64,
+            "expected_profit_day": 1.0,
+            "force_restart_reason": "repeated_no_hash_after_guard_action",
+        }
+
+        with (
+            patch("guard.org_worker.load_watch_module", return_value=watch),
+            patch("guard.org_worker.install_rate_limited_request"),
+        ):
+            result = guard.apply_guard_target(target, db_path=self.db_path, reason="guard_no_hash")
+
+        self.assertEqual(result["reallocated_instances"], ["visible-instance"])
+        self.assertTrue(result["restart_requested"])
+        self.assertEqual(result["restart_reason"], "repeated_no_hash_after_guard_action")
+        self.assertEqual(
+            watch.request_calls,
+            [("POST", "/organizations/kray/projects/default/containers/prl-kray-roi-01/stop")],
+        )
+        self.assertEqual(
+            watch.start_calls,
+            [("prl-kray-roi-01", "guard_no_hash:repeated_no_hash_after_guard_action")],
         )
 
     def test_apply_guard_target_reallocates_current_instance_when_patch_fails(self) -> None:

@@ -15,7 +15,7 @@ import profile_scorer
 import salad_prl_profit_snapshot as snapshot
 import state_db
 from config_loader import load_config
-from fleet_common import json_dumps, utc_now
+from fleet_common import env_int, json_dumps, utc_now
 
 
 SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
@@ -304,6 +304,9 @@ def apply_guard_target(
             restart_reason = "snapshot_instance_without_salad_instances"
         else:
             restart_reason = "retarget_without_visible_instances"
+    elif target.get("force_restart_reason"):
+        restart_reason = str(target["force_restart_reason"])
+    if restart_reason:
         watch.request("POST", f"/organizations/{watch.ORG}/projects/{watch.PROJECT}/containers/{slot_name}/stop")
         watch.start_slot(slot_name, f"{reason}:{restart_reason}")
         restart_requested = True
@@ -373,6 +376,11 @@ def enforce_issues(
             )
             if target is not None:
                 target["snapshot_instance_id"] = snapshot.worker_instance_id(str(row.get("worker") or ""))
+                if issue_type == "no_hash" and int(issue_row["action_count"] or 0) >= env_int(
+                    "PRL_GUARD_RESTART_AFTER_NOHASH_ACTIONS",
+                    1,
+                ):
+                    target["force_restart_reason"] = "repeated_no_hash_after_guard_action"
             decision = {
                 "org_label": org_label,
                 "slot_name": slot_name,

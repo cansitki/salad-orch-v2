@@ -87,6 +87,17 @@ class MaintenanceTest(unittest.TestCase):
         self.assertIn("--balance-file", audit["cmd"])
         self.assertIn("state/salad_balances.json", audit["cmd"])
 
+    def test_supervisor_includes_portal_balance_process(self) -> None:
+        plan = supervisor.process_plan(db_path=self.db_path)
+        balances = next(item for item in plan if item["name"] == "salad-portal-balances")
+
+        self.assertEqual(balances["heartbeat"], "portal_balances")
+        self.assertIn("portal_balances.py", " ".join(balances["cmd"]))
+        self.assertIn("--interval", balances["cmd"])
+        self.assertIn("900", balances["cmd"])
+        self.assertIn("--balance-file", balances["cmd"])
+        self.assertIn("state/salad_balances.json", balances["cmd"])
+
     def test_supervisor_tmux_sessions_load_dotenv(self) -> None:
         command = supervisor.tmux_command("salad-test", ["python3", "scripts/price_oracle.py", "--loop"])
 

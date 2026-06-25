@@ -68,6 +68,24 @@ def process_plan(
             "heartbeat": "guard",
             "cmd": _with_db(["python3", str(SCRIPT_DIR / "guard.py"), "--loop", "--interval", "30"], db_path),
         },
+        {
+            "name": "salad-portal-balances",
+            "heartbeat": "portal_balances",
+            "cmd": _with_db(
+                [
+                    "python3",
+                    str(SCRIPT_DIR / "portal_balances.py"),
+                    "--loop",
+                    "--interval",
+                    "900",
+                    "--balance-file",
+                    "state/salad_balances.json",
+                    "--cwd",
+                    str(REPO_ROOT),
+                ],
+                db_path,
+            ),
+        },
     ]
     if include_audit:
         plan.append(

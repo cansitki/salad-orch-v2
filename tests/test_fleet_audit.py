@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import pathlib
+import os
 import sqlite3
 import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
@@ -111,6 +113,43 @@ class FleetAuditTest(unittest.TestCase):
         self.assertIn("monitor_db:", source)
         self.assertEqual(balances["kray"], 4.5)
         self.assertEqual(balances["kray3"], 1.25)
+
+    def test_stale_balance_file_falls_back_to_monitor_db(self) -> None:
+        balance_file = pathlib.Path(self.tmpdir.name) / "balances.json"
+        balance_file.write_text('{"kray": 99.0}', encoding="utf-8")
+        old = time.time() - 7200
+        os.utime(balance_file, (old, old))
+        monitor_db = str(pathlib.Path(self.tmpdir.name) / "monitor-fallback.db")
+        with sqlite3.connect(monitor_db) as conn:
+            conn.executescript(
+                """
+                CREATE TABLE monitor_snapshots (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  checked_at_utc TEXT NOT NULL
+                );
+                CREATE TABLE salad_org_balances (
+                  snapshot_id INTEGER NOT NULL,
+                  org TEXT NOT NULL,
+                  ok INTEGER NOT NULL,
+                  amount_cents INTEGER,
+                  balance_usd REAL
+                );
+                """
+            )
+            conn.execute("INSERT INTO monitor_snapshots(id, checked_at_utc) VALUES(1, '2026-06-24T11:00:00+00:00')")
+            conn.execute(
+                "INSERT INTO salad_org_balances(snapshot_id, org, ok, amount_cents, balance_usd) VALUES(1, 'kray', 1, 450, 4.5)"
+            )
+            conn.commit()
+
+        with patch.dict(
+            "os.environ",
+            {"PRL_BALANCE_FILE_MAX_AGE_SECONDS": "1", "PRL_BALANCE_SOURCE_MAX_AGE_SECONDS": "999999999"},
+        ):
+            balances, source = fleet_audit.load_balance_values(balance_file=str(balance_file), monitor_db=monitor_db)
+
+        self.assertIn("monitor_db:", source)
+        self.assertEqual(balances["kray"], 4.5)
 
     def test_stale_monitor_db_balances_are_not_treated_as_live(self) -> None:
         monitor_db = str(pathlib.Path(self.tmpdir.name) / "stale-monitor.db")

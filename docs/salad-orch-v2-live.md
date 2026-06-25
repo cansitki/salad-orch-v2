@@ -166,6 +166,19 @@ per-minute request budget at once.
 
 ### Active GPU And Balance Audit
 
+Refresh the private balance file with the authenticated Salad portal browser
+session:
+
+```bash
+tmux new-session -d -s salad-orch-v2-balances \
+  "cd \"$REPO_ROOT\" && PYTHONUNBUFFERED=1 python3 scripts/portal_balances.py --loop --interval 900 --balance-file state/salad_balances.json --cwd \"$REPO_ROOT\""
+```
+
+The session is expected to be logged into the Salad account that owns the orgs
+being audited. If the portal account sees only a subset of enabled orgs, the
+`portal_balances` heartbeat is `degraded` with `missing_enabled_orgs`; the hourly
+audit records missing orgs as `unavailable`, not as zero balance.
+
 Run the audit watcher beside the monitor:
 
 ```bash

@@ -121,6 +121,7 @@ The runnable code lives in `scripts/`.
 | `scripts/rollout.py` | Controlled shadow/one-org/all-org/guard rollout runner with safety gates. |
 | `scripts/runtime_monitor.py` | Safe runtime monitor loop for repeated shadow gates and explicitly confirmed live actions. |
 | `scripts/fleet_audit.py` | Records active GPU snapshots every 5 minutes and hourly org balance-vs-cost audits. |
+| `scripts/portal_balances.py` | Uses an authenticated Salad portal browser session to refresh the private org balance file. |
 | `scripts/rollback.py` | Rollout checkpoint create/list/restore helper for scheduler targets. |
 | `scripts/maintenance.py` | Dry-run-first SQLite retention/compaction helper for long-running fleets. |
 | `.env.example` | Safe template for local secrets and runtime settings. |
@@ -243,8 +244,16 @@ The default supervisor plan includes `scripts/fleet_audit.py`, which records
 active GPU and per-slot profile snapshots every 300 seconds and balance audits
 every 3600 seconds.
 
-Balance audit input is intentionally private. If a portal/browser scraper is
-available, have it refresh this local untracked file:
+Balance audit input is intentionally private. The standard portal balance
+watcher refreshes this local untracked file from an already-authenticated
+`agent-browser` Salad portal session:
+
+```bash
+python3 scripts/portal_balances.py --once --balance-file state/salad_balances.json
+python3 scripts/portal_balances.py --loop --interval 900 --balance-file state/salad_balances.json
+```
+
+The file contains only public org labels and numeric USD balances:
 
 ```json
 {
@@ -260,6 +269,11 @@ Default path:
 ```bash
 state/salad_balances.json
 ```
+
+The watcher writes a `portal_balances` heartbeat and marks it `degraded` when
+the logged-in Salad account cannot see an enabled org. That is expected for orgs
+funded through another account; the hourly fleet audit records those orgs as
+`unavailable` instead of treating them as zero balance.
 
 If the older local monitor is running, the audit can also read balances directly
 from its SQLite DB:

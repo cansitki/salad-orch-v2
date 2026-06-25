@@ -398,19 +398,28 @@ def load_balance_values(
     elif balance_file:
         path = pathlib.Path(balance_file)
         if path.exists():
-            try:
-                raw = json.loads(path.read_text(encoding="utf-8"))
-            except json.JSONDecodeError:
-                return {}, f"invalid_json:file:{path}"
-            source = f"file:{path}"
+            max_age = env_float("PRL_BALANCE_FILE_MAX_AGE_SECONDS", 7200.0)
+            age = max(0.0, time.time() - path.stat().st_mtime)
+            if max_age >= 0 and age > max_age:
+                source = f"stale_file:{path}:age_seconds={round(age)}"
+                raw = None
+            else:
+                try:
+                    raw = json.loads(path.read_text(encoding="utf-8"))
+                except json.JSONDecodeError:
+                    return {}, f"invalid_json:file:{path}"
+                source = f"file:{path}"
         else:
             source = f"missing_file:{path}"
     if not isinstance(raw, dict):
         monitor_source = monitor_db or os.environ.get("PRL_AUDIT_MONITOR_DB")
         if monitor_source:
-            loaded = load_monitor_db_balances(monitor_source)
-            if loaded is not None:
-                return loaded
+            try:
+                loaded = load_monitor_db_balances(monitor_source)
+                if loaded is not None:
+                    return loaded
+            except Exception:
+                return {}, source
         return {}, source
     return {str(key): parse_money(value) for key, value in raw.items()}, source
 

@@ -379,6 +379,7 @@ def _run_org_workers(
             "allow_pending_retarget": allow_pending_retarget,
             "pending_retarget_after_seconds": pending_retarget_after_seconds,
             "pending_status_retarget_after_seconds": pending_status_retarget_after_seconds,
+            "heartbeat_stale_after_seconds": 0,
         }
         for org in orgs
     ]

@@ -234,6 +234,37 @@ class StateAndSchedulerTest(unittest.TestCase):
         self.assertIsNotNone(heartbeat)
         self.assertEqual(heartbeat["stale_after_seconds"], 300)
 
+    def test_org_worker_run_once_can_write_non_staling_action_heartbeat(self) -> None:
+        class FakeWatch:
+            ORG = "kray"
+            PROJECT = "default"
+
+            def slot_state(self, _slot_name: str) -> dict[str, object]:
+                return {"counts": {"running": 0, "creating": 0, "allocating": 0, "stopping": 0}}
+
+        original_load_watch_module = org_worker.load_watch_module
+        original_install_rate_limited_request = org_worker.install_rate_limited_request
+        org_worker.load_watch_module = lambda *_args, **_kwargs: FakeWatch()
+        org_worker.install_rate_limited_request = lambda *_args, **_kwargs: None
+        try:
+            org_worker.run_once(
+                org_label="kray",
+                db_path=self.db_path,
+                apply=False,
+                schedule_if_empty=False,
+                heartbeat_stale_after_seconds=0,
+            )
+        finally:
+            org_worker.load_watch_module = original_load_watch_module
+            org_worker.install_rate_limited_request = original_install_rate_limited_request
+
+        with state_db.connect(self.db_path) as conn:
+            heartbeat = conn.execute(
+                "SELECT stale_after_seconds FROM heartbeats WHERE process_name = 'org_worker:kray'"
+            ).fetchone()
+        self.assertIsNotNone(heartbeat)
+        self.assertEqual(heartbeat["stale_after_seconds"], 0)
+
     def test_slot_observation_preserves_hashrate_when_omitted(self) -> None:
         with state_db.connect(self.db_path) as conn:
             state_db.init_db(conn)

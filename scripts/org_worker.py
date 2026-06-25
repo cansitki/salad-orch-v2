@@ -463,6 +463,7 @@ def run_once(
     allow_pending_retarget: bool = False,
     pending_retarget_after_seconds: int = 45,
     pending_status_retarget_after_seconds: int | None = None,
+    heartbeat_stale_after_seconds: int | None = None,
 ) -> dict[str, Any]:
     config = load_config()
     orgs = {org.label: org for org in config.enabled_orgs()}
@@ -499,7 +500,8 @@ def run_once(
         pending_status_retarget_after_seconds,
     )
     pending_profile_cooldown_seconds = env_int("PRL_PENDING_PROFILE_COOLDOWN_SECONDS", 600)
-    heartbeat_stale_after_seconds = env_int("PRL_ORG_WORKER_STALE_AFTER_SECONDS", 300)
+    if heartbeat_stale_after_seconds is None:
+        heartbeat_stale_after_seconds = env_int("PRL_ORG_WORKER_STALE_AFTER_SECONDS", 300)
     for target in targets:
         started = time.monotonic()
         if should_skip_live_hashing_target(target, apply=apply, allow_live_retarget=allow_live_retarget):

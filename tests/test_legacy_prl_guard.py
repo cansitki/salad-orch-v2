@@ -161,6 +161,11 @@ class LegacyPrlGuardTest(unittest.TestCase):
             ],
         }
 
+    def band_negative_market_positive_snapshot(self, slot: str) -> dict[str, Any]:
+        snap = self.negative_snapshot(slot)
+        snap["slots"][0]["market_profit_day"] = 0.25
+        return snap
+
     def log_events(self) -> list[dict[str, Any]]:
         if not self.guard.LOG.exists():
             return []
@@ -259,6 +264,20 @@ class LegacyPrlGuardTest(unittest.TestCase):
 
         events = self.log_events()
         self.assertTrue(any(row.get("event") == "negative_slot_reallocated" for row in events))
+
+    def test_band_negative_market_positive_slot_is_not_reallocated(self) -> None:
+        slot = "prl-kray-roi-01"
+        self.guard.NEGATIVE_SLOT_SEEN_SINCE[("kray", slot)] = time.time() - 7200.0
+        self.guard.snapshot.build_snapshot = lambda _price: self.band_negative_market_positive_snapshot(slot)
+        reallocated: list[tuple[str, str, str]] = []
+        self.guard.reallocate_slot = lambda org, slot_name, reason, retarget=True: reallocated.append(
+            (org, slot_name, reason)
+        )
+
+        self.guard.tick()
+
+        self.assertEqual(reallocated, [])
+        self.assertNotIn(("kray", slot), self.guard.NEGATIVE_SLOT_SEEN_SINCE)
 
 
 if __name__ == "__main__":

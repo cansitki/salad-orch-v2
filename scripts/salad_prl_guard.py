@@ -978,6 +978,9 @@ def tick() -> None:
         profit_day = float(row.get("profit_day") or 0)
         if profit_day >= NEGATIVE_SLOT_PROFIT_DAY:
             continue
+        market_profit_day = row.get("market_profit_day")
+        if market_profit_day is not None and float(market_profit_day) >= NEGATIVE_SLOT_PROFIT_DAY:
+            continue
         org = org_for_slot(slot)
         if org not in watchers:
             continue

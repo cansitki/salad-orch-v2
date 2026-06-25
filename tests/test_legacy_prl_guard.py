@@ -98,6 +98,74 @@ class LegacyPrlGuardTest(unittest.TestCase):
             ],
         }
 
+    def low_fresh_no_hash_snapshot(self, slot: str) -> dict[str, Any]:
+        return {
+            "fresh_workers": 2,
+            "running_no_live_billable_slots": [
+                {
+                    "org": "kray",
+                    "slot": slot,
+                    "cost_day": 4.0,
+                    "state_age_seconds": 7200.0,
+                }
+            ],
+            "stale_current_workers": [],
+            "negative_slots": [],
+            "underperform_slots": [],
+            "org_discrepancies": [{"org": "kray", "active_salad_slots": 10}],
+            "totals": {"profit_day": -10.0, "market_profit_day": -10.0},
+            "stuck_non_live_slots": [],
+        }
+
+    def no_hash_snapshot(self, slot: str) -> dict[str, Any]:
+        return {
+            "fresh_workers": 10,
+            "running_no_live_billable_slots": [
+                {
+                    "org": "kray",
+                    "slot": slot,
+                    "cost_day": 4.0,
+                    "state_age_seconds": 7200.0,
+                    "grace_seconds": 900,
+                }
+            ],
+            "stale_current_workers": [],
+            "negative_slots": [],
+            "underperform_slots": [],
+            "org_discrepancies": [{"org": "kray", "active_salad_slots": 10}],
+            "totals": {"profit_day": 10.0, "market_profit_day": 10.0},
+            "stuck_non_live_slots": [],
+            "slots": [],
+        }
+
+    def negative_snapshot(self, slot: str) -> dict[str, Any]:
+        return {
+            "fresh_workers": 10,
+            "running_no_live_billable_slots": [],
+            "stale_current_workers": [],
+            "negative_slots": [],
+            "underperform_slots": [],
+            "org_discrepancies": [{"org": "kray", "active_salad_slots": 10}],
+            "totals": {"profit_day": 10.0, "market_profit_day": 10.0},
+            "stuck_non_live_slots": [],
+            "slots": [
+                {
+                    "org": "kray",
+                    "slot": slot,
+                    "gpu": "4070tis",
+                    "priority": "low",
+                    "profit_day": -1.0,
+                    "market_profit_day": -0.5,
+                    "th": 90.0,
+                }
+            ],
+        }
+
+    def log_events(self) -> list[dict[str, Any]]:
+        if not self.guard.LOG.exists():
+            return []
+        return [json.loads(line) for line in self.guard.LOG.read_text(encoding="utf-8").splitlines()]
+
     def test_recent_watcher_action_defers_stuck_slot_cleanup(self) -> None:
         slot = "prl-kray-roi-01"
         self.write_recent_slot_action(slot)
@@ -109,23 +177,88 @@ class LegacyPrlGuardTest(unittest.TestCase):
 
         self.assertEqual(stopped, [])
 
-    def test_old_watcher_action_allows_stuck_slot_cleanup(self) -> None:
+    def test_old_watcher_action_recycles_stuck_slot_cleanup(self) -> None:
         slot = "prl-kray-roi-01"
         self.write_recent_slot_action(slot, age_seconds=self.guard.STUCK_NON_LIVE_RETARGET_COOLDOWN_SECONDS + 1)
-        stopped: list[tuple[str, str, str]] = []
+        recycled: list[tuple[str, str, str]] = []
 
-        def stop_slot(org: str, slot_name: str, reason: str) -> dict[str, Any]:
-            stopped.append((org, slot_name, reason))
-            return {"org": org, "slot": slot_name, "state": "stopped", "retargeted": None}
+        def recycle_zero_running_slot(org: str, slot_name: str, reason: str) -> list[dict[str, Any]]:
+            recycled.append((org, slot_name, reason))
+            return [{"org": org, "slot": slot_name, "state": "hidden_pending_restarted", "retargeted": None}]
 
         self.guard.snapshot.build_snapshot = lambda _price: self.stuck_snapshot(slot)
-        self.guard.stop_slot = stop_slot
+        self.guard.recycle_zero_running_slot = recycle_zero_running_slot
 
         self.guard.tick()
 
-        self.assertEqual(len(stopped), 1)
-        self.assertEqual(stopped[0][0], "kray")
-        self.assertEqual(stopped[0][1], slot)
+        self.assertEqual(len(recycled), 1)
+        self.assertEqual(recycled[0][0], "kray")
+        self.assertEqual(recycled[0][1], slot)
+        self.assertIn("zero_running", recycled[0][2])
+
+    def test_pending_recycle_writes_persistent_slot_action_cooldown(self) -> None:
+        slot = "prl-kray-roi-01"
+        reallocated: list[tuple[str, str, str]] = []
+        testcase = self
+
+        class FakeWatcher:
+            def slot_state(self, slot_name: str) -> tuple[None, list[dict[str, Any]]]:
+                testcase.assertEqual(slot_name, slot)
+                return None, [{"id": "instance-1", "state": "creating", "ready": False, "started": False}]
+
+            def reallocate(self, slot_name: str, instance_id: str, reason: str) -> None:
+                reallocated.append((slot_name, instance_id, reason))
+
+        self.guard.watchers = {"kray": FakeWatcher()}
+
+        actions = self.guard.recycle_zero_running_slot("kray", slot, "test_zero_running")
+
+        self.assertEqual(len(actions), 1)
+        self.assertEqual(reallocated, [(slot, "instance-1", "test_zero_running")])
+        recent = self.guard.recent_slot_action("kray", slot)
+        self.assertIsNotNone(recent)
+        assert recent is not None
+        self.assertEqual(recent["action"], "reallocated_pending")
+        self.assertEqual(recent["reason"], "test_zero_running")
+
+    def test_low_fresh_pool_sample_skips_no_hash_reallocation(self) -> None:
+        slot = "prl-kray-roi-01"
+        reallocated: list[tuple[str, str, str]] = []
+        self.guard.SEEN_SINCE[("kray", slot)] = time.time() - 7200.0
+        self.guard.snapshot.build_snapshot = lambda _price: self.low_fresh_no_hash_snapshot(slot)
+        self.guard.reallocate_slot = lambda org, slot_name, reason, retarget=True: reallocated.append(
+            (org, slot_name, reason)
+        )
+
+        self.guard.tick()
+
+        self.assertEqual(reallocated, [])
+
+    def test_no_hash_reallocation_writes_specific_log_event(self) -> None:
+        slot = "prl-kray-roi-01"
+        self.guard.SEEN_SINCE[("kray", slot)] = time.time() - 7200.0
+        self.guard.snapshot.build_snapshot = lambda _price: self.no_hash_snapshot(slot)
+        self.guard.reallocate_slot = lambda org, slot_name, reason, retarget=True: [
+            {"org": org, "slot": slot_name, "reason": reason, "retargeted": None}
+        ]
+
+        self.guard.tick()
+
+        events = self.log_events()
+        self.assertTrue(any(row.get("event") == "no_hash_slot_reallocated" for row in events))
+
+    def test_negative_reallocation_writes_specific_log_event(self) -> None:
+        slot = "prl-kray-roi-01"
+        self.guard.NEGATIVE_SLOT_SEEN_SINCE[("kray", slot)] = time.time() - 7200.0
+        self.guard.snapshot.build_snapshot = lambda _price: self.negative_snapshot(slot)
+        self.guard.reallocate_slot = lambda org, slot_name, reason, retarget=True: [
+            {"org": org, "slot": slot_name, "reason": reason, "retargeted": None}
+        ]
+
+        self.guard.tick()
+
+        events = self.log_events()
+        self.assertTrue(any(row.get("event") == "negative_slot_reallocated" for row in events))
 
 
 if __name__ == "__main__":

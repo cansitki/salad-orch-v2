@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import os
 import pathlib
@@ -9,12 +10,14 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from datetime import datetime
 from typing import Any
 
 
 SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parent
 ENV = pathlib.Path(os.environ.get("SALAD_PRL_ENV", str(REPO_ROOT / ".env")))
+DEFAULT_SNAPSHOT_CSV = REPO_ROOT / "state" / "prl_profit_snapshots.csv"
 USER_AGENT = "salad-prl-preflight/1.0"
 HTTP_TIMEOUT_SECONDS = float(os.environ.get("PRL_PREFLIGHT_HTTP_TIMEOUT_SECONDS", "12"))
 SALAD_BASE = "https://api.salad.com/api/public"
@@ -182,6 +185,34 @@ def market_prl_price_usd() -> float:
     return min(prices, default=0.0)
 
 
+def trailing_snapshot_price_usd(hours: float = 1.0) -> float | None:
+    path = pathlib.Path(os.environ.get("PRL_SNAPSHOT_CSV_PATH", str(DEFAULT_SNAPSHOT_CSV)))
+    if not path.exists():
+        return None
+    cutoff = time.time() - hours * 3600
+    values: list[float] = []
+    try:
+        with path.open(newline="") as handle:
+            for row in csv.DictReader(handle):
+                try:
+                    at = datetime.fromisoformat(str(row.get("at_utc") or "").replace("Z", "+00:00")).timestamp()
+                    price = float(row.get("live_market_prl_price") or 0)
+                except (TypeError, ValueError):
+                    continue
+                if at >= cutoff and price > 0:
+                    values.append(price)
+    except OSError:
+        return None
+    return (sum(values) / len(values)) if values else None
+
+
+def smoothed_market_prl_price_usd() -> float:
+    current = market_prl_price_usd()
+    trailing = trailing_snapshot_price_usd(float(os.environ.get("PRL_PRICE_AVERAGE_HOURS", "1")))
+    values = [value for value in (current, trailing) if value and value > 0]
+    return min(values, default=0.0)
+
+
 def pool_prl_per_th_day() -> tuple[float, int, float]:
     fee = float(
         (open_json_with_retries("https://pearlfortune.org/api/v1/stats/pool-fee-rate").get("data") or {}).get(
@@ -200,6 +231,19 @@ def pool_prl_per_th_day() -> tuple[float, int, float]:
         gross += float(item.get("pool_reward") or 0) / (pool_hashrate / 1e12)
         points += 1
     return gross * (1 - fee), points, fee
+
+
+def dynamic_decision_price() -> float:
+    price = smoothed_market_prl_price_usd()
+    if price <= 0:
+        fallback = float(os.environ.get("PRL_NOHASH_FALLBACK_PRICE", "0.62"))
+        price = fallback
+    band = float(os.environ.get("PRL_PRICE_BAND_USD", "0.02"))
+    cap = float(os.environ.get("PRL_DECISION_PRICE_CAP_USD", "0"))
+    decision_price = max(0.0, price - band)
+    if cap > 0:
+        decision_price = min(decision_price, cap)
+    return decision_price
 
 
 def profitability_rows(decision_price: float) -> list[dict[str, Any]]:
@@ -236,15 +280,18 @@ def main() -> int:
 
     load_env_file()
     missing = [] if args.skip_env else env_missing()
-    rows = profitability_rows(args.decision_price)
+    decision_price = args.decision_price if args.decision_price > 0 else dynamic_decision_price()
+    rows = profitability_rows(decision_price)
     profitable = [row for row in rows if float(row["profit_day"]) >= 0]
     salad_failures = [] if missing or args.skip_salad else validate_salad_access()
     payload = {
         "ok": not missing and not salad_failures and len(profitable) >= args.min_profitable_profiles,
         "missing_env": missing,
         "salad_access_failures": salad_failures,
-        "decision_price_usd": args.decision_price,
+        "requested_decision_price_usd": args.decision_price,
+        "decision_price_usd": decision_price,
         "live_market_prl_price_usd": market_prl_price_usd(),
+        "smoothed_market_prl_price_usd": smoothed_market_prl_price_usd(),
         "profitable_profiles": len(profitable),
         "top_profiles": rows[:8],
     }
@@ -260,7 +307,7 @@ def main() -> int:
             )
         print(
             "profitable profiles at "
-            f"${args.decision_price:.4f}/PRL: {len(profitable)}; "
+            f"${decision_price:.4f}/PRL: {len(profitable)}; "
             f"live market price: ${payload['live_market_prl_price_usd']:.4f}"
         )
         for row in rows[:8]:

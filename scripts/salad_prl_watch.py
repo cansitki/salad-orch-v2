@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import os
 import pathlib
@@ -19,6 +20,7 @@ SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parent
 STATE_DIR = pathlib.Path(os.environ.get("SALAD_PRL_STATE_DIR", str(REPO_ROOT / "state")))
 ENV = pathlib.Path(os.environ.get("SALAD_PRL_ENV", str(REPO_ROOT / ".env")))
+DEFAULT_SNAPSHOT_CSV = STATE_DIR / "prl_profit_snapshots.csv"
 SLOT_ACTION_STATE_PATH = pathlib.Path(
     os.environ.get("PRL_SLOT_ACTION_STATE_PATH", str(STATE_DIR / "prl_slot_actions.json"))
 )
@@ -78,7 +80,15 @@ OPTIMIZE_LIVE_MIN_PROFIT_DELTA = float(os.environ.get("KRAY2_PRL_OPTIMIZE_LIVE_M
 OPTIMIZE_LIVE_MIN_TH_DELTA = float(os.environ.get("KRAY2_PRL_OPTIMIZE_LIVE_MIN_TH_DELTA", "10"))
 OPTIMIZE_LIVE_INTERVAL_SECONDS = int(os.environ.get("KRAY2_PRL_OPTIMIZE_LIVE_INTERVAL_SECONDS", "600"))
 OPTIMIZE_LIVE_MIN_LIVE_WORKERS = int(
-    os.environ.get("KRAY2_PRL_OPTIMIZE_LIVE_MIN_LIVE_WORKERS", str(max(1, len(SLOTS) - 2)))
+    os.environ.get("KRAY2_PRL_OPTIMIZE_LIVE_MIN_LIVE_WORKERS", str(max(1, len(SLOTS) - 1)))
+)
+OPTIMIZE_LIVE_GLOBAL_MIN_FRESH_WORKERS = int(
+    os.environ.get("KRAY2_PRL_OPTIMIZE_LIVE_GLOBAL_MIN_FRESH_WORKERS", "0")
+)
+GLOBAL_POOL_WORKER_PREFIXES = tuple(
+    prefix.strip()
+    for prefix in os.environ.get("PRL_WATCH_GLOBAL_POOL_WORKER_PREFIXES", "").split(",")
+    if prefix.strip()
 )
 OPTIMIZE_LIVE_REQUIRE_FULL_SLOTS = os.environ.get("KRAY2_PRL_OPTIMIZE_LIVE_REQUIRE_FULL_SLOTS", "0").lower() in {
     "1",
@@ -779,6 +789,43 @@ def market_prl_price_usd() -> float | None:
     return price
 
 
+def trailing_snapshot_price_usd(hours: float = 1.0) -> float | None:
+    path = pathlib.Path(os.environ.get("PRL_SNAPSHOT_CSV_PATH", str(DEFAULT_SNAPSHOT_CSV)))
+    if not path.exists():
+        return None
+    cutoff = datetime.now(UTC).timestamp() - hours * 3600
+    values: list[float] = []
+    try:
+        with path.open(newline="") as handle:
+            for row in csv.DictReader(handle):
+                try:
+                    at = datetime.fromisoformat(str(row.get("at_utc") or "").replace("Z", "+00:00")).timestamp()
+                    price = float(row.get("live_market_prl_price") or 0)
+                except (TypeError, ValueError):
+                    continue
+                if at >= cutoff and price > 0:
+                    values.append(price)
+    except OSError:
+        return None
+    return (sum(values) / len(values)) if values else None
+
+
+def smoothed_market_prl_price_usd() -> float | None:
+    current = market_prl_price_usd()
+    trailing = trailing_snapshot_price_usd(float(os.environ.get("PRL_PRICE_AVERAGE_HOURS", "1")))
+    values = [value for value in (current, trailing) if value and value > 0]
+    if not values:
+        return None
+    selected = min(values)
+    log(
+        "price_guard_smoothed_market",
+        current_market_prl_price_usd=round(current or 0.0, 6),
+        trailing_average_prl_price_usd=round(trailing or 0.0, 6),
+        selected_price_usd=round(selected, 6),
+    )
+    return selected
+
+
 def revenue_usd_per_th_day() -> float | None:
     now_ts = time.time()
     cached_at = PRICE_GUARD_CACHE.get("at", 0.0)
@@ -791,7 +838,7 @@ def revenue_usd_per_th_day() -> float | None:
         value = PRICE_GUARD_CACHE.get("usd_per_th_day")
         return value if value and value > 0 else None
 
-    price = market_prl_price_usd()
+    price = smoothed_market_prl_price_usd()
     if PRICE_GUARD_FIXED_DECISION_PRICE_USD > 0:
         decision_price = PRICE_GUARD_FIXED_DECISION_PRICE_USD
     else:
@@ -1031,6 +1078,10 @@ def pool_workers_for_prefixes(prefixes: tuple[str, ...]) -> list[dict[str, Any]]
             }
         )
     return workers
+
+
+def live_worker_count(workers: list[dict[str, Any]]) -> int:
+    return sum(1 for worker in workers if not worker.get("stale") and float(worker.get("reported_hashrate_th") or 0) > 0)
 
 
 def capacity_workers(local_workers: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -2178,12 +2229,25 @@ def tick() -> None:
         )
     active_or_pending_slots = active_or_pending_slot_count()
     if OPTIMIZE_LIVE_REQUIRE_FULL_SLOTS:
-        ALLOW_LIVE_UPGRADES_THIS_TICK = len(live_workers) >= len(SLOTS) or (
+        local_live_upgrade_allowed = len(live_workers) >= len(SLOTS) or (
             active_or_pending_slots >= len(SLOTS)
             and len(live_workers) >= OPTIMIZE_LIVE_MIN_LIVE_WORKERS
         )
     else:
-        ALLOW_LIVE_UPGRADES_THIS_TICK = len(live_workers) >= OPTIMIZE_LIVE_MIN_LIVE_WORKERS
+        local_live_upgrade_allowed = len(live_workers) >= OPTIMIZE_LIVE_MIN_LIVE_WORKERS
+    global_live_workers: int | None = None
+    global_live_upgrade_allowed = True
+    if OPTIMIZE_LIVE_GLOBAL_MIN_FRESH_WORKERS > 0:
+        global_workers = pool_workers_for_prefixes(GLOBAL_POOL_WORKER_PREFIXES) if GLOBAL_POOL_WORKER_PREFIXES else workers
+        global_live_workers = live_worker_count(global_workers)
+        global_live_upgrade_allowed = global_live_workers >= OPTIMIZE_LIVE_GLOBAL_MIN_FRESH_WORKERS
+        if local_live_upgrade_allowed and not global_live_upgrade_allowed:
+            log(
+                "live_upgrades_skipped_global_fresh_floor",
+                global_live_workers=global_live_workers,
+                global_live_min_fresh_workers=OPTIMIZE_LIVE_GLOBAL_MIN_FRESH_WORKERS,
+            )
+    ALLOW_LIVE_UPGRADES_THIS_TICK = local_live_upgrade_allowed and global_live_upgrade_allowed
     refresh_candidate_budgets(capacity_workers(workers))
     org_balance_cents, org_balance_age_seconds = latest_org_balance_cents()
     if org_balance_cents is not None and org_balance_cents > 0:
@@ -2219,6 +2283,8 @@ def tick() -> None:
         low_live_allocating_retarget_available_seconds=LOW_LIVE_ALLOCATING_RETARGET_AVAILABLE_SECONDS,
         low_live_ignore_pending_capacity=LOW_LIVE_IGNORE_PENDING_CAPACITY,
         live_upgrade_min_live_workers=OPTIMIZE_LIVE_MIN_LIVE_WORKERS,
+        live_upgrade_global_min_fresh_workers=OPTIMIZE_LIVE_GLOBAL_MIN_FRESH_WORKERS,
+        global_live_workers=global_live_workers,
         live_upgrade_min_profit_delta=OPTIMIZE_LIVE_MIN_PROFIT_DELTA,
         live_upgrade_min_th_delta=OPTIMIZE_LIVE_MIN_TH_DELTA,
         live_upgrade_require_full_slots=OPTIMIZE_LIVE_REQUIRE_FULL_SLOTS,

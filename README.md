@@ -76,6 +76,8 @@ Never commit any of these:
 SALAD_API_KEY
 SALAD_API_KEY_2
 SALAD_API_KEY_KRY1
+SALAD_API_KEY_KR1
+SALAD_API_KEY_KR2
 Cloudflare cookies
 Salad portal cookies
 cf_clearance values
@@ -90,6 +92,8 @@ Example private environment:
 ```bash
 SALAD_API_KEY_2=<private key for kray/kray2/kray3>
 SALAD_API_KEY_KRY1=<private key for kry1>
+SALAD_API_KEY_KR1=<private key for kr1 only>
+SALAD_API_KEY_KR2=<private key for kr2 only>
 PRL_WALLET=<public PearlFortune wallet address>
 ```
 
@@ -217,6 +221,16 @@ export SALAD_API_KEY_KRAY4=<private key in local shell or .env>
 python3 scripts/config_loader.py --validate
 python3 scripts/config_loader.py --check-secrets
 ```
+
+Current kr1/kr2 expansion:
+
+```bash
+export SALAD_FLEET_EXTRA_ORGS_JSON='[{"label":"kr1","slug":"kr1","api_key_env":"SALAD_API_KEY_KR1","slot_prefix":"prl-kr1-roi","worker_prefix":"kr1-prl","worker_slot_prefix":"kr1-roi-","pool_worker_prefix":"kr1-prl-kr1","display_prefix":"PearlFortune KR1","slots":10,"enabled":true},{"label":"kr2","slug":"kr2","api_key_env":"SALAD_API_KEY_KR2","slot_prefix":"prl-kr2-roi","worker_prefix":"kr2-prl","worker_slot_prefix":"kr2-roi-","pool_worker_prefix":"kr2-prl-kr2","display_prefix":"PearlFortune KR2","slots":10,"enabled":true}]'
+```
+
+`SALAD_API_KEY_KR1` and `SALAD_API_KEY_KR2` may hold the same private key if
+that key belongs only to `kr1` and `kr2`; do not reuse that key for
+`kray`, `kray2`, `kray3`, or `kry1`.
 
 The validator catches duplicate labels, slugs, slot prefixes, slot names,
 non-positive slot counts, and missing key env vars when `--check-secrets` is

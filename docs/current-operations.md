@@ -11,6 +11,8 @@ Keep the fleet full of profitable GPUs first, then optimize quality.
 The current policy is:
 
 1. Fill all target slots across `kray`, `kry1`, `kray2`, and `kray3`.
+   When `kr1`/`kr2` are enabled through `PRL_FLEET_EXTRA_ORGS_JSON`, include
+   them in the same central scheduler scope.
 2. Accept lower-profit GPUs during fill as long as they remain profitable at the conservative decision price.
 3. Do not stop a newly running no-hash slot immediately. Wait the no-hash grace window.
 4. Rotate or stop billable no-hash slots after grace.
@@ -52,8 +54,11 @@ The public org labels are:
 | `kry1` | 10 | `SALAD_API_KEY_KRY1` |
 | `kray2` | 10 | `SALAD_API_KEY_2` |
 | `kray3` | 10 | `SALAD_API_KEY_2` |
+| `kr1` | 10 | `SALAD_API_KEY_KR1` |
+| `kr2` | 10 | `SALAD_API_KEY_KR2` |
 
-Target capacity is 40 active or pending slots.
+Base target capacity is 40 active or pending slots. With `kr1` and `kr2`
+enabled, target capacity is 60 slots.
 
 Slot names follow:
 
@@ -62,6 +67,8 @@ prl-kray-roi-01  ... prl-kray-roi-10
 prl-kry1-roi-01  ... prl-kry1-roi-10
 prl-kray2-roi-01 ... prl-kray2-roi-10
 prl-kray3-roi-01 ... prl-kray3-roi-10
+prl-kr1-roi-01   ... prl-kr1-roi-10
+prl-kr2-roi-01   ... prl-kr2-roi-10
 ```
 
 ## Script Map

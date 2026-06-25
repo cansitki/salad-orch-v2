@@ -43,6 +43,44 @@ class ConfigLoaderTest(unittest.TestCase):
         self.assertEqual(config.target_slot_count(), 50)
         self.assertIn("kray4", [org.label for org in config.enabled_orgs()])
 
+    def test_extra_orgs_accept_long_inline_json(self) -> None:
+        extra = [
+            {
+                "label": "kr1",
+                "slug": "kr1",
+                "api_key_env": "SALAD_API_KEY_KR1",
+                "slot_prefix": "prl-kr1-roi",
+                "worker_prefix": "kr1-prl",
+                "worker_slot_prefix": "kr1-roi-",
+                "pool_worker_prefix": "kr1-prl-kr1",
+                "display_prefix": "PearlFortune KR1",
+                "slots": 10,
+            },
+            {
+                "label": "kr2",
+                "slug": "kr2",
+                "api_key_env": "SALAD_API_KEY_KR2",
+                "slot_prefix": "prl-kr2-roi",
+                "worker_prefix": "kr2-prl",
+                "worker_slot_prefix": "kr2-roi-",
+                "pool_worker_prefix": "kr2-prl-kr2",
+                "display_prefix": "PearlFortune KR2",
+                "slots": 10,
+            },
+        ]
+        with patch.object(config_loader, "load_env_file", lambda: None), patch.dict(
+            config_loader.os.environ,
+            {"SALAD_FLEET_EXTRA_ORGS_JSON": json.dumps(extra)},
+            clear=True,
+        ):
+            config = config_loader.load_config()
+
+        self.assertEqual(config.target_slot_count(), 60)
+        self.assertEqual(
+            [org.label for org in config.enabled_orgs()[-2:]],
+            ["kr1", "kr2"],
+        )
+
     def test_validate_config_catches_duplicate_slot_prefix(self) -> None:
         orgs = (
             config_loader.OrgConfig(

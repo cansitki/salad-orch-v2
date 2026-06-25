@@ -56,8 +56,14 @@ def read_json_env(name: str) -> Any | None:
     if not raw:
         return None
     value = raw.strip()
+    if value.startswith(("{", "[")):
+        return json.loads(value)
     possible_path = pathlib.Path(value)
-    if possible_path.exists():
+    try:
+        path_exists = possible_path.exists()
+    except OSError:
+        path_exists = False
+    if path_exists:
         return json.loads(possible_path.read_text(encoding="utf-8"))
     return json.loads(value)
 

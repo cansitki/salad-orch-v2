@@ -12,7 +12,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 
@@ -20,6 +20,7 @@ SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parent
 ENV = pathlib.Path(os.environ.get("SALAD_PRL_ENV", str(REPO_ROOT / ".env")))
 DEFAULT_SNAPSHOT_CSV = REPO_ROOT / "state" / "prl_profit_snapshots.csv"
+STATE_DIR = pathlib.Path(os.environ.get("PRL_STATE_DIR", str(REPO_ROOT / "state")))
 
 
 def load_env_file() -> None:
@@ -38,6 +39,7 @@ WALLET = os.environ.get("PRL_WALLET", "")
 USER_AGENT = "kray-prl-profit-snapshot/1.0"
 HTTP_TIMEOUT_SECONDS = float(os.environ.get("PRL_SNAPSHOT_HTTP_TIMEOUT_SECONDS", "8"))
 HTTP_ATTEMPTS = max(1, int(os.environ.get("PRL_SNAPSHOT_HTTP_ATTEMPTS", "3")))
+PRL_ATOMIC_UNITS = float(os.environ.get("PRL_ATOMIC_UNITS", "100000000"))
 STUCK_NON_LIVE_SECONDS = int(os.environ.get("PRL_STUCK_NON_LIVE_SECONDS", "3600"))
 EMPTY_STUCK_NON_LIVE_SECONDS = int(
     os.environ.get("PRL_EMPTY_STUCK_NON_LIVE_SECONDS", str(STUCK_NON_LIVE_SECONDS))
@@ -45,6 +47,19 @@ EMPTY_STUCK_NON_LIVE_SECONDS = int(
 SALAD_FETCH_WORKERS = int(os.environ.get("PRL_SNAPSHOT_SALAD_FETCH_WORKERS", "12"))
 RUNNING_NO_LIVE_GRACE_SECONDS = int(os.environ.get("PRL_NOHASH_GRACE_SECONDS", "900"))
 REWARD_CALIBRATION_FACTOR = float(os.environ.get("PRL_REWARD_CALIBRATION_FACTOR", "1.0"))
+WALLET_OBSERVED_YIELD_MIN_TH_24H = float(
+    os.environ.get("PRL_WALLET_OBSERVED_YIELD_MIN_TH_24H", "100")
+)
+SLOT_ACTION_STATE_PATH = pathlib.Path(
+    os.environ.get("PRL_SLOT_ACTION_STATE_PATH", str(STATE_DIR / "prl_slot_actions.json"))
+)
+
+
+def env_bool(key: str, default: bool = False) -> bool:
+    value = os.environ.get(key)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
 def default_snapshot_price() -> float:
@@ -280,6 +295,56 @@ def gpu_names(gpu_ids: list[Any]) -> list[str]:
     return [by_id.get(str(gpu_id), str(gpu_id)) for gpu_id in gpu_ids]
 
 
+def safe_slot_action_token(org: str, slot: str) -> str:
+    return re.sub(r"[^A-Za-z0-9_-]+", "_", f"{org}__{slot}").strip("_") or "slot"
+
+
+def slot_action_detail_path(org: str, slot: str) -> pathlib.Path:
+    return SLOT_ACTION_STATE_PATH.parent / f"{SLOT_ACTION_STATE_PATH.stem}.d" / f"{safe_slot_action_token(org, slot)}.json"
+
+
+def slot_action_with_age(entry: Any) -> dict[str, Any] | None:
+    if not isinstance(entry, dict):
+        return None
+    try:
+        at_ts = float(entry.get("at") or entry.get("at_ts") or 0)
+    except (TypeError, ValueError):
+        at_ts = 0.0
+    if at_ts <= 0:
+        return None
+    action = dict(entry)
+    action["age_seconds"] = max(0.0, time.time() - at_ts)
+    return action
+
+
+def recent_slot_action(org: str, slot: str) -> dict[str, Any] | None:
+    try:
+        detail = json.loads(slot_action_detail_path(org, slot).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        detail = None
+    action = slot_action_with_age(detail)
+    if action:
+        return action
+    try:
+        state = json.loads(SLOT_ACTION_STATE_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return slot_action_with_age(state.get(f"{org}/{slot}") or state.get(slot))
+
+
+def effective_state_age_seconds(org: str, slot: str, observed_age: float | None) -> tuple[float | None, dict[str, Any] | None]:
+    action = recent_slot_action(org, slot)
+    if observed_age is None:
+        return None, action
+    try:
+        action_age = float(action.get("age_seconds") or 0) if action else 0.0
+    except (TypeError, ValueError):
+        action_age = 0.0
+    if action_age > 0 and action_age < observed_age:
+        return action_age, action
+    return observed_age, action
+
+
 def pool_prl_per_th_day() -> tuple[float, int, float]:
     fee = float(
         (external_json("https://pearlfortune.org/api/v1/stats/pool-fee-rate").get("data") or {}).get(
@@ -298,6 +363,218 @@ def pool_prl_per_th_day() -> tuple[float, int, float]:
         gross += float(item.get("pool_reward") or 0) / (pool_hashrate / 1e12)
         points += 1
     return gross * (1 - fee) * REWARD_CALIBRATION_FACTOR, points, fee
+
+
+def atomic_to_prl(value: Any) -> float:
+    try:
+        return float(value or 0) / PRL_ATOMIC_UNITS
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def amount_by_window_prl(payload: dict[str, Any], key: str) -> float:
+    values = payload.get(key) or {}
+    return atomic_to_prl(values.get("h24"))
+
+
+def wallet_observed_rewards(prl_per_th_day: float) -> dict[str, Any] | None:
+    try:
+        shares = external_json(f"https://pearlfortune.org/api/v1/miners/{WALLET}/hourly-shares?hours=24")
+        miner = external_json(f"https://pearlfortune.org/api/v1/miners/{WALLET}?hours=24")
+    except Exception as exc:
+        return {"error": f"{type(exc).__name__}: {str(exc)[:160]}"}
+
+    shares_data = shares.get("data") or {}
+    miner_data = miner.get("data") or {}
+    pending = miner_data.get("pending_shares") or {}
+    credited_24h = amount_by_window_prl(shares_data, "credited_amount_by_window_atomic")
+    pending_24h = amount_by_window_prl(pending, "pending_estimate_by_window_atomic")
+    total_24h = credited_24h + pending_24h
+
+    rolling = shares_data.get("rolling_hashrates") or []
+    hashrate_h24 = next(
+        (
+            float(item.get("hashrate") or 0)
+            for item in rolling
+            if int(float(item.get("hours") or 0)) == 24
+        ),
+        0.0,
+    )
+    th_24h = hashrate_h24 / 1e12
+    expected_24h = th_24h * prl_per_th_day if th_24h > 0 else 0.0
+    observed_per_th_day = total_24h / th_24h if th_24h > 0 else 0.0
+    ratio = total_24h / expected_24h if expected_24h > 0 else None
+
+    return {
+        "credited_prl_24h": round(credited_24h, 8),
+        "pending_prl_24h": round(pending_24h, 8),
+        "total_prl_24h": round(total_24h, 8),
+        "rolling_hashrate_th_24h": round(th_24h, 6),
+        "observed_prl_per_th_day_24h": round(observed_per_th_day, 8),
+        "model_prl_per_th_day": round(prl_per_th_day, 8),
+        "expected_prl_24h_at_rolling_hashrate": round(expected_24h, 8),
+        "observed_to_model_ratio_24h": round(ratio, 6) if ratio is not None else None,
+    }
+
+
+def parse_snapshot_time(value: Any) -> datetime | None:
+    if not value:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
+
+
+def float_or_none(value: Any) -> float | None:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed
+
+
+def estimated_cost_usd_from_snapshot_csv(
+    path: pathlib.Path | None,
+    snapshot_at: datetime,
+    current_cost_day: float,
+    *,
+    hours: float = 24.0,
+) -> dict[str, Any]:
+    window_seconds = max(0.0, hours * 3600.0)
+    window_start = snapshot_at - timedelta(seconds=window_seconds)
+    points: list[tuple[datetime, float]] = []
+    previous: tuple[datetime, float] | None = None
+
+    if path is not None and path.exists():
+        try:
+            with path.open(newline="") as handle:
+                for row in csv.DictReader(handle):
+                    at = parse_snapshot_time(row.get("at_utc"))
+                    cost_day = float_or_none(row.get("total_cost_day"))
+                    if at is None or cost_day is None:
+                        continue
+                    if at < window_start:
+                        if previous is None or at > previous[0]:
+                            previous = (at, cost_day)
+                        continue
+                    if at <= snapshot_at:
+                        points.append((at, cost_day))
+        except (OSError, csv.Error):
+            points = []
+            previous = None
+
+    if previous is not None:
+        points.insert(0, (window_start, previous[1]))
+    points.append((snapshot_at, current_cost_day))
+    points.sort(key=lambda item: item[0])
+
+    deduped: list[tuple[datetime, float]] = []
+    for at, cost_day in points:
+        if deduped and at == deduped[-1][0]:
+            deduped[-1] = (at, cost_day)
+        else:
+            deduped.append((at, cost_day))
+
+    if len(deduped) < 2:
+        return {
+            "estimated_cost_usd": None,
+            "coverage_seconds": 0.0,
+            "coverage_hours": 0.0,
+            "coverage_ratio": 0.0,
+            "sample_count": len(deduped),
+        }
+
+    cost = 0.0
+    coverage_seconds = 0.0
+    for (left_at, left_cost_day), (right_at, right_cost_day) in zip(deduped, deduped[1:]):
+        left = max(left_at, window_start)
+        right = min(right_at, snapshot_at)
+        seconds = (right - left).total_seconds()
+        if seconds <= 0:
+            continue
+        coverage_seconds += seconds
+        average_cost_day = (left_cost_day + right_cost_day) / 2
+        cost += average_cost_day * seconds / 86400.0
+
+    coverage_ratio = coverage_seconds / window_seconds if window_seconds > 0 else 0.0
+    return {
+        "estimated_cost_usd": round(cost, 6),
+        "coverage_seconds": round(coverage_seconds, 1),
+        "coverage_hours": round(coverage_seconds / 3600.0, 4),
+        "coverage_ratio": round(coverage_ratio, 6),
+        "sample_count": len(deduped),
+    }
+
+
+def wallet_observed_economics_24h(
+    observed_rewards: dict[str, Any] | None,
+    *,
+    snapshot_at: datetime,
+    current_cost_day: float,
+    assumed_price: float,
+    market_price: float,
+) -> dict[str, Any]:
+    total_prl = float_or_none((observed_rewards or {}).get("total_prl_24h"))
+    if not observed_rewards or observed_rewards.get("error") or total_prl is None:
+        return {
+            "source": "wallet_observed_rewards+snapshot_csv_cost",
+            "error": "wallet_observed_unavailable",
+        }
+
+    cost = estimated_cost_usd_from_snapshot_csv(
+        snapshot_csv_path(),
+        snapshot_at,
+        current_cost_day,
+        hours=24.0,
+    )
+    estimated_cost = float_or_none(cost.get("estimated_cost_usd"))
+    assumed_revenue = total_prl * assumed_price
+    market_revenue = total_prl * market_price
+    result: dict[str, Any] = {
+        "source": "wallet_observed_rewards+snapshot_csv_cost",
+        "realized_prl_24h": round(total_prl, 8),
+        "assumed_price_usd": assumed_price,
+        "market_price_usd": market_price,
+        "revenue_usd_at_assumed_price": round(assumed_revenue, 6),
+        "revenue_usd_at_market_price": round(market_revenue, 6),
+        **cost,
+    }
+    if estimated_cost is not None:
+        result.update(
+            {
+                "profit_usd_at_assumed_price": round(assumed_revenue - estimated_cost, 6),
+                "profit_usd_at_market_price": round(market_revenue - estimated_cost, 6),
+                "break_even_price_usd": round(estimated_cost / total_prl, 6) if total_prl > 0 else None,
+            }
+        )
+    return result
+
+
+def effective_prl_per_th_day(
+    pool_model_prl_per_th_day: float,
+    observed_rewards: dict[str, Any] | None,
+) -> tuple[float, str, str | None]:
+    if not env_bool("PRL_USE_WALLET_OBSERVED_YIELD", True):
+        return pool_model_prl_per_th_day, "pool_model", "disabled"
+    if not observed_rewards or observed_rewards.get("error"):
+        return pool_model_prl_per_th_day, "pool_model", "wallet_observed_unavailable"
+    try:
+        observed_prl_per_th_day = float(observed_rewards.get("observed_prl_per_th_day_24h") or 0)
+        rolling_th = float(observed_rewards.get("rolling_hashrate_th_24h") or 0)
+    except (TypeError, ValueError):
+        return pool_model_prl_per_th_day, "pool_model", "wallet_observed_invalid"
+    if rolling_th < WALLET_OBSERVED_YIELD_MIN_TH_24H:
+        return pool_model_prl_per_th_day, "pool_model", "wallet_observed_low_hashrate"
+    if observed_prl_per_th_day <= 0:
+        return pool_model_prl_per_th_day, "pool_model", "wallet_observed_zero_yield"
+    return observed_prl_per_th_day, "wallet_observed_24h", None
 
 
 def price_catalog(org: str, api_key: str) -> dict[str, dict[str, float]]:
@@ -399,6 +676,25 @@ CSV_FIELDS = [
     "reward_calibration_factor",
     "hourly_points",
     "prl_per_th_day_net",
+    "prl_per_th_day_source",
+    "prl_per_th_day_fallback_reason",
+    "pool_model_prl_per_th_day_net",
+    "wallet_observed_credited_prl_24h",
+    "wallet_observed_pending_prl_24h",
+    "wallet_observed_total_prl_24h",
+    "wallet_observed_rolling_hashrate_th_24h",
+    "wallet_observed_prl_per_th_day_24h",
+    "wallet_observed_to_model_ratio_24h",
+    "wallet_observed_error",
+    "wallet_realized_prl_24h",
+    "wallet_realized_revenue_usd_at_assumed_price_24h",
+    "wallet_realized_revenue_usd_at_market_price_24h",
+    "wallet_estimated_cost_usd_24h",
+    "wallet_realized_profit_usd_at_assumed_price_24h",
+    "wallet_realized_profit_usd_at_market_price_24h",
+    "wallet_realized_break_even_price_usd_24h",
+    "wallet_cost_coverage_hours_24h",
+    "wallet_cost_coverage_ratio_24h",
     "fresh_workers",
     "slot_count",
     "live_slot_count",
@@ -443,6 +739,8 @@ def append_snapshot_csv(snapshot: dict[str, Any]) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         totals = snapshot.get("totals") or {}
         unmapped_totals = snapshot.get("unmapped_totals") or {}
+        observed_rewards = snapshot.get("wallet_observed_rewards") or {}
+        observed_economics = snapshot.get("wallet_observed_economics_24h") or {}
         pending_slots = snapshot.get("pending_slots") or []
         live_slot_count = sum(1 for slot in pending_slots if slot.get("live"))
         pending_slot_count = sum(
@@ -458,6 +756,33 @@ def append_snapshot_csv(snapshot: dict[str, Any]) -> None:
             "reward_calibration_factor": snapshot.get("reward_calibration_factor"),
             "hourly_points": snapshot.get("hourly_points"),
             "prl_per_th_day_net": snapshot.get("prl_per_th_day_net"),
+            "prl_per_th_day_source": snapshot.get("prl_per_th_day_source"),
+            "prl_per_th_day_fallback_reason": snapshot.get("prl_per_th_day_fallback_reason"),
+            "pool_model_prl_per_th_day_net": snapshot.get("pool_model_prl_per_th_day_net"),
+            "wallet_observed_credited_prl_24h": observed_rewards.get("credited_prl_24h"),
+            "wallet_observed_pending_prl_24h": observed_rewards.get("pending_prl_24h"),
+            "wallet_observed_total_prl_24h": observed_rewards.get("total_prl_24h"),
+            "wallet_observed_rolling_hashrate_th_24h": observed_rewards.get("rolling_hashrate_th_24h"),
+            "wallet_observed_prl_per_th_day_24h": observed_rewards.get("observed_prl_per_th_day_24h"),
+            "wallet_observed_to_model_ratio_24h": observed_rewards.get("observed_to_model_ratio_24h"),
+            "wallet_observed_error": observed_rewards.get("error"),
+            "wallet_realized_prl_24h": observed_economics.get("realized_prl_24h"),
+            "wallet_realized_revenue_usd_at_assumed_price_24h": observed_economics.get(
+                "revenue_usd_at_assumed_price"
+            ),
+            "wallet_realized_revenue_usd_at_market_price_24h": observed_economics.get(
+                "revenue_usd_at_market_price"
+            ),
+            "wallet_estimated_cost_usd_24h": observed_economics.get("estimated_cost_usd"),
+            "wallet_realized_profit_usd_at_assumed_price_24h": observed_economics.get(
+                "profit_usd_at_assumed_price"
+            ),
+            "wallet_realized_profit_usd_at_market_price_24h": observed_economics.get(
+                "profit_usd_at_market_price"
+            ),
+            "wallet_realized_break_even_price_usd_24h": observed_economics.get("break_even_price_usd"),
+            "wallet_cost_coverage_hours_24h": observed_economics.get("coverage_hours"),
+            "wallet_cost_coverage_ratio_24h": observed_economics.get("coverage_ratio"),
             "fresh_workers": snapshot.get("fresh_workers"),
             "slot_count": len(pending_slots),
             "live_slot_count": live_slot_count,
@@ -490,7 +815,8 @@ def append_snapshot_csv(snapshot: dict[str, Any]) -> None:
         if path.exists() and path.stat().st_size > 0:
             try:
                 with path.open(newline="") as existing:
-                    write_header = not any(line.strip() for line in existing)
+                    reader = csv.reader(existing)
+                    write_header = not any(row == CSV_FIELDS for row in reader)
             except OSError:
                 write_header = True
         with path.open("a", newline="") as handle:
@@ -508,8 +834,13 @@ def build_snapshot(price: float) -> dict[str, Any]:
         raise RuntimeError("PRL_WALLET must be set in the environment or .env file")
     accounts = configured_accounts()
     snapshot_at = datetime.now(UTC)
-    prl_per_th_day, hourly_points, pool_fee_rate = pool_prl_per_th_day()
+    pool_model_prl_per_th_day, hourly_points, pool_fee_rate = pool_prl_per_th_day()
     market_price = market_prl_price_usd()
+    observed_rewards = wallet_observed_rewards(pool_model_prl_per_th_day)
+    prl_per_th_day, prl_per_th_day_source, prl_per_th_day_fallback_reason = effective_prl_per_th_day(
+        pool_model_prl_per_th_day,
+        observed_rewards,
+    )
 
     catalogs: dict[str, dict[str, dict[str, float]]] = {}
     groups: dict[str, tuple[str, str, dict[str, Any]]] = {}
@@ -682,17 +1013,25 @@ def build_snapshot(price: float) -> dict[str, Any]:
             if age is not None and age >= stuck_after:
                 stuck_non_live.append(stuck_item)
         if running > 0 and slot not in known_slots and age is not None and age >= RUNNING_NO_LIVE_GRACE_SECONDS:
+            effective_age, recent_action = effective_state_age_seconds(public_org or "", slot, age)
             cost_day = 24 * fallback_hourly(group, public_org, catalogs) * running
-            running_no_live.append(
-                {
-                    "slot": slot,
-                    "org": public_org,
-                    "priority": priority,
-                    "cost_day": cost_day,
-                    "state_age_seconds": round(age, 1),
-                    "grace_seconds": RUNNING_NO_LIVE_GRACE_SECONDS,
+            item = {
+                "slot": slot,
+                "org": public_org,
+                "priority": priority,
+                "cost_day": cost_day,
+                "state_age_seconds": round(age, 1),
+                "effective_age_seconds": round(effective_age, 1) if effective_age is not None else None,
+                "grace_seconds": RUNNING_NO_LIVE_GRACE_SECONDS,
+            }
+            if recent_action:
+                item["recent_action"] = {
+                    "action": recent_action.get("action"),
+                    "reason": recent_action.get("reason"),
+                    "candidate": recent_action.get("candidate"),
+                    "age_seconds": round(float(recent_action.get("age_seconds") or 0), 1),
                 }
-            )
+            running_no_live.append(item)
             rows.append(
                 {
                     "worker": "NO_POOL_HASHRATE",
@@ -793,6 +1132,13 @@ def build_snapshot(price: float) -> dict[str, Any]:
 
     totals = {key: sum(float(row[key]) for row in rows) for key in ("th", "prl_day", "revenue_day", "cost_day", "profit_day")}
     market_revenue_day = totals["prl_day"] * market_price
+    wallet_economics = wallet_observed_economics_24h(
+        observed_rewards,
+        snapshot_at=snapshot_at,
+        current_cost_day=totals["cost_day"],
+        assumed_price=price,
+        market_price=market_price,
+    )
     unmapped_totals = {
         "count": len(unmapped_workers),
         "th": sum(float(row["th"]) for row in unmapped_workers),
@@ -818,6 +1164,11 @@ def build_snapshot(price: float) -> dict[str, Any]:
         "reward_calibration_factor": REWARD_CALIBRATION_FACTOR,
         "hourly_points": hourly_points,
         "prl_per_th_day_net": prl_per_th_day,
+        "prl_per_th_day_source": prl_per_th_day_source,
+        "prl_per_th_day_fallback_reason": prl_per_th_day_fallback_reason,
+        "pool_model_prl_per_th_day_net": pool_model_prl_per_th_day,
+        "wallet_observed_rewards": observed_rewards,
+        "wallet_observed_economics_24h": wallet_economics,
         "fresh_workers": len(workers),
         "pool_worker_count": len(pool_workers),
         "pool_stale_worker_count": sum(1 for worker in pool_workers if worker.get("stale")),

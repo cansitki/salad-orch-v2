@@ -269,6 +269,24 @@ class LegacyPrlGuardTest(unittest.TestCase):
         self.assertTrue(observed)
         self.assertLess(observed[-1]["age_seconds"], self.guard.NO_HASH_GRACE_SECONDS)
 
+    def test_recent_slot_action_resets_existing_no_hash_tracking(self) -> None:
+        slot = "prl-kray-roi-01"
+        self.guard.SEEN_SINCE[("kray", slot)] = time.time() - 7200.0
+        self.write_recent_slot_action(slot, age_seconds=60.0)
+        self.guard.snapshot.build_snapshot = lambda _price: self.no_hash_snapshot(slot)
+        reallocated: list[tuple[str, str, str]] = []
+        self.guard.reallocate_slot = lambda org, slot_name, reason, retarget=True: reallocated.append(
+            (org, slot_name, reason)
+        )
+
+        self.guard.tick()
+
+        self.assertEqual(reallocated, [])
+        events = self.log_events()
+        observed = [row for row in events if row.get("event") == "no_hash_observed"]
+        self.assertTrue(observed)
+        self.assertLess(observed[-1]["age_seconds"], self.guard.NO_HASH_GRACE_SECONDS)
+
     def test_negative_reallocation_writes_specific_log_event(self) -> None:
         slot = "prl-kray-roi-01"
         self.guard.NEGATIVE_SLOT_SEEN_SINCE[("kray", slot)] = time.time() - 7200.0

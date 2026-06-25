@@ -748,6 +748,18 @@ cost_day    = Salad hourly GPU price * 24
 profit_day  = revenue_day - cost_day
 ```
 
+`total_prl_day` is a point-in-time run-rate: it answers "what would the
+currently live TH mine over the next 24 hours if it stayed live?" It is not the
+same as PRL actually earned over the previous 24 hours when the fleet was still
+ramping, stuck, or partially down.
+
+For realized accounting, the snapshot also records
+`wallet_observed_economics_24h`. That block uses PearlFortune wallet credited
+plus pending PRL over the last 24 hours, estimates cost from the historical
+snapshot CSV over the same window, and reports realized revenue, profit, and the
+break-even PRL sell price. Those values are also appended to
+`state/prl_profit_snapshots.csv` as `wallet_realized_*_24h` columns.
+
 The net PRL per TH per day is derived from recent PearlFortune pool stats:
 
 ```text

@@ -187,6 +187,35 @@ class ProfitSnapshotTest(unittest.TestCase):
         self.assertEqual(result["profit_usd_at_market_price"], 46)
         self.assertEqual(result["break_even_price_usd"], 0.24)
 
+    def test_append_snapshot_csv_does_not_repeat_migrated_header(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = pathlib.Path(temp_dir) / "snapshots.csv"
+            old_header = [field for field in salad_prl_profit_snapshot.CSV_FIELDS if not field.startswith("wallet_realized")]
+            path.write_text(
+                ",".join(old_header)
+                + "\n"
+                + ",".join(salad_prl_profit_snapshot.CSV_FIELDS)
+                + "\n",
+                encoding="utf-8",
+            )
+            snapshot = {
+                "at_utc": "2026-06-25T12:00:00+00:00",
+                "assumed_prl_price": 0.6,
+                "live_market_prl_price": 0.7,
+                "totals": {},
+                "unmapped_totals": {},
+                "wallet_observed_rewards": {},
+                "wallet_observed_economics_24h": {},
+                "pending_slots": [],
+            }
+
+            with patch.object(salad_prl_profit_snapshot, "snapshot_csv_path", return_value=path):
+                salad_prl_profit_snapshot.append_snapshot_csv(snapshot)
+
+            rows = path.read_text(encoding="utf-8").splitlines()
+
+        self.assertEqual(rows.count(",".join(salad_prl_profit_snapshot.CSV_FIELDS)), 1)
+
     def test_slot_action_detail_path_matches_existing_writers(self) -> None:
         org = "cantemir1"
         slot = "prl-cantemir1-roi-01"

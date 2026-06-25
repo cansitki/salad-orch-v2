@@ -816,8 +816,7 @@ def append_snapshot_csv(snapshot: dict[str, Any]) -> None:
             try:
                 with path.open(newline="") as existing:
                     reader = csv.reader(existing)
-                    header = next(reader, [])
-                    write_header = header != CSV_FIELDS
+                    write_header = not any(row == CSV_FIELDS for row in reader)
             except OSError:
                 write_header = True
         with path.open("a", newline="") as handle:

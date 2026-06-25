@@ -433,11 +433,14 @@ def run_monitor_tick(
                 if shadow_summary["ok"]:
                     action = "guard-apply" if has_actionable_guard else "all-orgs-pending"
                 else:
-                    action = (
-                        "guard-apply"
-                        if guard_probe.get("ok") and int(guard_probe.get("actionable") or 0) > 0
-                        else "none"
-                    )
+                    if guard_probe.get("ok"):
+                        action = (
+                            "guard-apply"
+                            if int(guard_probe.get("actionable") or 0) > 0
+                            else "all-orgs-pending"
+                        )
+                    else:
+                        action = "none"
             elif _has_guard_issues(shadow_summary):
                 action = "guard-apply"
             else:

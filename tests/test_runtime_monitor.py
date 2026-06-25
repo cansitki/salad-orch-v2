@@ -402,7 +402,7 @@ class RuntimeMonitorTest(unittest.TestCase):
         self.assertEqual([call["stage"] for call in calls], ["shadow", "guard-apply"])
         self.assertEqual(payload["guard_probe"]["actionable"], 1)
 
-    def test_guard_repair_does_not_run_when_failed_shadow_has_no_actionable_guard(self) -> None:
+    def test_guard_repair_fills_when_failed_shadow_has_no_actionable_guard(self) -> None:
         calls = []
 
         def runner(**kwargs):
@@ -429,9 +429,9 @@ class RuntimeMonitorTest(unittest.TestCase):
             )
 
         self.assertFalse(payload["ok"])
-        self.assertEqual(payload["action"], "none")
-        self.assertTrue(payload["skipped_live_action"])
-        self.assertEqual([call["stage"] for call in calls], ["shadow"])
+        self.assertEqual(payload["action"], "all-orgs-pending")
+        self.assertFalse(payload["skipped_live_action"])
+        self.assertEqual([call["stage"] for call in calls], ["shadow", "all-orgs"])
 
     def test_guard_on_issues_uses_fill_when_not_due(self) -> None:
         calls = []

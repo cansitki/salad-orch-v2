@@ -256,7 +256,32 @@ def apply_guard_target(
         before_instances = []
     ok = watch.patch_slot(slot_name, candidate, reason, start_after=False)
     if not ok:
-        raise RuntimeError("patch_slot returned false")
+        fallback_ids = instance_ids_from_rows(before_instances)
+        append_unique_instance_id(fallback_ids, target.get("snapshot_instance_id"))
+        reallocated = []
+        for instance_id in fallback_ids:
+            watch.reallocate(slot_name, instance_id, f"{reason}:patch_failed")
+            reallocated.append(instance_id)
+        restart_requested = False
+        restart_reason = None
+        if not reallocated:
+            restart_reason = "patch_failed_without_visible_instances"
+            watch.request("POST", f"/organizations/{watch.ORG}/projects/{watch.PROJECT}/containers/{slot_name}/stop")
+            watch.start_slot(slot_name, f"{reason}:{restart_reason}")
+            restart_requested = True
+        return {
+            "action": "retarget_fallback",
+            "slot_name": slot_name,
+            "profile_key": target["profile_key"],
+            "applied": True,
+            "patch_failed": True,
+            "fallback_reason": "patch_slot_returned_false",
+            "reallocated_instances": reallocated,
+            "pre_patch_instances": len(before_instances),
+            "post_patch_instances": None,
+            "restart_requested": restart_requested,
+            "restart_reason": restart_reason,
+        }
 
     reallocate_ids = instance_ids_from_rows(before_instances)
     append_unique_instance_id(reallocate_ids, target.get("snapshot_instance_id"))
@@ -387,6 +412,10 @@ def enforce_issues(
                                 reason=f"guard_{issue_type}",
                             )
                             decision["applied"] = applied
+                            if target is not None and applied.get("patch_failed"):
+                                record_guard_patch_cooldown(conn, target, reason=str(applied.get("fallback_reason")))
+                                decision["cooldown_profile_key"] = target.get("profile_key")
+                                decision["cooldown_seconds"] = guard_patch_cooldown_seconds()
                             state_db.increment_guard_issue_action(conn, org_label, slot_name, issue_type)
                             state_db.clear_failure(conn, guard_failure_component(org_label, slot_name, issue_type))
                             state_db.record_attempt(

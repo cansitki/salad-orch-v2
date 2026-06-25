@@ -2,12 +2,16 @@
 from __future__ import annotations
 
 import argparse
+import http.cookiejar
 import json
 import os
 import pathlib
 import subprocess
 import time
 from typing import Any
+import urllib.error
+import urllib.parse
+import urllib.request
 
 import state_db
 from config_loader import load_config
@@ -17,6 +21,9 @@ from fleet_common import compact_json, json_dumps, safe_public_payload, utc_now
 PORTAL_API = "https://portal-api.salad.com/api/portal"
 DEFAULT_SESSION = "salad-login"
 DEFAULT_BALANCE_FILE = pathlib.Path("state/salad_balances.json")
+DEFAULT_COOKIE_JAR = pathlib.Path("state/portal_cookies.txt")
+DEFAULT_PORTAL_EMAIL_ENV = "SALAD_PORTAL_EMAIL"
+DEFAULT_PORTAL_PASSWORD_ENV = "SALAD_PORTAL_PASSWORD"
 
 
 class PortalBalanceError(RuntimeError):
@@ -83,18 +90,134 @@ def portal_eval(js: str, *, session: str, cwd: pathlib.Path, timeout: int = 90) 
     return extract_json_from_output(result.stdout)
 
 
+def load_cookie_jar(path: pathlib.Path) -> http.cookiejar.MozillaCookieJar:
+    jar = http.cookiejar.MozillaCookieJar(str(path))
+    if path.exists():
+        jar.load(ignore_discard=True, ignore_expires=True)
+    return jar
+
+
+def save_cookie_jar(jar: http.cookiejar.MozillaCookieJar, path: pathlib.Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    jar.save(ignore_discard=True, ignore_expires=True)
+    try:
+        path.chmod(0o600)
+    except OSError:
+        pass
+
+
+def http_json_request(
+    *,
+    url: str,
+    jar: http.cookiejar.MozillaCookieJar,
+    method: str = "GET",
+    body: dict[str, Any] | None = None,
+    timeout: int = 30,
+) -> dict[str, Any]:
+    data = None if body is None else json.dumps(body).encode("utf-8")
+    headers = {
+        "Accept": "application/json",
+        "Origin": "https://portal.salad.com",
+        "Referer": "https://portal.salad.com/",
+        "User-Agent": "salad-orch-v2/portal-balances",
+    }
+    if data is not None:
+        headers["Content-Type"] = "application/json"
+    request = urllib.request.Request(url, data=data, headers=headers, method=method)
+    opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
+    try:
+        with opener.open(request, timeout=timeout) as response:
+            text = response.read().decode("utf-8", errors="replace")
+            status = int(response.status)
+    except urllib.error.HTTPError as exc:
+        text = exc.read().decode("utf-8", errors="replace")
+        status = int(exc.code)
+    except urllib.error.URLError as exc:
+        raise PortalBalanceError(f"portal HTTP request failed: {type(exc.reason).__name__}") from exc
+
+    try:
+        payload = json.loads(text) if text else {}
+    except json.JSONDecodeError:
+        payload = {"raw": text[:400]}
+    if not isinstance(payload, dict):
+        payload = {"items": payload}
+    payload["ok"] = 200 <= status < 300
+    payload["status"] = status
+    return payload
+
+
+def fetch_portal_balances_http(
+    *,
+    cookie_jar: pathlib.Path,
+    email: str | None = None,
+    password: str | None = None,
+    timeout: int = 30,
+) -> dict[str, Any]:
+    jar = load_cookie_jar(cookie_jar)
+    org_payload = http_json_request(url=f"{PORTAL_API}/organizations", jar=jar, timeout=timeout)
+    if int(org_payload.get("status") or 0) in {401, 403} and email and password:
+        login_payload = http_json_request(
+            url=f"{PORTAL_API}/users/login",
+            jar=jar,
+            method="POST",
+            body={"email": email, "password": password},
+            timeout=timeout,
+        )
+        if not login_payload.get("ok"):
+            raise PortalBalanceError(f"portal login failed status {login_payload.get('status')}")
+        save_cookie_jar(jar, cookie_jar)
+        org_payload = http_json_request(url=f"{PORTAL_API}/organizations", jar=jar, timeout=timeout)
+    if not org_payload.get("ok"):
+        raise PortalBalanceError(f"portal organizations status {org_payload.get('status')}")
+
+    orgs = org_payload.get("items") if isinstance(org_payload.get("items"), list) else []
+    balances = []
+    for org in orgs:
+        if not isinstance(org, dict):
+            continue
+        name = org.get("name") or org.get("display_name") or org.get("id")
+        if not name:
+            continue
+        balance_payload = http_json_request(
+            url=f"{PORTAL_API}/organizations/{urllib.parse.quote(str(name), safe='')}/billing-profile/credits-balance",
+            jar=jar,
+            timeout=timeout,
+        )
+        amount_cents = balance_payload.get("amount")
+        amount_cents = amount_cents if isinstance(amount_cents, (int, float)) else None
+        balances.append(
+            {
+                "org": name,
+                "org_id": org.get("id"),
+                "display_name": org.get("display_name"),
+                "status": balance_payload.get("status"),
+                "ok": bool(balance_payload.get("ok")),
+                "amount_cents": amount_cents,
+                "balance_usd": amount_cents / 100 if amount_cents is not None else None,
+                "error": None if balance_payload.get("ok") else str(balance_payload)[:400],
+            }
+        )
+    save_cookie_jar(jar, cookie_jar)
+    return {"ok": True, "status": org_payload.get("status"), "checked_at_utc": utc_now(), "balances": balances}
+
+
 def fetch_portal_balances(
     *,
     session: str = DEFAULT_SESSION,
     cwd: pathlib.Path | None = None,
     timeout: int = 90,
+    cookie_jar: pathlib.Path | None = None,
+    portal_email: str | None = None,
+    portal_password: str | None = None,
 ) -> dict[str, Any]:
     run_cwd = cwd or pathlib.Path.cwd()
-    run_agent_browser(
-        ["--session", session, "open", "https://portal.salad.com/organizations"],
-        cwd=run_cwd,
-        timeout=timeout,
-    )
+    if cookie_jar is not None:
+        return fetch_portal_balances_http(
+            cookie_jar=cookie_jar,
+            email=portal_email,
+            password=portal_password,
+            timeout=min(timeout, 30),
+        )
     js = f"""
 (async () => {{
   const orgResponse = await fetch('{PORTAL_API}/organizations', {{ credentials: 'include' }});
@@ -131,6 +254,16 @@ def fetch_portal_balances(
 }})()
 """
     payload = portal_eval(js, session=session, cwd=run_cwd, timeout=timeout)
+    if isinstance(payload, dict) and payload.get("ok"):
+        return payload
+    if isinstance(payload, dict) and int(payload.get("status") or 0) not in {401, 403}:
+        return payload
+    run_agent_browser(
+        ["--session", session, "open", "https://portal.salad.com/organizations"],
+        cwd=run_cwd,
+        timeout=timeout,
+    )
+    payload = portal_eval(js, session=session, cwd=run_cwd, timeout=timeout)
     if not isinstance(payload, dict):
         raise PortalBalanceError("portal response was not a JSON object")
     return payload
@@ -151,6 +284,43 @@ def normalize_balances(payload: dict[str, Any]) -> dict[str, float]:
     return balances
 
 
+def load_existing_balance_file(path: pathlib.Path) -> dict[str, float]:
+    if not path.exists():
+        return {}
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    balances: dict[str, float] = {}
+    for org, value in raw.items():
+        try:
+            balances[str(org)] = round(float(value), 2)
+        except (TypeError, ValueError):
+            continue
+    return balances
+
+
+def merge_existing_balances_for_partial_failures(
+    *,
+    payload: dict[str, Any],
+    balances: dict[str, float],
+    balance_file: pathlib.Path,
+) -> tuple[dict[str, float], list[str]]:
+    previous = load_existing_balance_file(balance_file)
+    merged = dict(balances)
+    stale_orgs: list[str] = []
+    for row in payload.get("balances") or []:
+        if not isinstance(row, dict) or row.get("ok"):
+            continue
+        org = str(row.get("org") or "").strip()
+        if org and org not in merged and org in previous:
+            merged[org] = previous[org]
+            stale_orgs.append(org)
+    return merged, sorted(stale_orgs)
+
+
 def write_balance_file(path: pathlib.Path, balances: dict[str, float]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = path.with_name(f".{path.name}.tmp")
@@ -164,21 +334,25 @@ def record_refresh(
     payload: dict[str, Any],
     balances: dict[str, float],
     balance_file: pathlib.Path,
+    stale_balance_orgs: list[str] | None = None,
 ) -> dict[str, Any]:
     config = load_config()
     enabled_orgs = [org.label for org in config.enabled_orgs()]
     missing_enabled_orgs = [org for org in enabled_orgs if org not in balances]
-    status = "degraded" if missing_enabled_orgs else "ok"
+    stale_balance_orgs = stale_balance_orgs or []
+    status = "degraded" if missing_enabled_orgs or stale_balance_orgs else "ok"
     public_payload = {
         "org_count": len(balances),
         "portal_org_count": len(payload.get("balances") or []),
         "balance_file": str(balance_file),
         "missing_enabled_orgs": missing_enabled_orgs,
+        "stale_balance_orgs": stale_balance_orgs,
         "portal_status": payload.get("status"),
         "checked_at_utc": payload.get("checked_at_utc"),
     }
     with state_db.connect(db_path) as conn:
         state_db.init_db(conn)
+        state_db.clear_failure(conn, "portal_balances")
         state_db.write_heartbeat(
             conn,
             "portal_balances",
@@ -229,11 +403,32 @@ def run_once(
     session: str = DEFAULT_SESSION,
     cwd: pathlib.Path | None = None,
     timeout: int = 90,
+    cookie_jar: pathlib.Path | None = None,
+    portal_email: str | None = None,
+    portal_password: str | None = None,
 ) -> dict[str, Any]:
-    payload = fetch_portal_balances(session=session, cwd=cwd, timeout=timeout)
+    payload = fetch_portal_balances(
+        session=session,
+        cwd=cwd,
+        timeout=timeout,
+        cookie_jar=cookie_jar,
+        portal_email=portal_email,
+        portal_password=portal_password,
+    )
     balances = normalize_balances(payload)
+    balances, stale_balance_orgs = merge_existing_balances_for_partial_failures(
+        payload=payload,
+        balances=balances,
+        balance_file=balance_file,
+    )
     write_balance_file(balance_file, balances)
-    return record_refresh(db_path=db_path, payload=payload, balances=balances, balance_file=balance_file)
+    return record_refresh(
+        db_path=db_path,
+        payload=payload,
+        balances=balances,
+        balance_file=balance_file,
+        stale_balance_orgs=stale_balance_orgs,
+    )
 
 
 def main() -> None:
@@ -243,6 +438,9 @@ def main() -> None:
     parser.add_argument("--session", default=DEFAULT_SESSION)
     parser.add_argument("--cwd", default=".")
     parser.add_argument("--timeout", type=int, default=90)
+    parser.add_argument("--cookie-jar", default=os.environ.get("SALAD_PORTAL_COOKIE_JAR"))
+    parser.add_argument("--portal-email-env", default=DEFAULT_PORTAL_EMAIL_ENV)
+    parser.add_argument("--portal-password-env", default=DEFAULT_PORTAL_PASSWORD_ENV)
     parser.add_argument("--once", action="store_true")
     parser.add_argument("--loop", action="store_true")
     parser.add_argument("--interval", type=int, default=900)
@@ -257,6 +455,9 @@ def main() -> None:
                 session=args.session,
                 cwd=pathlib.Path(args.cwd),
                 timeout=args.timeout,
+                cookie_jar=pathlib.Path(args.cookie_jar) if args.cookie_jar else None,
+                portal_email=os.environ.get(args.portal_email_env),
+                portal_password=os.environ.get(args.portal_password_env),
             )
         except Exception as exc:
             record_failure(args.db, exc)

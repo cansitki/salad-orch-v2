@@ -64,6 +64,34 @@ class RolloutTest(unittest.TestCase):
         self.assertFalse(gates["ok"])
         self.assertEqual(gates["failed"][0]["gate"], "runtime_failures")
 
+    def test_portal_balance_failure_warns_without_blocking_gpu_actions(self) -> None:
+        scheduler_payload = {
+            "mode": "base_fill",
+            "assigned_targets": 40,
+            "target_slots": 40,
+        }
+        report_payload = {
+            "running_no_live_billable_slots": [],
+            "negative_slots": [],
+        }
+        health_payload = {
+            "health": "degraded",
+            "runtime_failures": [{"component": "portal_balances"}],
+            "stale_heartbeats": [],
+        }
+        gates = rollout.evaluate_gates(
+            db_path=self.db_path,
+            scheduler_payload=scheduler_payload,
+            worker_payloads=[],
+            guard_payload=None,
+            report_payload=report_payload,
+            health_payload=health_payload,
+            allow_degraded=False,
+        )
+        self.assertTrue(gates["ok"])
+        self.assertEqual(gates["failed"], [])
+        self.assertEqual(gates["warnings"][0]["gate"], "runtime_failures")
+
     def test_gate_fails_when_target_coverage_is_incomplete(self) -> None:
         gates = rollout.evaluate_gates(
             db_path=self.db_path,

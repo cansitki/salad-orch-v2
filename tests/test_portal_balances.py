@@ -5,6 +5,7 @@ import pathlib
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -63,21 +64,103 @@ class PortalBalancesTest(unittest.TestCase):
 
         self.assertEqual(json.loads(path.read_text(encoding="utf-8")), {"kray": 7.41, "kray2": 6.0})
 
+    def test_partial_org_balance_failure_preserves_previous_value_as_stale(self) -> None:
+        path = self.tmp_path / "state" / "salad_balances.json"
+        portal_balances.write_balance_file(path, {"kray": 7.41, "kray2": 6.0})
+        payload = {
+            "ok": True,
+            "balances": [
+                {"org": "kray", "ok": False, "balance_usd": None},
+                {"org": "kray2", "ok": True, "balance_usd": 5.5},
+            ],
+        }
+        balances = portal_balances.normalize_balances(payload)
+
+        merged, stale_orgs = portal_balances.merge_existing_balances_for_partial_failures(
+            payload=payload,
+            balances=balances,
+            balance_file=path,
+        )
+
+        self.assertEqual(merged, {"kray": 7.41, "kray2": 5.5})
+        self.assertEqual(stale_orgs, ["kray"])
+
+    def test_fetch_portal_balances_uses_eval_without_open_when_authenticated(self) -> None:
+        expected = {"ok": True, "status": 200, "balances": []}
+
+        with (
+            mock.patch.object(portal_balances, "portal_eval", return_value=expected) as eval_mock,
+            mock.patch.object(portal_balances, "run_agent_browser") as open_mock,
+        ):
+            payload = portal_balances.fetch_portal_balances(cwd=self.tmp_path)
+
+        self.assertEqual(payload, expected)
+        eval_mock.assert_called_once()
+        open_mock.assert_not_called()
+
+    def test_fetch_portal_balances_prefers_http_cookie_jar_when_configured(self) -> None:
+        expected = {"ok": True, "status": 200, "balances": []}
+
+        with (
+            mock.patch.object(portal_balances, "fetch_portal_balances_http", return_value=expected) as http_mock,
+            mock.patch.object(portal_balances, "portal_eval") as eval_mock,
+        ):
+            payload = portal_balances.fetch_portal_balances(
+                cwd=self.tmp_path,
+                cookie_jar=self.tmp_path / "portal_cookies.txt",
+                portal_email="user@example.com",
+                portal_password="secret",
+            )
+
+        self.assertEqual(payload, expected)
+        http_mock.assert_called_once()
+        eval_mock.assert_not_called()
+
+    def test_fetch_portal_balances_opens_portal_after_unauthorized_eval(self) -> None:
+        expected = {"ok": True, "status": 200, "balances": []}
+
+        with (
+            mock.patch.object(
+                portal_balances,
+                "portal_eval",
+                side_effect=[{"ok": False, "status": 401, "balances": []}, expected],
+            ) as eval_mock,
+            mock.patch.object(portal_balances, "run_agent_browser") as open_mock,
+        ):
+            payload = portal_balances.fetch_portal_balances(cwd=self.tmp_path)
+
+        self.assertEqual(payload, expected)
+        self.assertEqual(eval_mock.call_count, 2)
+        open_mock.assert_called_once()
+
     def test_record_refresh_marks_missing_enabled_orgs_degraded(self) -> None:
         payload = {"status": 200, "checked_at_utc": "2026-06-25T00:00:00Z", "balances": [{"org": "kray"}]}
+        with state_db.connect(self.db_path) as conn:
+            state_db.record_failure(
+                conn,
+                "portal_balances",
+                severity="warning",
+                error_type="TimeoutExpired",
+                message="stale portal timeout",
+            )
+            conn.commit()
 
         result = portal_balances.record_refresh(
             db_path=self.db_path,
             payload=payload,
             balances={"kray": 7.41},
             balance_file=self.tmp_path / "state" / "salad_balances.json",
+            stale_balance_orgs=["kray"],
         )
 
         self.assertEqual(result["status"], "degraded")
         self.assertIn("kry1", result["missing_enabled_orgs"])
+        self.assertEqual(result["stale_balance_orgs"], ["kray"])
         with state_db.connect(self.db_path) as conn:
             heartbeat = conn.execute("SELECT * FROM heartbeats WHERE process_name = 'portal_balances'").fetchone()
+            failures = conn.execute("SELECT COUNT(*) FROM runtime_failures WHERE component = 'portal_balances'").fetchone()[0]
         self.assertEqual(heartbeat["status"], "degraded")
+        self.assertEqual(failures, 0)
 
 
 if __name__ == "__main__":

@@ -20,6 +20,7 @@ from fleet_common import json_dumps
 
 
 STAGES = {"shadow", "one-org", "all-orgs", "guard-apply"}
+NONBLOCKING_RUNTIME_FAILURE_COMPONENTS = {"portal_balances"}
 
 
 def _enabled_org_labels() -> list[str]:
@@ -110,6 +111,22 @@ def _worker_payloads_have_action(worker_payloads: list[dict[str, Any]], action: 
     return False
 
 
+def _blocking_runtime_failures(runtime_failures: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        failure
+        for failure in runtime_failures
+        if str(failure.get("component") or "") not in NONBLOCKING_RUNTIME_FAILURE_COMPONENTS
+    ]
+
+
+def _nonblocking_runtime_failures(runtime_failures: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        failure
+        for failure in runtime_failures
+        if str(failure.get("component") or "") in NONBLOCKING_RUNTIME_FAILURE_COMPONENTS
+    ]
+
+
 def _scheduler_payload_has_replacement_targets(scheduler_payload: dict[str, Any]) -> bool:
     for target in scheduler_payload.get("targets") or []:
         reason = str(target.get("reason") or "")
@@ -136,6 +153,8 @@ def evaluate_gates(
     target_violations = _target_profit_violations(db_path, min_profit)
     worker_failures = _worker_failures(worker_payloads)
     runtime_failures = health_payload.get("runtime_failures") or []
+    blocking_runtime_failures = _blocking_runtime_failures(runtime_failures)
+    nonblocking_runtime_failures = _nonblocking_runtime_failures(runtime_failures)
     stale_heartbeats = health_payload.get("stale_heartbeats") or []
     failed: list[dict[str, Any]] = []
     warnings: list[dict[str, Any]] = []
@@ -167,12 +186,12 @@ def evaluate_gates(
         )
     if health_payload.get("health") == "down":
         failed.append({"gate": "health", "message": "health.py reports down"})
-    if runtime_failures and not allow_degraded:
+    if blocking_runtime_failures and not allow_degraded:
         failed.append(
             {
                 "gate": "runtime_failures",
-                "message": f"{len(runtime_failures)} runtime failures present",
-                "examples": runtime_failures[:5],
+                "message": f"{len(blocking_runtime_failures)} blocking runtime failures present",
+                "examples": blocking_runtime_failures[:5],
             }
         )
     if stale_heartbeats and require_fresh_heartbeats and not allow_degraded:
@@ -186,6 +205,14 @@ def evaluate_gates(
 
     if health_payload.get("health") == "degraded" and allow_degraded:
         warnings.append({"gate": "health", "message": "health.py reports degraded but allow_degraded is set"})
+    if nonblocking_runtime_failures:
+        warnings.append(
+            {
+                "gate": "runtime_failures",
+                "message": f"{len(nonblocking_runtime_failures)} non-blocking runtime failures present",
+                "examples": nonblocking_runtime_failures[:5],
+            }
+        )
     if stale_heartbeats and not require_fresh_heartbeats:
         warnings.append(
             {

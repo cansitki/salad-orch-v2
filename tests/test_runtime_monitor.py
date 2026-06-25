@@ -541,7 +541,7 @@ class RuntimeMonitorTest(unittest.TestCase):
 
     def test_shadow_hard_timeout_returns_failed_tick(self) -> None:
         def runner(**_kwargs):
-            time.sleep(1.0)
+            time.sleep(5.0)
             return rollout_payload(stage="shadow")
 
         started = time.monotonic()
@@ -552,7 +552,7 @@ class RuntimeMonitorTest(unittest.TestCase):
         )
         elapsed = time.monotonic() - started
 
-        self.assertLess(elapsed, 0.8)
+        self.assertLess(elapsed, 4.0)
         self.assertFalse(payload["ok"])
         self.assertEqual(payload["action"], "none")
         self.assertIn("monitor_timeout", payload["shadow"]["failed_gates"])

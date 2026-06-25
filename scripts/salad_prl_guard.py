@@ -833,20 +833,34 @@ def expected_th_for_slot(org: str, row: dict[str, Any]) -> float | None:
 
 def seen_since_from_state_age(store: dict[tuple[str, str], float], key: tuple[str, str], item: dict[str, Any]) -> float:
     now_ts = time.time()
-    if key in store:
-        return store[key]
     try:
         state_age_seconds = float(item.get("state_age_seconds") or 0)
     except (TypeError, ValueError):
         state_age_seconds = 0.0
+    try:
+        effective_age_seconds = float(item.get("effective_age_seconds") or 0)
+    except (TypeError, ValueError):
+        effective_age_seconds = 0.0
     org, slot = key
     recent_action = recent_slot_action(org, slot)
     try:
         recent_action_age = float(recent_action.get("age_seconds") or 0) if recent_action else 0.0
     except (TypeError, ValueError):
         recent_action_age = 0.0
-    if recent_action_age > 0 and (state_age_seconds <= 0 or recent_action_age < state_age_seconds):
-        store[key] = max(0.0, now_ts - recent_action_age)
+
+    reset_age_seconds = 0.0
+    if effective_age_seconds > 0 and (state_age_seconds <= 0 or effective_age_seconds < state_age_seconds):
+        reset_age_seconds = effective_age_seconds
+    elif recent_action_age > 0 and (state_age_seconds <= 0 or recent_action_age < state_age_seconds):
+        reset_age_seconds = recent_action_age
+
+    if key in store:
+        if reset_age_seconds > 0:
+            store[key] = max(store[key], max(0.0, now_ts - reset_age_seconds))
+        return store[key]
+
+    if reset_age_seconds > 0:
+        store[key] = max(0.0, now_ts - reset_age_seconds)
     elif state_age_seconds > 0:
         store[key] = max(0.0, now_ts - state_age_seconds)
     else:

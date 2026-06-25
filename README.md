@@ -121,7 +121,7 @@ The runnable code lives in `scripts/`.
 | `scripts/rollout.py` | Controlled shadow/one-org/all-org/guard rollout runner with safety gates. |
 | `scripts/runtime_monitor.py` | Safe runtime monitor loop for repeated shadow gates and explicitly confirmed live actions. |
 | `scripts/fleet_audit.py` | Records active GPU snapshots every 5 minutes and hourly org balance-vs-cost audits. |
-| `scripts/portal_balances.py` | Uses an authenticated Salad portal browser session to refresh the private org balance file. |
+| `scripts/portal_balances.py` | Uses an authenticated Salad Portal session or local env login to refresh the private org balance file. |
 | `scripts/rollback.py` | Rollout checkpoint create/list/restore helper for scheduler targets. |
 | `scripts/maintenance.py` | Dry-run-first SQLite retention/compaction helper for long-running fleets. |
 | `.env.example` | Safe template for local secrets and runtime settings. |
@@ -154,6 +154,8 @@ Fill in:
 PRL_WALLET
 SALAD_API_KEY_2
 SALAD_API_KEY_KRY1
+SALAD_PORTAL_EMAIL
+SALAD_PORTAL_PASSWORD
 ```
 
 No SafeTrade API key is needed. SafeTrade is used only through its public
@@ -249,8 +251,8 @@ watcher refreshes this local untracked file from an already-authenticated
 `agent-browser` Salad portal session:
 
 ```bash
-python3 scripts/portal_balances.py --once --balance-file state/salad_balances.json
-python3 scripts/portal_balances.py --loop --interval 900 --balance-file state/salad_balances.json
+python3 scripts/portal_balances.py --once --balance-file state/salad_balances.json --cookie-jar state/portal_cookies.txt
+python3 scripts/portal_balances.py --loop --interval 900 --balance-file state/salad_balances.json --cookie-jar state/portal_cookies.txt
 ```
 
 The file contains only public org labels and numeric USD balances:

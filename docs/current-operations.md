@@ -77,6 +77,8 @@ The automation is intentionally plain Python plus shell launchers.
 | `scripts/salad_prl_profit_snapshot.py` | Combines Salad cost, pool workers, PRL emission, and price into profit reports. |
 | `scripts/salad_prl_rank_candidates.py` | Ranks available Salad GPU candidates by expected profit at a chosen PRL price. |
 | `scripts/salad_prl_nonstop_supervisor.py` | Keeps tmux sessions alive and selects fill/optimize mode based on live worker count. |
+| `scripts/fleet_audit.py` | Records active GPU snapshots every 5 minutes and hourly org balance-vs-cost audits. |
+| `scripts/portal_balances.py` | Refreshes the private local balance file from Salad Portal using a local cookie jar and optional env login. |
 
 ## Runtime Sessions
 
@@ -131,6 +133,13 @@ Watch guard actions:
 
 ```bash
 tail -f state/logs/prl_nohash_guard.log
+```
+
+Check active GPUs and hourly balance-vs-cost audits:
+
+```bash
+python3 scripts/fleet_audit.py --loop --interval 300 --balance-interval 3600 --balance-file state/salad_balances.json
+python3 scripts/portal_balances.py --loop --interval 900 --balance-file state/salad_balances.json --cookie-jar state/portal_cookies.txt
 ```
 
 ## Profit Model

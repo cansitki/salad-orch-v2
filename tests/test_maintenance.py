@@ -97,6 +97,8 @@ class MaintenanceTest(unittest.TestCase):
         self.assertIn("900", balances["cmd"])
         self.assertIn("--balance-file", balances["cmd"])
         self.assertIn("state/salad_balances.json", balances["cmd"])
+        self.assertIn("--cookie-jar", balances["cmd"])
+        self.assertIn("state/portal_cookies.txt", balances["cmd"])
 
     def test_supervisor_tmux_sessions_load_dotenv(self) -> None:
         command = supervisor.tmux_command("salad-test", ["python3", "scripts/price_oracle.py", "--loop"])

@@ -82,6 +82,8 @@ def process_plan(
                     "state/salad_balances.json",
                     "--cwd",
                     str(REPO_ROOT),
+                    "--cookie-jar",
+                    "state/portal_cookies.txt",
                 ],
                 db_path,
             ),

@@ -757,7 +757,7 @@ class StateAndSchedulerTest(unittest.TestCase):
                     self.gpu_keys = gpu_keys
                     self.memory = memory
 
-            def patch_slot(self, _slot_name, _candidate, _reason):
+            def patch_slot(self, _slot_name, _candidate, _reason, *, start_after=True):
                 return False
 
         result = org_worker.execute_action(
@@ -786,6 +786,96 @@ class StateAndSchedulerTest(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertFalse(result["applied"])
         self.assertEqual(result["action"], "cooldown_failed_patch")
+        self.assertEqual(result["original_action"], "patch")
+
+    def test_org_worker_start_failure_is_reported(self) -> None:
+        class Watch:
+            class Candidate:
+                def __init__(self, label, priority, gpu_keys, memory):
+                    self.label = label
+                    self.priority = priority
+                    self.gpu_keys = gpu_keys
+                    self.memory = memory
+
+            def start_slot(self, _slot_name, _reason):
+                return False
+
+        result = org_worker.execute_action(
+            Watch(),
+            {
+                "slot_name": "prl-kry1-roi-01",
+                "label": "RTX 4090 batch",
+                "priority": "batch",
+                "gpu_key": "4090",
+                "memory_mb": 2048,
+            },
+            {
+                "slot_name": "prl-kry1-roi-01",
+                "action": "start",
+                "reason": "target_stopped_or_empty",
+                "target_profile_key": "4090:batch:2048",
+                "current_profile_key": "4090:batch:2048",
+                "observed_status": "stopped",
+                "protected": False,
+                "counts": {"allocating": 0, "creating": 0, "running": 0, "stopping": 0},
+                "instance_count": 0,
+            },
+            apply=True,
+        )
+
+        self.assertFalse(result["ok"])
+        self.assertFalse(result["applied"])
+        self.assertEqual(result["action"], "start_failed")
+        self.assertEqual(result["original_action"], "start")
+
+    def test_org_worker_stopped_patch_starts_separately_and_reports_failure(self) -> None:
+        class Watch:
+            class Candidate:
+                def __init__(self, label, priority, gpu_keys, memory):
+                    self.label = label
+                    self.priority = priority
+                    self.gpu_keys = gpu_keys
+                    self.memory = memory
+
+            def __init__(self):
+                self.patch_start_after = None
+
+            def patch_slot(self, _slot_name, _candidate, _reason, *, start_after=True):
+                self.patch_start_after = start_after
+                return True
+
+            def start_slot(self, _slot_name, _reason):
+                return False
+
+        watch = Watch()
+        result = org_worker.execute_action(
+            watch,
+            {
+                "slot_name": "prl-kry1-roi-01",
+                "label": "RTX 5090 batch",
+                "priority": "batch",
+                "gpu_key": "5090",
+                "memory_mb": 2048,
+            },
+            {
+                "slot_name": "prl-kry1-roi-01",
+                "action": "patch",
+                "reason": "profile_mismatch:4090:batch:2048",
+                "target_profile_key": "5090:batch:2048",
+                "current_profile_key": "4090:batch:2048",
+                "observed_status": "stopped",
+                "protected": False,
+                "counts": {"allocating": 0, "creating": 0, "running": 0, "stopping": 0},
+                "instance_count": 0,
+            },
+            apply=True,
+        )
+
+        self.assertFalse(watch.patch_start_after)
+        self.assertFalse(result["ok"])
+        self.assertFalse(result["applied"])
+        self.assertTrue(result["patched"])
+        self.assertEqual(result["action"], "start_failed")
         self.assertEqual(result["original_action"], "patch")
 
     def test_org_worker_cooldowns_stale_pending_same_profile(self) -> None:

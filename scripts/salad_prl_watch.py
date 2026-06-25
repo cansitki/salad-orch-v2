@@ -1582,20 +1582,23 @@ def reallocate_pending_instances(slot: str, instances: list[dict[str, Any]], rea
     return reallocated
 
 
-def start_slot(slot: str, reason: str) -> None:
+def start_slot(slot: str, reason: str) -> bool:
     try:
         request("POST", f"/organizations/{ORG}/projects/{PROJECT}/containers/{slot}/start")
         SLOT_LAST_PATCH[slot] = time.time()
         record_slot_action_state(slot, "started", reason)
         clear_no_credits_state("slot_start_requested", slot=slot, start_reason=reason)
         log("slot_start_requested", slot=slot, reason=reason)
+        return True
     except requests.HTTPError as exc:
         error_text = exc.response.text
         if "no_credits_available" in error_text or "no credits" in error_text.lower():
             note_no_credits(error_text)
         log("slot_start_failed", slot=slot, reason=reason, status=exc.response.status_code, error=error_text[:180])
+        return False
     except Exception as exc:
         log("slot_start_failed", slot=slot, reason=reason, error=type(exc).__name__)
+        return False
 
 
 def fresh_workers() -> list[dict[str, Any]]:

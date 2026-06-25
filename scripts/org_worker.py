@@ -454,6 +454,22 @@ def candidate_from_target(watch: Any, target: dict[str, Any]) -> Any:
     )
 
 
+def has_active_instances(plan: dict[str, Any]) -> bool:
+    counts = plan.get("counts") or {}
+    return any(int(counts.get(key) or 0) > 0 for key in ("allocating", "creating", "running", "stopping"))
+
+
+def start_failed_result(plan: dict[str, Any], original_action: str) -> dict[str, Any]:
+    return {
+        "ok": False,
+        "applied": False,
+        **plan,
+        "action": "start_failed",
+        "original_action": original_action,
+        "error": "start_slot returned false",
+    }
+
+
 def execute_action(watch: Any, target: dict[str, Any], plan: dict[str, Any], *, apply: bool) -> dict[str, Any]:
     if not apply or plan["action"] == "observe":
         return {"ok": True, "applied": False, **plan}
@@ -462,7 +478,13 @@ def execute_action(watch: Any, target: dict[str, Any], plan: dict[str, Any], *, 
     if plan["action"] == "create":
         watch.create_slot(slot_name, candidate)
     elif plan["action"] == "patch":
-        ok = watch.patch_slot(slot_name, candidate, "fleet_scheduler_target")
+        start_after_patch = not has_active_instances(plan)
+        ok = watch.patch_slot(
+            slot_name,
+            candidate,
+            "fleet_scheduler_target",
+            start_after=not start_after_patch,
+        )
         if not ok:
             return {
                 "ok": True,
@@ -472,8 +494,17 @@ def execute_action(watch: Any, target: dict[str, Any], plan: dict[str, Any], *, 
                 "original_action": "patch",
                 "error": "patch_slot returned false",
             }
+        if start_after_patch:
+            start_result = watch.start_slot(slot_name, "after_patch:fleet_scheduler_target")
+            if start_result is False:
+                result = start_failed_result(plan, "patch")
+                result["patched"] = True
+                return result
+            return {"ok": True, "applied": True, **plan, "start_requested_after_patch": True}
     elif plan["action"] == "start":
-        watch.start_slot(slot_name, "fleet_scheduler_target")
+        start_result = watch.start_slot(slot_name, "fleet_scheduler_target")
+        if start_result is False:
+            return start_failed_result(plan, "start")
     elif plan["action"] == "cooldown_pending":
         recycled = []
         for instance_id in plan.get("pending_instance_ids") or []:
@@ -484,8 +515,18 @@ def execute_action(watch: Any, target: dict[str, Any], plan: dict[str, Any], *, 
         if not recycled:
             restart_reason = "stale_pending_without_visible_instances"
             watch.request("POST", f"/organizations/{watch.ORG}/projects/{watch.PROJECT}/containers/{slot_name}/stop")
-            watch.start_slot(slot_name, f"stale_pending_same_profile:{restart_reason}")
+            start_result = watch.start_slot(slot_name, f"stale_pending_same_profile:{restart_reason}")
             restart_requested = True
+            if start_result is False:
+                result = start_failed_result(plan, "cooldown_pending")
+                result.update(
+                    {
+                        "recycled_pending_instances": recycled,
+                        "restart_requested": restart_requested,
+                        "restart_reason": restart_reason,
+                    }
+                )
+                return result
         return {
             "ok": True,
             "applied": True,
@@ -504,8 +545,18 @@ def execute_action(watch: Any, target: dict[str, Any], plan: dict[str, Any], *, 
         if not reallocated:
             restart_reason = "running_no_hash_without_visible_instances"
             watch.request("POST", f"/organizations/{watch.ORG}/projects/{watch.PROJECT}/containers/{slot_name}/stop")
-            watch.start_slot(slot_name, f"running_no_hash_same_profile:{restart_reason}")
+            start_result = watch.start_slot(slot_name, f"running_no_hash_same_profile:{restart_reason}")
             restart_requested = True
+            if start_result is False:
+                result = start_failed_result(plan, "restart_no_hash")
+                result.update(
+                    {
+                        "reallocated_instances": reallocated,
+                        "restart_requested": restart_requested,
+                        "restart_reason": restart_reason,
+                    }
+                )
+                return result
         return {
             "ok": True,
             "applied": True,
@@ -649,8 +700,8 @@ def run_once(
             )
             try:
                 result = execute_action(watch, target, plan, apply=apply)
-                ok = True
-                error = None
+                ok = bool(result.get("ok", True))
+                error = None if ok else str(result.get("error") or "action failed")[:180]
             except Exception as exc:
                 result = {"ok": False, "applied": False, **plan, "error": type(exc).__name__}
                 ok = False

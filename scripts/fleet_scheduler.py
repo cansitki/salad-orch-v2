@@ -75,6 +75,13 @@ def build_targets(
         str(profile["profile_key"]): index
         for index, profile in enumerate(eligible_profiles)
     }
+
+    def assigned_at_for(org_label: str, slot_name: str, profile_key: str) -> str:
+        previous = existing_targets.get((org_label, slot_name), {})
+        if str(previous.get("profile_key") or "") == str(profile_key) and previous.get("assigned_at_utc"):
+            return str(previous["assigned_at_utc"])
+        return assigned_at
+
     enabled_orgs = sorted(
         config.enabled_orgs(),
         key=lambda org: sum(
@@ -255,7 +262,7 @@ def build_targets(
                         ),
                         "protected": False,
                         "reason": guard_target["reason"],
-                        "assigned_at_utc": assigned_at,
+                        "assigned_at_utc": assigned_at_for(org.label, slot_name, profile_key),
                     }
                 )
                 continue
@@ -389,7 +396,7 @@ def build_targets(
                     "expected_profit_day": float(profile["expected_profit_day"]),
                     "protected": protected,
                     "reason": reason,
-                    "assigned_at_utc": assigned_at,
+                    "assigned_at_utc": assigned_at_for(org.label, slot_name, str(profile["profile_key"])),
                 }
             )
     return targets

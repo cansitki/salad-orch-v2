@@ -1384,6 +1384,100 @@ class StateAndSchedulerTest(unittest.TestCase):
         self.assertIn("protected_pending_observed_profile", row["reason"])
         self.assertIn("lt_120", row["reason"])
 
+    def test_scheduler_preserves_assigned_at_for_unchanged_profile_target(self) -> None:
+        config = load_config()
+        old_assigned_at = (datetime.now(UTC) - timedelta(minutes=10)).isoformat(timespec="seconds")
+        with state_db.connect(self.db_path) as conn:
+            state_db.init_db(conn)
+            state_db.sync_config(conn, config)
+            state_db.set_slot_target(
+                conn,
+                {
+                    "org_label": "kray",
+                    "slot_name": "prl-kray-roi-01",
+                    "profile_key": "4090:batch:2048",
+                    "mode": "base_fill",
+                    "decision_price_usd": 0.64,
+                    "expected_profit_day": 1.0,
+                    "protected": False,
+                    "reason": "previous_assignment",
+                    "assigned_at_utc": old_assigned_at,
+                },
+            )
+            conn.commit()
+
+        fleet_scheduler.schedule_once(db_path=self.db_path, price=0.64, fee=0.01, dry_run=False)
+
+        with state_db.connect(self.db_path) as conn:
+            row = conn.execute(
+                """
+                SELECT profile_key, assigned_at_utc
+                FROM slot_targets
+                WHERE org_label = 'kray' AND slot_name = 'prl-kray-roi-01'
+                """
+            ).fetchone()
+
+        self.assertEqual(row["profile_key"], "4090:batch:2048")
+        self.assertEqual(row["assigned_at_utc"], old_assigned_at)
+
+    def test_scheduler_refreshes_assigned_at_when_profile_changes(self) -> None:
+        config = load_config()
+        old_assigned_at = "2026-01-01T00:00:00+00:00"
+        with state_db.connect(self.db_path) as conn:
+            state_db.init_db(conn)
+            state_db.sync_config(conn, config)
+            state_db.update_slot_observation(
+                conn,
+                {
+                    "org_label": "kray",
+                    "slot_name": "prl-kray-roi-01",
+                    "observed_profile_key": "4090:batch:2048",
+                    "observed_status": "allocating",
+                    "updated_at_utc": (datetime.now(UTC) - timedelta(minutes=5)).isoformat(timespec="seconds"),
+                },
+            )
+            state_db.record_search_state(
+                conn,
+                {
+                    "org_label": "kray",
+                    "slot_name": "prl-kray-roi-01",
+                    "profile_key": "4090:batch:2048",
+                    "no_gpu_since_utc": old_assigned_at,
+                    "sleep_until_utc": (datetime.now(UTC) + timedelta(minutes=10)).isoformat(timespec="seconds"),
+                    "attempts": 1,
+                    "reason": "stale_pending_same_profile",
+                },
+            )
+            state_db.set_slot_target(
+                conn,
+                {
+                    "org_label": "kray",
+                    "slot_name": "prl-kray-roi-01",
+                    "profile_key": "4090:batch:2048",
+                    "mode": "base_fill",
+                    "decision_price_usd": 0.64,
+                    "expected_profit_day": 1.0,
+                    "protected": False,
+                    "reason": "previous_assignment",
+                    "assigned_at_utc": old_assigned_at,
+                },
+            )
+            conn.commit()
+
+        fleet_scheduler.schedule_once(db_path=self.db_path, price=0.64, fee=0.01, dry_run=False)
+
+        with state_db.connect(self.db_path) as conn:
+            row = conn.execute(
+                """
+                SELECT profile_key, assigned_at_utc
+                FROM slot_targets
+                WHERE org_label = 'kray' AND slot_name = 'prl-kray-roi-01'
+                """
+            ).fetchone()
+
+        self.assertNotEqual(row["profile_key"], "4090:batch:2048")
+        self.assertNotEqual(row["assigned_at_utc"], old_assigned_at)
+
     def test_scheduler_retargets_fresh_pending_profile_under_cooldown(self) -> None:
         config = load_config()
         original = os.environ.get("PRL_PENDING_TARGET_PROTECT_SECONDS")

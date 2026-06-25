@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import pathlib
 import sys
 import tempfile
@@ -132,6 +133,29 @@ class PortalBalancesTest(unittest.TestCase):
         self.assertEqual(payload, expected)
         self.assertEqual(eval_mock.call_count, 2)
         open_mock.assert_called_once()
+
+    def test_main_loads_env_before_reading_default_cookie_jar(self) -> None:
+        cookie_path = self.tmp_path / "portal_cookies.txt"
+        balance_file = self.tmp_path / "balances.json"
+
+        def fake_load_env_file() -> None:
+            os.environ["SALAD_PORTAL_COOKIE_JAR"] = str(cookie_path)
+
+        with (
+            mock.patch.dict(os.environ, {}, clear=False),
+            mock.patch.object(sys, "argv", ["portal_balances.py", "--once", "--balance-file", str(balance_file)]),
+            mock.patch.object(portal_balances, "load_env_file", side_effect=fake_load_env_file),
+            mock.patch.object(
+                portal_balances,
+                "run_once",
+                return_value={"status": "ok", "org_count": 0, "missing_enabled_orgs": [], "balances": {}},
+            ) as run_mock,
+            mock.patch("builtins.print"),
+        ):
+            os.environ.pop("SALAD_PORTAL_COOKIE_JAR", None)
+            portal_balances.main()
+
+        self.assertEqual(run_mock.call_args.kwargs["cookie_jar"], cookie_path)
 
     def test_record_refresh_marks_missing_enabled_orgs_degraded(self) -> None:
         payload = {"status": 200, "checked_at_utc": "2026-06-25T00:00:00Z", "balances": [{"org": "kray"}]}

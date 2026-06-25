@@ -15,7 +15,7 @@ import urllib.request
 
 import state_db
 from config_loader import load_config
-from fleet_common import compact_json, json_dumps, safe_public_payload, utc_now
+from fleet_common import compact_json, json_dumps, load_env_file, safe_public_payload, utc_now
 
 
 PORTAL_API = "https://portal-api.salad.com/api/portal"
@@ -432,6 +432,7 @@ def run_once(
 
 
 def main() -> None:
+    load_env_file()
     parser = argparse.ArgumentParser(description="Refresh private Salad portal balance file for fleet audits.")
     parser.add_argument("--db", default=None)
     parser.add_argument("--balance-file", default=str(DEFAULT_BALANCE_FILE))

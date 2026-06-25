@@ -30,6 +30,15 @@ class ProfitSnapshotTest(unittest.TestCase):
             with patch.object(salad_prl_profit_snapshot, "market_prl_price_usd", return_value=0.66):
                 self.assertEqual(salad_prl_profit_snapshot.default_snapshot_price(), 0.70)
 
+    def test_configured_accounts_preserves_known_org_api_keys_with_fleet_filter(self) -> None:
+        with patch.dict("os.environ", {"PRL_FLEET_ORGS": "kray,kray2,kray3"}, clear=True):
+            accounts = salad_prl_profit_snapshot.configured_accounts()
+        self.assertEqual([row[0] for row in accounts], ["kray", "kray2", "kray3"])
+        self.assertEqual({row[2] for row in accounts}, {"SALAD_API_KEY_2"})
+        kray2_slots = accounts[1][3]
+        self.assertIn("prl-kray2-roi-05b", kray2_slots)
+        self.assertNotIn("prl-kray2-roi-05", kray2_slots)
+
     def test_pool_prl_per_th_day_applies_reward_calibration(self) -> None:
         payloads = {
             "https://pearlfortune.org/api/v1/stats/pool-fee-rate": {"data": {"pool_fee_rate": 0.01}},

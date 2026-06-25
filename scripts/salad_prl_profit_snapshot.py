@@ -71,7 +71,23 @@ def default_snapshot_price() -> float:
 DEFAULT_ACCOUNTS = [
     ("kray", "kray", "SALAD_API_KEY_2", [f"prl-kray-roi-{index:02d}" for index in range(1, 11)]),
     ("kry1", "kry1", "SALAD_API_KEY_KRY1", [f"prl-kry1-roi-{index:02d}" for index in range(1, 11)]),
-    ("kray2", "kray2", "SALAD_API_KEY_2", [f"prl-kray2-roi-{index:02d}" for index in range(1, 11)]),
+    (
+        "kray2",
+        "kray2",
+        "SALAD_API_KEY_2",
+        [
+            "prl-kray2-roi-01",
+            "prl-kray2-roi-02",
+            "prl-kray2-roi-03",
+            "prl-kray2-roi-04",
+            "prl-kray2-roi-05b",
+            "prl-kray2-roi-06",
+            "prl-kray2-roi-07",
+            "prl-kray2-roi-08",
+            "prl-kray2-roi-09",
+            "prl-kray2-roi-10",
+        ],
+    ),
     ("kray3", "kray3", "SALAD_API_KEY_2", [f"prl-kray3-roi-{index:02d}" for index in range(1, 11)]),
 ]
 ACCOUNTS = list(DEFAULT_ACCOUNTS)
@@ -93,12 +109,21 @@ def configured_accounts() -> list[tuple[str, str, str, list[str]]]:
     if not fleet_orgs:
         return list(ACCOUNTS)
     default_key_env = os.environ.get("PRL_WATCH_DEFAULT_API_KEY_ENV", "SALAD_API_KEY")
+    defaults_by_label = {label: (slug, key_env, slots) for label, slug, key_env, slots in ACCOUNTS}
     accounts: list[tuple[str, str, str, list[str]]] = []
     for org in fleet_orgs:
-        key_env = os.environ.get(f"PRL_WATCH_API_KEY_ENV_{org.upper()}", default_key_env)
-        prefix = os.environ.get(f"PRL_WATCH_SLOT_PREFIX_{org.upper()}", f"prl-{org}-roi")
-        count = int(os.environ.get(f"PRL_WATCH_SLOT_COUNT_{org.upper()}", "10"))
-        accounts.append((org, org, key_env, [f"{prefix}-{index:02d}" for index in range(1, count + 1)]))
+        default_slug, default_org_key_env, default_slots = defaults_by_label.get(
+            org,
+            (org, default_key_env, [f"prl-{org}-roi-{index:02d}" for index in range(1, 11)]),
+        )
+        key_env = os.environ.get(f"PRL_WATCH_API_KEY_ENV_{org.upper()}", default_org_key_env)
+        prefix = os.environ.get(f"PRL_WATCH_SLOT_PREFIX_{org.upper()}")
+        count = int(os.environ.get(f"PRL_WATCH_SLOT_COUNT_{org.upper()}", str(len(default_slots))))
+        if prefix:
+            slots = [f"{prefix}-{index:02d}" for index in range(1, count + 1)]
+        else:
+            slots = list(default_slots[:count])
+        accounts.append((org, default_slug, key_env, slots))
     return accounts
 
 GPU_IDS = {

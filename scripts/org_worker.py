@@ -165,6 +165,25 @@ def skipped_live_hashing_result(target: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def observe_failed_result(target: dict[str, Any], exc: Exception) -> dict[str, Any]:
+    return {
+        "slot_name": str(target["slot_name"]),
+        "action": "observe_failed",
+        "reason": "slot_state_or_action_error",
+        "target_profile_key": target["profile_key"],
+        "current_profile_key": target.get("slot_observed_profile_key"),
+        "observed_status": target.get("slot_observed_status") or "unknown",
+        "protected": False,
+        "counts": {"running": 0, "creating": 0, "allocating": 0, "stopping": 0},
+        "instance_count": 0,
+        "pending_instance_ids": [],
+        "running_instance_ids": [],
+        "ok": False,
+        "applied": False,
+        "error": f"{type(exc).__name__}: {str(exc)[:180]}",
+    }
+
+
 def observed_profile_key_for_result(target: dict[str, Any], result: dict[str, Any], *, apply: bool) -> Any:
     if apply and result.get("applied") and result.get("action") in {"create", "patch", "start"}:
         return str(target["profile_key"])
@@ -917,21 +936,25 @@ def run_once(
             ok = True
             error = None
         else:
-            plan = planned_action(
-                watch,
-                str(target["slot_name"]),
-                target,
-                protect_running=not allow_live_retarget,
-                protect_pending=not allow_pending_retarget,
-                pending_retarget_after_seconds=pending_retarget_after_seconds,
-                pending_status_retarget_after_seconds=pending_status_retarget_after_seconds,
-            )
+            plan = None
             try:
+                plan = planned_action(
+                    watch,
+                    str(target["slot_name"]),
+                    target,
+                    protect_running=not allow_live_retarget,
+                    protect_pending=not allow_pending_retarget,
+                    pending_retarget_after_seconds=pending_retarget_after_seconds,
+                    pending_status_retarget_after_seconds=pending_status_retarget_after_seconds,
+                )
                 result = execute_action(watch, target, plan, apply=apply)
                 ok = bool(result.get("ok", True))
                 error = None if ok else str(result.get("error") or "action failed")[:180]
             except Exception as exc:
-                result = {"ok": False, "applied": False, **plan, "error": type(exc).__name__}
+                if plan is None:
+                    result = observe_failed_result(target, exc)
+                else:
+                    result = {"ok": False, "applied": False, **plan, "error": type(exc).__name__}
                 ok = False
                 error = f"{type(exc).__name__}: {str(exc)[:180]}"
             if apply and not ok and is_no_credits_error(error):
@@ -971,7 +994,7 @@ def run_once(
                 "payload": result,
             }
         )
-        if str(result.get("action") or "") != "skip_no_credits":
+        if str(result.get("action") or "") not in {"observe_failed", "skip_no_credits"}:
             observation_rows.append(
                 {
                     "org_label": org_label,

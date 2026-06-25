@@ -83,6 +83,9 @@ class StartWatchersShellTest(unittest.TestCase):
         self.assertIn("PRL_WATCH_NAME=kry1-prl-watch", result.stdout)
         self.assertIn("PRL_WATCH_API_KEY_ENV=SALAD_API_KEY ", result.stdout)
         self.assertIn("PRL_WATCH_API_KEY_ENV=SALAD_API_KEY_KRY1 ", result.stdout)
+        self.assertIn("KRAY2_PRL_OPTIMIZE_LIVE_MIN_LIVE_WORKERS=9 ", result.stdout)
+        self.assertIn("KRAY2_PRL_OPTIMIZE_LIVE_GLOBAL_MIN_FRESH_WORKERS=17 ", result.stdout)
+        self.assertIn("PRL_WATCH_GLOBAL_POOL_WORKER_PREFIXES=kray-prl-kray\\,kry1-prl-kry1 ", result.stdout)
 
 
 if __name__ == "__main__":

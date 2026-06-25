@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import importlib.util
+import csv
 import json
 import os
 import pathlib
@@ -14,6 +15,7 @@ from typing import Any
 SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parent
 STATE_DIR = pathlib.Path(os.environ.get("SALAD_PRL_STATE_DIR", str(REPO_ROOT / "state")))
+DEFAULT_SNAPSHOT_CSV = STATE_DIR / "prl_profit_snapshots.csv"
 SNAPSHOT_PATH = pathlib.Path(os.environ.get("PRL_SNAPSHOT_PATH", str(SCRIPT_DIR / "salad_prl_profit_snapshot.py")))
 KRAY2_PATH = pathlib.Path(os.environ.get("PRL_WATCH_SCRIPT_PATH", str(SCRIPT_DIR / "salad_prl_watch.py")))
 LOG = pathlib.Path(os.environ.get("PRL_GUARD_LOG", str(STATE_DIR / "logs" / "prl_nohash_guard.log")))
@@ -49,7 +51,7 @@ STUCK_NON_LIVE_MIN_ACTIVE_SLOTS = int(os.environ.get("PRL_STUCK_NON_LIVE_MIN_ACT
 STUCK_NON_LIVE_RETARGET_COOLDOWN_SECONDS = int(os.environ.get("PRL_STUCK_NON_LIVE_RETARGET_COOLDOWN_SECONDS", "1800"))
 STUCK_NON_LIVE_TICK_BUDGET_SECONDS = float(os.environ.get("PRL_STUCK_NON_LIVE_TICK_BUDGET_SECONDS", "20"))
 STUCK_RUNNING_ZERO_DEFER_SECONDS = int(os.environ.get("PRL_STUCK_RUNNING_ZERO_DEFER_SECONDS", "3600"))
-GLOBAL_POOL_MIN_FRESH_WORKERS = 3
+GLOBAL_POOL_MIN_FRESH_WORKERS = int(os.environ.get("PRL_GLOBAL_POOL_MIN_FRESH_WORKERS", "8"))
 SEEN_SINCE: dict[tuple[str, str], float] = {}
 NEGATIVE_SLOT_SEEN_SINCE: dict[tuple[str, str], float] = {}
 UNDERPERFORM_SLOT_SEEN_SINCE: dict[tuple[str, str], float] = {}
@@ -339,6 +341,44 @@ def recent_slot_action(org: str, slot: str) -> dict[str, Any] | None:
     return slot_action_with_age(state.get(f"{org}/{slot}") or state.get(slot))
 
 
+def record_guard_slot_action(org: str, slot: str, action: str, reason: str, candidate: str = "") -> None:
+    payload = {
+        "at": time.time(),
+        "at_utc": now(),
+        "org": org,
+        "slot": slot,
+        "action": action,
+        "reason": reason,
+        "candidate": candidate,
+    }
+    try:
+        SLOT_ACTION_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            state = json.loads(SLOT_ACTION_STATE_PATH.read_text(encoding="utf-8"))
+        except Exception:
+            state = {}
+        if not isinstance(state, dict):
+            state = {}
+        state[f"{org}/{slot}"] = payload
+        detail_path = slot_action_detail_path(org, slot)
+        detail_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_detail = detail_path.with_suffix(f"{detail_path.suffix}.tmp")
+        tmp_detail.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
+        tmp_detail.replace(detail_path)
+        tmp = SLOT_ACTION_STATE_PATH.with_suffix(f"{SLOT_ACTION_STATE_PATH.suffix}.tmp")
+        tmp.write_text(json.dumps(state, sort_keys=True) + "\n", encoding="utf-8")
+        tmp.replace(SLOT_ACTION_STATE_PATH)
+    except Exception as exc:
+        log(
+            "guard_slot_action_state_write_failed",
+            org=org,
+            slot=slot,
+            action=action,
+            error=type(exc).__name__,
+            detail=str(exc)[:180],
+        )
+
+
 BMU_WATCH_ENV = {
     "PRL_WATCH_NAME": "bmu-prl-watch",
     "PRL_WATCH_LOG": str(STATE_DIR / "logs" / "bmu_prl_watch.log"),
@@ -488,10 +528,47 @@ def market_prl_price_usd() -> float | None:
     return price
 
 
+def trailing_snapshot_price_usd(hours: float = 1.0) -> float | None:
+    path = pathlib.Path(os.environ.get("PRL_SNAPSHOT_CSV_PATH", str(DEFAULT_SNAPSHOT_CSV)))
+    if not path.exists():
+        return None
+    cutoff = datetime.now(UTC).timestamp() - hours * 3600
+    values: list[float] = []
+    try:
+        with path.open(newline="") as handle:
+            for row in csv.DictReader(handle):
+                try:
+                    at = datetime.fromisoformat(str(row.get("at_utc") or "").replace("Z", "+00:00")).timestamp()
+                    price = float(row.get("live_market_prl_price") or 0)
+                except (TypeError, ValueError):
+                    continue
+                if at >= cutoff and price > 0:
+                    values.append(price)
+    except OSError:
+        return None
+    return (sum(values) / len(values)) if values else None
+
+
+def smoothed_market_prl_price_usd() -> float | None:
+    current = market_prl_price_usd()
+    trailing = trailing_snapshot_price_usd(float(os.environ.get("PRL_PRICE_AVERAGE_HOURS", "1")))
+    values = [value for value in (current, trailing) if value and value > 0]
+    if not values:
+        return None
+    selected = min(values)
+    log(
+        "decision_price_smoothed_market",
+        current_market_prl_price_usd=round(current or 0.0, 6),
+        trailing_average_prl_price_usd=round(trailing or 0.0, 6),
+        selected_price_usd=round(selected, 6),
+    )
+    return selected
+
+
 def decision_prl_price() -> float:
     if FIXED_DECISION_PRICE_USD > 0:
         return FIXED_DECISION_PRICE_USD
-    price = market_prl_price_usd()
+    price = smoothed_market_prl_price_usd()
     if price and price > 0:
         decision_price = max(0.0, price - PRICE_BAND_USD)
     else:
@@ -509,6 +586,18 @@ def running_instances(module: Any, slot: str) -> list[dict[str, Any]]:
         if instance.get("ready")
         or instance.get("started")
         or str(instance.get("state") or "").lower() in {"running", "starting"}
+    ]
+
+
+def pending_instances(module: Any, slot: str) -> list[dict[str, Any]]:
+    _group, instances = module.slot_state(slot)
+    return [
+        instance
+        for instance in instances
+        if not instance.get("ready")
+        and not instance.get("started")
+        and str(instance.get("id") or "")
+        and str(instance.get("state") or "").lower() not in {"running", "starting"}
     ]
 
 
@@ -649,6 +738,56 @@ def reallocate_slot(org: str, slot: str, reason: str, *, retarget: bool = True) 
     return actions
 
 
+def recycle_zero_running_slot(org: str, slot: str, reason: str) -> list[dict[str, Any]]:
+    module = watchers.get(org)
+    if module is None:
+        return []
+    try:
+        pending = pending_instances(module, slot)
+    except Exception as exc:
+        log("stuck_non_live_pending_lookup_failed", org=org, slot=slot, reason=reason, error=type(exc).__name__, detail=str(exc)[:180])
+        return []
+
+    actions: list[dict[str, Any]] = []
+    for instance in pending:
+        instance_id = str(instance.get("id") or "")
+        if not instance_id:
+            continue
+        module.reallocate(slot, instance_id, reason)
+        record_guard_slot_action(org, slot, "reallocated_pending", reason)
+        actions.append(
+            {
+                "org": org,
+                "slot": slot,
+                "instance_id": instance_id,
+                "state": instance.get("state"),
+                "ready": instance.get("ready"),
+                "started": instance.get("started"),
+                "retargeted": None,
+                "recycled_pending": True,
+            }
+        )
+    if actions:
+        return actions
+
+    try:
+        restart_reason = f"{reason}:hidden_pending_restart"
+        module.request("POST", f"/organizations/{module.ORG}/projects/{module.PROJECT}/containers/{slot}/stop")
+        module.start_slot(slot, restart_reason)
+        log("stuck_non_live_hidden_pending_restarted", org=org, slot=slot, reason=restart_reason)
+        return [{"org": org, "slot": slot, "state": "hidden_pending_restarted", "retargeted": None}]
+    except Exception as exc:
+        log(
+            "stuck_non_live_hidden_pending_restart_failed",
+            org=org,
+            slot=slot,
+            reason=reason,
+            error=type(exc).__name__,
+            detail=str(exc)[:180],
+        )
+        return []
+
+
 def org_for_slot(slot: str) -> str:
     for org in ENABLED_ORGS:
         if slot.startswith(f"prl-{org}-roi-"):
@@ -730,6 +869,7 @@ def tick() -> None:
     actions: list[dict[str, Any]] = []
     if low_fresh_pool_sample:
         stale_current_workers = []
+        no_hash = []
 
     for item in stale_current_workers:
         slot = str(item.get("slot") or "")
@@ -752,7 +892,21 @@ def tick() -> None:
                 gpu=item.get("gpu"),
             )
             continue
-        actions.extend(reallocate_slot(org, slot, f"auto_stale_worker_guard_{STALE_WORKER_GRACE_SECONDS}s", retarget=False))
+        reason = f"auto_stale_worker_guard_{STALE_WORKER_GRACE_SECONDS}s"
+        slot_actions = reallocate_slot(org, slot, reason, retarget=False)
+        if slot_actions:
+            log(
+                "stale_worker_reallocated",
+                org=org,
+                slot=slot,
+                reason=reason,
+                actions=slot_actions,
+                worker=item.get("worker"),
+                last_stats_at=item.get("last_stats_at"),
+                th=item.get("th"),
+                gpu=item.get("gpu"),
+            )
+        actions.extend(slot_actions)
         STALE_WORKER_SEEN_SINCE.pop(key, None)
 
     total_no_hash_cost_day = sum(float(item.get("cost_day") or 0) for item in no_hash)
@@ -793,7 +947,23 @@ def tick() -> None:
             if force_now
             else f"auto_nohash_guard_{NO_HASH_GRACE_SECONDS}s"
         )
-        actions.extend(reallocate_slot(org, slot, reason, retarget=False))
+        slot_actions = reallocate_slot(org, slot, reason, retarget=False)
+        if slot_actions:
+            log(
+                "no_hash_slot_reallocated",
+                org=org,
+                slot=slot,
+                reason=reason,
+                actions=slot_actions,
+                age_seconds=round(age, 1),
+                grace_seconds=grace_seconds,
+                cost_day=item.get("cost_day"),
+                state_age_seconds=item.get("state_age_seconds"),
+                market_profit_day=totals.get("market_profit_day"),
+                profit_day=totals.get("profit_day"),
+                decision_price_usd=price,
+            )
+        actions.extend(slot_actions)
         SEEN_SINCE.pop(key, None)
 
     negative_rows = []
@@ -807,6 +977,9 @@ def tick() -> None:
             continue
         profit_day = float(row.get("profit_day") or 0)
         if profit_day >= NEGATIVE_SLOT_PROFIT_DAY:
+            continue
+        market_profit_day = row.get("market_profit_day")
+        if market_profit_day is not None and float(market_profit_day) >= NEGATIVE_SLOT_PROFIT_DAY:
             continue
         org = org_for_slot(slot)
         if org not in watchers:
@@ -839,7 +1012,25 @@ def tick() -> None:
                 priority=item.get("priority"),
             )
             continue
-        actions.extend(reallocate_slot(org, slot, f"auto_negative_slot_guard_{NEGATIVE_SLOT_GRACE_SECONDS}s", retarget=False))
+        reason = f"auto_negative_slot_guard_{NEGATIVE_SLOT_GRACE_SECONDS}s"
+        slot_actions = reallocate_slot(org, slot, reason, retarget=False)
+        if slot_actions:
+            log(
+                "negative_slot_reallocated",
+                org=org,
+                slot=slot,
+                reason=reason,
+                actions=slot_actions,
+                age_seconds=round(age, 1),
+                grace_seconds=NEGATIVE_SLOT_GRACE_SECONDS,
+                profit_day=item.get("profit_day"),
+                market_profit_day=item.get("market_profit_day"),
+                decision_price_usd=price,
+                th=item.get("th"),
+                gpu=item.get("gpu"),
+                priority=item.get("priority"),
+            )
+        actions.extend(slot_actions)
         NEGATIVE_SLOT_SEEN_SINCE.pop(key, None)
 
     underperform_rows = []
@@ -896,7 +1087,28 @@ def tick() -> None:
                 priority=item.get("priority"),
             )
             continue
-        actions.extend(reallocate_slot(org, slot, f"auto_underperform_slot_guard_{UNDERPERFORM_GRACE_SECONDS}s", retarget=False))
+        reason = f"auto_underperform_slot_guard_{UNDERPERFORM_GRACE_SECONDS}s"
+        slot_actions = reallocate_slot(org, slot, reason, retarget=False)
+        if slot_actions:
+            log(
+                "underperform_slot_reallocated",
+                org=org,
+                slot=slot,
+                reason=reason,
+                actions=slot_actions,
+                age_seconds=round(age, 1),
+                grace_seconds=UNDERPERFORM_GRACE_SECONDS,
+                th=item.get("th"),
+                expected_th=item.get("expected_th"),
+                underperform_ratio=item.get("underperform_ratio"),
+                deficit_th=item.get("deficit_th"),
+                profit_day=item.get("profit_day"),
+                market_profit_day=item.get("market_profit_day"),
+                decision_price_usd=price,
+                gpu=item.get("gpu"),
+                priority=item.get("priority"),
+            )
+        actions.extend(slot_actions)
         UNDERPERFORM_SLOT_SEEN_SINCE.pop(key, None)
 
     stuck_keys = {(str(item.get("org") or ""), str(item.get("slot") or "")) for item in stuck_non_live}
@@ -1038,7 +1250,7 @@ def tick() -> None:
                 continue
         log(
             "stuck_non_live_slot_cleanup",
-            action="stop" if zero_running else "retarget",
+            action="recycle_zero_running" if zero_running else "retarget",
             org=org,
             slot=slot,
             state_age_seconds=item.get("state_age_seconds"),
@@ -1058,8 +1270,7 @@ def tick() -> None:
         )
         reason = f"auto_stuck_non_live_{cleanup_grace}s"
         if zero_running:
-            stopped = stop_slot(org, slot, f"{reason}:zero_running")
-            slot_actions = [stopped] if stopped is not None else []
+            slot_actions = recycle_zero_running_slot(org, slot, f"{reason}:zero_running")
         else:
             slot_actions = reallocate_slot(org, slot, reason)
         if slot_actions:

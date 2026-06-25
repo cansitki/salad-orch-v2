@@ -20,6 +20,8 @@ from fleet_common import env_int, json_dumps, utc_now
 
 SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
 LEGACY_GUARD = SCRIPT_DIR / "salad_prl_guard.py"
+DEFAULT_NO_HASH_GRACE_SECONDS = 60
+DEFAULT_NEGATIVE_GRACE_SECONDS = 90
 
 
 def age_seconds(at_utc: str | None) -> float:
@@ -335,10 +337,12 @@ def enforce_issues(
     if not analysis.get("fresh_workers") or int(analysis.get("fresh_workers") or 0) < 1:
         return []
     issues: list[dict[str, Any]] = []
+    no_hash_grace_seconds = env_int("PRL_GUARD_NOHASH_GRACE_SECONDS", DEFAULT_NO_HASH_GRACE_SECONDS)
+    negative_grace_seconds = env_int("PRL_GUARD_NEGATIVE_GRACE_SECONDS", DEFAULT_NEGATIVE_GRACE_SECONDS)
     for row in analysis.get("running_no_live_billable_slots") or []:
-        issues.append({"issue_type": "no_hash", "grace_seconds": 60, "row": row})
+        issues.append({"issue_type": "no_hash", "grace_seconds": no_hash_grace_seconds, "row": row})
     for row in analysis.get("negative_slots") or []:
-        issues.append({"issue_type": "negative", "grace_seconds": 90, "row": row})
+        issues.append({"issue_type": "negative", "grace_seconds": negative_grace_seconds, "row": row})
 
     decisions: list[dict[str, Any]] = []
     active_keys: set[tuple[str, str, str]] = set()

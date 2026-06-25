@@ -165,6 +165,46 @@ class GuardDecisionTest(unittest.TestCase):
         self.assertEqual(decisions[0]["action"], "stop")
         self.assertIsNone(decisions[0]["target_profile_key"])
 
+    def test_guard_negative_grace_is_configurable(self) -> None:
+        first_seen = (datetime.now(UTC) - timedelta(seconds=65)).isoformat(timespec="seconds")
+        with state_db.connect(self.db_path) as conn:
+            state_db.init_db(conn)
+            state_db.record_guard_issue(
+                conn,
+                {
+                    "org_label": "kray",
+                    "slot_name": "prl-kray-roi-01",
+                    "issue_type": "negative",
+                    "first_seen_utc": first_seen,
+                    "payload": {},
+                },
+            )
+            conn.commit()
+
+        analysis = {
+            "fresh_workers": 3,
+            "running_no_live_billable_slots": [],
+            "negative_slots": [
+                {
+                    "org": "kray",
+                    "slot": "prl-kray-roi-01",
+                    "gpu": "3090",
+                    "priority": "batch",
+                    "profit_day": -1.0,
+                }
+            ],
+        }
+        with patch.dict("os.environ", {"PRL_GUARD_NEGATIVE_GRACE_SECONDS": "60"}, clear=False):
+            decisions = guard.enforce_issues(
+                db_path=self.db_path,
+                decision_price=0.64,
+                apply=False,
+                analysis=analysis,
+            )
+
+        self.assertEqual(decisions[0]["grace_seconds"], 60)
+        self.assertEqual(decisions[0]["action"], "retarget")
+
     def test_successful_apply_clears_slot_runtime_failure(self) -> None:
         self.make_issue_old("negative")
         with state_db.connect(self.db_path) as conn:

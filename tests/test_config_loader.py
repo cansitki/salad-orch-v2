@@ -70,7 +70,7 @@ class ConfigLoaderTest(unittest.TestCase):
             {
                 "label": "kr2",
                 "slug": "kr2",
-                "api_key_env": "SALAD_API_KEY_KR2",
+                "api_key_env": "SALAD_API_KEY_KR1",
                 "slot_prefix": "prl-kr2-roi",
                 "worker_prefix": "kr2-prl",
                 "worker_slot_prefix": "kr2-roi-",
@@ -81,7 +81,7 @@ class ConfigLoaderTest(unittest.TestCase):
             {
                 "label": "kr3",
                 "slug": "kr3",
-                "api_key_env": "SALAD_API_KEY_KR3",
+                "api_key_env": "SALAD_API_KEY_KR1",
                 "slot_prefix": "prl-kr3-roi",
                 "worker_prefix": "kr3-prl",
                 "worker_slot_prefix": "kr3-roi-",

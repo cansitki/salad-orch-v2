@@ -411,6 +411,68 @@ class GuardDecisionTest(unittest.TestCase):
             [("prl-kray-roi-01", "guard_negative:snapshot_instance_without_salad_instances")],
         )
 
+    def test_apply_guard_target_restarts_when_successful_patch_has_no_visible_instances(self) -> None:
+        class FakeCandidate:
+            def __init__(self, label, priority, gpu_ids, memory):
+                self.label = label
+                self.priority = priority
+                self.gpu_ids = gpu_ids
+                self.memory = memory
+
+        class FakeWatch:
+            ORG = "kray"
+            PROJECT = "default"
+            Candidate = FakeCandidate
+
+            def __init__(self) -> None:
+                self.request_calls = []
+                self.start_calls = []
+
+            def slot_state(self, slot_name):
+                return {}, []
+
+            def patch_slot(self, slot_name, candidate, reason, *, start_after=True):
+                return True
+
+            def request(self, method, path, *args, **kwargs):
+                self.request_calls.append((method, path))
+                return {}
+
+            def start_slot(self, slot_name, reason):
+                self.start_calls.append((slot_name, reason))
+
+        watch = FakeWatch()
+        target = {
+            "org_label": "kray",
+            "slot_name": "prl-kray-roi-01",
+            "profile_key": "5090:low:2048",
+            "gpu_key": "5090",
+            "priority": "low",
+            "memory_mb": 2048,
+            "label": "PearlFortune RTX 5090 low",
+            "decision_price_usd": 0.64,
+            "expected_profit_day": 1.0,
+            "snapshot_instance_id": None,
+        }
+
+        with (
+            patch("guard.org_worker.load_watch_module", return_value=watch),
+            patch("guard.org_worker.install_rate_limited_request"),
+        ):
+            result = guard.apply_guard_target(target, db_path=self.db_path, reason="guard_no_hash")
+
+        self.assertEqual(result["reallocated_instances"], [])
+        self.assertTrue(result["restart_requested"])
+        self.assertEqual(result["restart_reason"], "retarget_without_visible_instances")
+        self.assertEqual(
+            watch.request_calls,
+            [("POST", "/organizations/kray/projects/default/containers/prl-kray-roi-01/stop")],
+        )
+        self.assertEqual(
+            watch.start_calls,
+            [("prl-kray-roi-01", "guard_no_hash:retarget_without_visible_instances")],
+        )
+
     def test_apply_guard_target_reallocates_current_instance_when_patch_fails(self) -> None:
         class FakeCandidate:
             def __init__(self, label, priority, gpu_ids, memory):

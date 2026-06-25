@@ -299,8 +299,11 @@ def apply_guard_target(
 
     restart_requested = False
     restart_reason = None
-    if target.get("snapshot_instance_id") and not before_instances and not after_instances:
-        restart_reason = "snapshot_instance_without_salad_instances"
+    if not before_instances and not after_instances:
+        if target.get("snapshot_instance_id"):
+            restart_reason = "snapshot_instance_without_salad_instances"
+        else:
+            restart_reason = "retarget_without_visible_instances"
         watch.request("POST", f"/organizations/{watch.ORG}/projects/{watch.PROJECT}/containers/{slot_name}/stop")
         watch.start_slot(slot_name, f"{reason}:{restart_reason}")
         restart_requested = True

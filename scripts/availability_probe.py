@@ -222,12 +222,24 @@ def run_once(
         if (skip := explicit_zero_balance_skip(org.label)) is not None
     ]
     skipped_zero_balance_labels = {str(skip["org_label"]) for skip in skipped_zero_balance}
-    probe_orgs = [org for org in enabled_orgs if org.label not in skipped_zero_balance_labels]
 
     with state_db.connect(db_path) as conn:
         state_db.init_db(conn)
         state_db.sync_config(conn, config)
         state_db.upsert_gpu_profiles(conn, profiles)
+        skipped_no_credits = [
+            cooldown
+            for org in enabled_orgs
+            if org.label not in skipped_zero_balance_labels
+            if (cooldown := state_db.active_org_cooldown(conn, org.label)) is not None
+        ]
+        skipped_no_credits_labels = {str(skip["org_label"]) for skip in skipped_no_credits}
+        probe_orgs = [
+            org
+            for org in enabled_orgs
+            if org.label not in skipped_zero_balance_labels
+            and org.label not in skipped_no_credits_labels
+        ]
         state_db.write_heartbeat(
             conn,
             "availability_probe",
@@ -239,6 +251,7 @@ def run_once(
                 "org_parallelism": selected_org_parallelism,
                 "profile_parallelism": selected_profile_parallelism,
                 "skipped_zero_balance_orgs": skipped_zero_balance,
+                "skipped_no_credits_orgs": skipped_no_credits,
             },
         )
         conn.commit()
@@ -340,6 +353,7 @@ def run_once(
                 "org_parallelism": selected_org_parallelism,
                 "profile_parallelism": selected_profile_parallelism,
                 "skipped_zero_balance_orgs": skipped_zero_balance,
+                "skipped_no_credits_orgs": skipped_no_credits,
             },
         )
         state_db.record_event(
@@ -351,6 +365,7 @@ def run_once(
                 "probed": len(results),
                 "profiles": by_profile,
                 "skipped_zero_balance_orgs": skipped_zero_balance,
+                "skipped_no_credits_orgs": skipped_no_credits,
             },
         )
         conn.commit()
@@ -361,6 +376,7 @@ def run_once(
         "org_parallelism": selected_org_parallelism,
         "profile_parallelism": selected_profile_parallelism,
         "skipped_zero_balance_orgs": skipped_zero_balance,
+        "skipped_no_credits_orgs": skipped_no_credits,
         "by_profile": by_profile,
         "results": results,
     }

@@ -12,6 +12,8 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
 import salad_prl_profit_snapshot
+import salad_prl_guard
+import salad_prl_watch
 
 
 class ProfitSnapshotTest(unittest.TestCase):
@@ -94,6 +96,19 @@ class ProfitSnapshotTest(unittest.TestCase):
         self.assertEqual(observed["rolling_hashrate_th_24h"], 2000)
         self.assertEqual(observed["expected_prl_24h_at_rolling_hashrate"], 50)
         self.assertEqual(observed["observed_to_model_ratio_24h"], 0.8)
+
+    def test_slot_action_detail_path_matches_existing_writers(self) -> None:
+        org = "cantemir1"
+        slot = "prl-cantemir1-roi-01"
+
+        self.assertEqual(
+            salad_prl_profit_snapshot.slot_action_detail_path(org, slot).name,
+            salad_prl_guard.slot_action_detail_path(org, slot).name,
+        )
+        self.assertEqual(
+            salad_prl_profit_snapshot.slot_action_detail_path(org, slot).name,
+            salad_prl_watch.slot_action_detail_path(org, slot).name,
+        )
 
     def test_effective_state_age_prefers_recent_slot_action(self) -> None:
         old_path = salad_prl_profit_snapshot.SLOT_ACTION_STATE_PATH

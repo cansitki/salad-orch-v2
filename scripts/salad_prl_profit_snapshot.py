@@ -286,7 +286,7 @@ def gpu_names(gpu_ids: list[Any]) -> list[str]:
 
 
 def safe_slot_action_token(org: str, slot: str) -> str:
-    return re.sub(r"[^A-Za-z0-9_.-]+", "_", f"{org}_{slot}").strip("_") or "slot"
+    return re.sub(r"[^A-Za-z0-9_-]+", "_", f"{org}__{slot}").strip("_") or "slot"
 
 
 def slot_action_detail_path(org: str, slot: str) -> pathlib.Path:

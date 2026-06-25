@@ -21,6 +21,7 @@ from profit_model import profile_key
 SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
 WATCH_PATH = SCRIPT_DIR / "salad_prl_watch.py"
 DEFAULT_BALANCE_FILE = pathlib.Path("state/salad_balances.json")
+NO_CREDITS_ERROR_TEXT = "no_credits_available"
 
 
 def load_watch_module(org: OrgConfig, *, decision_price: float, min_profit_day: float) -> Any:
@@ -321,6 +322,51 @@ def zero_balance_skip_result(target: dict[str, Any], skip: dict[str, Any]) -> di
         "applied": False,
         "balance_usd": skip["balance_usd"],
         "balance_file": skip["balance_file"],
+    }
+
+
+def no_credits_cooldown_seconds() -> int:
+    return env_int(
+        "PRL_NO_CREDITS_ORG_COOLDOWN_SECONDS",
+        env_int("KRAY2_PRL_NO_CREDITS_BACKOFF_SECONDS", 120),
+    )
+
+
+def is_no_credits_error(error: Any) -> bool:
+    return NO_CREDITS_ERROR_TEXT in str(error or "").lower() or "no credits" in str(error or "").lower()
+
+
+def no_credits_skip_result(target: dict[str, Any], skip: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "slot_name": str(target["slot_name"]),
+        "action": "skip_no_credits",
+        "reason": str(skip.get("reason") or NO_CREDITS_ERROR_TEXT),
+        "target_profile_key": target["profile_key"],
+        "current_profile_key": target.get("slot_observed_profile_key"),
+        "observed_status": target.get("slot_observed_status") or "unknown",
+        "protected": False,
+        "counts": {"running": 0, "creating": 0, "allocating": 0, "stopping": 0},
+        "instance_count": 0,
+        "pending_instance_ids": [],
+        "running_instance_ids": [],
+        "ok": True,
+        "applied": False,
+        "sleep_until_utc": skip.get("sleep_until_utc"),
+    }
+
+
+def no_credits_cooldown_row(org_label: str, *, error: str | None = None) -> dict[str, Any]:
+    now = datetime.now(UTC)
+    seconds = max(30, no_credits_cooldown_seconds())
+    return {
+        "org_label": org_label,
+        "slot_name": "*",
+        "profile_key": "*",
+        "no_gpu_since_utc": now.isoformat(timespec="seconds"),
+        "sleep_until_utc": (now + timedelta(seconds=seconds)).isoformat(timespec="seconds"),
+        "attempts": 1,
+        "reason": error or NO_CREDITS_ERROR_TEXT,
+        "updated_at_utc": now.isoformat(timespec="seconds"),
     }
 
 
@@ -690,16 +736,88 @@ def run_once(
             "results": results,
         }
 
+    no_credits_skip: dict[str, Any] | None = None
+    if apply:
+        with state_db.connect(db_path) as conn:
+            state_db.init_db(conn)
+            no_credits_skip = state_db.active_org_cooldown(conn, org_label)
+
+    if no_credits_skip is not None:
+        results = [no_credits_skip_result(target, no_credits_skip) for target in targets]
+        action_counts = {"skip_no_credits": len(results)}
+        with state_db.connect(db_path) as conn:
+            state_db.init_db(conn)
+            for target, result in zip(targets, results, strict=False):
+                state_db.record_attempt(
+                    conn,
+                    {
+                        "at_utc": utc_now(),
+                        "org_label": org_label,
+                        "slot_name": str(target["slot_name"]),
+                        "action": "skip_no_credits",
+                        "profile_key": str(target["profile_key"]),
+                        "ok": True,
+                        "duration_ms": 0,
+                        "error": None,
+                        "payload": result,
+                    },
+                )
+            state_db.write_heartbeat(
+                conn,
+                f"org_worker:{org_label}",
+                stale_after_seconds=heartbeat_stale_after_seconds,
+                payload={
+                    "apply": apply,
+                    "allow_live_retarget": allow_live_retarget,
+                    "allow_pending_retarget": allow_pending_retarget,
+                    "pending_retarget_after_seconds": pending_retarget_after_seconds,
+                    "pending_status_retarget_after_seconds": pending_status_retarget_after_seconds,
+                    "targets": len(targets),
+                    "actions": action_counts,
+                    "no_credits_skip": no_credits_skip,
+                },
+            )
+            state_db.record_event(
+                conn,
+                "org_worker_no_credits_skip",
+                source=f"org_worker:{org_label}",
+                message="org worker skipped live actions for active no-credits cooldown",
+                payload={
+                    "apply": apply,
+                    "targets": len(targets),
+                    "actions": action_counts,
+                    "no_credits_skip": no_credits_skip,
+                },
+            )
+            conn.commit()
+        return {
+            "org": org_label,
+            "apply": apply,
+            "allow_live_retarget": allow_live_retarget,
+            "allow_pending_retarget": allow_pending_retarget,
+            "pending_retarget_after_seconds": pending_retarget_after_seconds,
+            "pending_status_retarget_after_seconds": pending_status_retarget_after_seconds,
+            "targets": len(targets),
+            "action_counts": action_counts,
+            "no_credits_skip": no_credits_skip,
+            "results": results,
+        }
+
     watch = load_watch_module(org, decision_price=decision_price, min_profit_day=min_profit)
     install_rate_limited_request(watch, org, db_path=db_path)
     results: list[dict[str, Any]] = []
     attempt_rows: list[dict[str, Any]] = []
     observation_rows: list[dict[str, Any]] = []
     cooldown_rows: list[dict[str, Any]] = []
+    active_no_credits_skip: dict[str, Any] | None = None
     pending_profile_cooldown_seconds = env_int("PRL_PENDING_PROFILE_COOLDOWN_SECONDS", 600)
     for target in targets:
         started = time.monotonic()
-        if should_skip_live_hashing_target(target, apply=apply, allow_live_retarget=allow_live_retarget):
+        if apply and active_no_credits_skip is not None:
+            result = no_credits_skip_result(target, active_no_credits_skip)
+            ok = True
+            error = None
+        elif should_skip_live_hashing_target(target, apply=apply, allow_live_retarget=allow_live_retarget):
             result = skipped_live_hashing_result(target)
             ok = True
             error = None
@@ -721,6 +839,9 @@ def run_once(
                 result = {"ok": False, "applied": False, **plan, "error": type(exc).__name__}
                 ok = False
                 error = f"{type(exc).__name__}: {str(exc)[:180]}"
+            if apply and not ok and is_no_credits_error(error):
+                active_no_credits_skip = no_credits_cooldown_row(org_label, error=error)
+                cooldown_rows.append(active_no_credits_skip)
         cooldown_profile_key = cooldown_profile_key_for_result(target, result)
         if apply and ok and cooldown_profile_key:
             now = datetime.now(UTC)
@@ -755,20 +876,21 @@ def run_once(
                 "payload": result,
             }
         )
-        observation_rows.append(
-            {
-                "org_label": org_label,
-                "slot_name": str(target["slot_name"]),
-                "observed_profile_key": observed_profile_key_for_result(target, result, apply=apply),
-                "observed_status": result.get("observed_status"),
-                "protected": bool(result.get("protected")),
-                "reset_observed_age": bool(
-                    apply
-                    and result.get("applied")
-                    and str(result.get("action") or "") in {"cooldown_pending", "restart_no_hash"}
-                ),
-            }
-        )
+        if str(result.get("action") or "") != "skip_no_credits":
+            observation_rows.append(
+                {
+                    "org_label": org_label,
+                    "slot_name": str(target["slot_name"]),
+                    "observed_profile_key": observed_profile_key_for_result(target, result, apply=apply),
+                    "observed_status": result.get("observed_status"),
+                    "protected": bool(result.get("protected")),
+                    "reset_observed_age": bool(
+                        apply
+                        and result.get("applied")
+                        and str(result.get("action") or "") in {"cooldown_pending", "restart_no_hash"}
+                    ),
+                }
+            )
         results.append(result)
     with state_db.connect(db_path) as conn:
         state_db.init_db(conn)

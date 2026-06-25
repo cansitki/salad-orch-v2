@@ -624,6 +624,25 @@ def record_search_state(conn: sqlite3.Connection, row: dict[str, Any]) -> None:
     )
 
 
+def active_org_cooldown(conn: sqlite3.Connection, org_label: str) -> dict[str, Any] | None:
+    row = conn.execute(
+        """
+        SELECT org_label, slot_name, profile_key, no_gpu_since_utc,
+               sleep_until_utc, attempts, reason, updated_at_utc
+        FROM search_cooldowns
+        WHERE org_label = ?
+          AND slot_name = '*'
+          AND profile_key = '*'
+          AND sleep_until_utc IS NOT NULL
+          AND julianday(sleep_until_utc) > julianday('now')
+        ORDER BY sleep_until_utc DESC
+        LIMIT 1
+        """,
+        (org_label,),
+    ).fetchone()
+    return dict(row) if row else None
+
+
 def record_guard_issue(conn: sqlite3.Connection, row: dict[str, Any]) -> sqlite3.Row:
     now = row.get("last_seen_utc") or utc_now()
     payload = compact_json(safe_public_payload(row.get("payload", {})))

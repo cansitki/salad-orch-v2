@@ -15,6 +15,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 import config_loader
 import fleet_scheduler
 import org_worker
+import profit_model
 import profile_scorer
 import state_db
 from config_loader import load_config
@@ -320,6 +321,182 @@ class StateAndSchedulerTest(unittest.TestCase):
 
         self.assertIsNotNone(org_worker.explicit_zero_balance_skip("kray3", path=balance_file))
         self.assertIsNone(org_worker.explicit_zero_balance_skip("kry1", path=balance_file))
+
+    def test_active_org_cooldown_uses_wildcard_search_cooldown(self) -> None:
+        with state_db.connect(self.db_path) as conn:
+            state_db.init_db(conn)
+            state_db.record_search_state(
+                conn,
+                {
+                    "org_label": "kry1",
+                    "slot_name": "*",
+                    "profile_key": "*",
+                    "no_gpu_since_utc": datetime.now(UTC).isoformat(timespec="seconds"),
+                    "sleep_until_utc": (datetime.now(UTC) + timedelta(minutes=2)).isoformat(timespec="seconds"),
+                    "attempts": 1,
+                    "reason": "http_400:no_credits_available",
+                    "updated_at_utc": datetime.now(UTC).isoformat(timespec="seconds"),
+                },
+            )
+            conn.commit()
+            cooldown = state_db.active_org_cooldown(conn, "kry1")
+
+        self.assertIsNotNone(cooldown)
+        self.assertEqual(cooldown["reason"], "http_400:no_credits_available")
+
+    def test_org_worker_skips_active_no_credits_cooldown_without_loading_watch(self) -> None:
+        original_skip = os.environ.get("PRL_SKIP_ZERO_BALANCE_ORGS")
+        os.environ["PRL_SKIP_ZERO_BALANCE_ORGS"] = "0"
+        original_load_watch_module = org_worker.load_watch_module
+        try:
+            with state_db.connect(self.db_path) as conn:
+                state_db.init_db(conn)
+                state_db.sync_config(conn, load_config())
+                state_db.upsert_gpu_profiles(conn, profit_model.load_profiles())
+                state_db.set_slot_target(
+                    conn,
+                    {
+                        "org_label": "kry1",
+                        "slot_name": "prl-kry1-roi-01",
+                        "profile_key": "4070tis:low:4096",
+                        "mode": "risk_off",
+                        "decision_price_usd": 0.64,
+                        "expected_profit_day": 0.5,
+                        "protected": False,
+                        "reason": "test",
+                    },
+                )
+                state_db.record_search_state(
+                    conn,
+                    {
+                        "org_label": "kry1",
+                        "slot_name": "*",
+                        "profile_key": "*",
+                        "no_gpu_since_utc": datetime.now(UTC).isoformat(timespec="seconds"),
+                        "sleep_until_utc": (datetime.now(UTC) + timedelta(minutes=2)).isoformat(timespec="seconds"),
+                        "attempts": 1,
+                        "reason": "http_400:no_credits_available",
+                        "updated_at_utc": datetime.now(UTC).isoformat(timespec="seconds"),
+                    },
+                )
+                conn.commit()
+
+            def fail_load_watch(*_args, **_kwargs):
+                raise AssertionError("load_watch_module should not run during no-credits cooldown")
+
+            org_worker.load_watch_module = fail_load_watch
+            payload = org_worker.run_once(
+                org_label="kry1",
+                db_path=self.db_path,
+                apply=True,
+                schedule_if_empty=False,
+            )
+        finally:
+            if original_skip is None:
+                os.environ.pop("PRL_SKIP_ZERO_BALANCE_ORGS", None)
+            else:
+                os.environ["PRL_SKIP_ZERO_BALANCE_ORGS"] = original_skip
+            org_worker.load_watch_module = original_load_watch_module
+
+        self.assertEqual(payload["action_counts"], {"skip_no_credits": 1})
+        self.assertEqual(payload["results"][0]["action"], "skip_no_credits")
+        with state_db.connect(self.db_path) as conn:
+            attempts = conn.execute(
+                "SELECT COUNT(*) FROM attempts WHERE org_label='kry1' AND action='skip_no_credits'"
+            ).fetchone()[0]
+            heartbeat = conn.execute(
+                "SELECT payload_json FROM heartbeats WHERE process_name = 'org_worker:kry1'"
+            ).fetchone()
+        self.assertEqual(attempts, 1)
+        self.assertIn("no_credits_skip", heartbeat["payload_json"])
+
+    def test_org_worker_sets_no_credits_cooldown_and_skips_remaining_targets(self) -> None:
+        original_skip = os.environ.get("PRL_SKIP_ZERO_BALANCE_ORGS")
+        os.environ["PRL_SKIP_ZERO_BALANCE_ORGS"] = "0"
+        original_load_watch_module = org_worker.load_watch_module
+        original_install_rate_limited_request = org_worker.install_rate_limited_request
+
+        class Watch:
+            GPU = {"4070tis": "gpu-rtx-4070ti-super"}
+
+            class Candidate:
+                def __init__(self, label, priority, gpu_keys, memory):
+                    self.label = label
+                    self.priority = priority
+                    self.gpu_keys = gpu_keys
+                    self.memory = memory
+
+            def __init__(self):
+                self.start_calls = 0
+
+            def slot_state(self, _slot_name):
+                return (
+                    {
+                        "priority": "low",
+                        "container": {
+                            "resources": {
+                                "gpu_classes": ["gpu-rtx-4070ti-super"],
+                                "memory": 4096,
+                            }
+                        },
+                        "current_state": {"instance_status_counts": {}},
+                    },
+                    [],
+                )
+
+            def start_slot(self, _slot_name, _reason):
+                self.start_calls += 1
+                return False
+
+            def start_slot_error(self, _slot_name):
+                return "http_400:no_credits_available"
+
+        watch = Watch()
+        try:
+            with state_db.connect(self.db_path) as conn:
+                state_db.init_db(conn)
+                state_db.sync_config(conn, load_config())
+                state_db.upsert_gpu_profiles(conn, profit_model.load_profiles())
+                for index in (1, 2):
+                    state_db.set_slot_target(
+                        conn,
+                        {
+                            "org_label": "kry1",
+                            "slot_name": f"prl-kry1-roi-{index:02d}",
+                            "profile_key": "4070tis:low:4096",
+                            "mode": "risk_off",
+                            "decision_price_usd": 0.64,
+                            "expected_profit_day": 0.5,
+                            "protected": False,
+                            "reason": "test",
+                        },
+                    )
+                conn.commit()
+
+            org_worker.load_watch_module = lambda *_args, **_kwargs: watch
+            org_worker.install_rate_limited_request = lambda *_args, **_kwargs: None
+            payload = org_worker.run_once(
+                org_label="kry1",
+                db_path=self.db_path,
+                apply=True,
+                schedule_if_empty=False,
+            )
+        finally:
+            if original_skip is None:
+                os.environ.pop("PRL_SKIP_ZERO_BALANCE_ORGS", None)
+            else:
+                os.environ["PRL_SKIP_ZERO_BALANCE_ORGS"] = original_skip
+            org_worker.load_watch_module = original_load_watch_module
+            org_worker.install_rate_limited_request = original_install_rate_limited_request
+
+        self.assertEqual(watch.start_calls, 1)
+        self.assertEqual(payload["action_counts"], {"start_failed": 1, "skip_no_credits": 1})
+        self.assertEqual(payload["results"][0]["action"], "start_failed")
+        self.assertEqual(payload["results"][1]["action"], "skip_no_credits")
+        with state_db.connect(self.db_path) as conn:
+            cooldown = state_db.active_org_cooldown(conn, "kry1")
+        self.assertIsNotNone(cooldown)
+        self.assertEqual(cooldown["reason"], "http_400:no_credits_available")
 
     def test_slot_observation_preserves_hashrate_when_omitted(self) -> None:
         with state_db.connect(self.db_path) as conn:

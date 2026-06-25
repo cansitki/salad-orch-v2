@@ -800,6 +800,9 @@ class StateAndSchedulerTest(unittest.TestCase):
             def start_slot(self, _slot_name, _reason):
                 return False
 
+            def start_slot_error(self, _slot_name):
+                return "http_400:no_credits_available"
+
         result = org_worker.execute_action(
             Watch(),
             {
@@ -827,6 +830,7 @@ class StateAndSchedulerTest(unittest.TestCase):
         self.assertFalse(result["applied"])
         self.assertEqual(result["action"], "start_failed")
         self.assertEqual(result["original_action"], "start")
+        self.assertEqual(result["error"], "http_400:no_credits_available")
 
     def test_org_worker_stopped_patch_starts_separately_and_reports_failure(self) -> None:
         class Watch:
@@ -846,6 +850,9 @@ class StateAndSchedulerTest(unittest.TestCase):
 
             def start_slot(self, _slot_name, _reason):
                 return False
+
+            def start_slot_error(self, _slot_name):
+                return "http_400:no_credits_available"
 
         watch = Watch()
         result = org_worker.execute_action(
@@ -877,6 +884,7 @@ class StateAndSchedulerTest(unittest.TestCase):
         self.assertTrue(result["patched"])
         self.assertEqual(result["action"], "start_failed")
         self.assertEqual(result["original_action"], "patch")
+        self.assertEqual(result["error"], "http_400:no_credits_available")
 
     def test_org_worker_cooldowns_stale_pending_same_profile(self) -> None:
         class Watch:

@@ -459,14 +459,29 @@ def has_active_instances(plan: dict[str, Any]) -> bool:
     return any(int(counts.get(key) or 0) > 0 for key in ("allocating", "creating", "running", "stopping"))
 
 
-def start_failed_result(plan: dict[str, Any], original_action: str) -> dict[str, Any]:
+def start_error_for_result(watch: Any, slot_name: str) -> str:
+    getter = getattr(watch, "start_slot_error", None)
+    if callable(getter):
+        try:
+            error = getter(slot_name)
+        except Exception:
+            error = None
+        if error:
+            return str(error)[:180]
+    errors = getattr(watch, "START_SLOT_ERRORS", None)
+    if isinstance(errors, dict) and errors.get(slot_name):
+        return str(errors[slot_name])[:180]
+    return "start_slot returned false"
+
+
+def start_failed_result(watch: Any, slot_name: str, plan: dict[str, Any], original_action: str) -> dict[str, Any]:
     return {
         "ok": False,
         "applied": False,
         **plan,
         "action": "start_failed",
         "original_action": original_action,
-        "error": "start_slot returned false",
+        "error": start_error_for_result(watch, slot_name),
     }
 
 
@@ -497,14 +512,14 @@ def execute_action(watch: Any, target: dict[str, Any], plan: dict[str, Any], *, 
         if start_after_patch:
             start_result = watch.start_slot(slot_name, "after_patch:fleet_scheduler_target")
             if start_result is False:
-                result = start_failed_result(plan, "patch")
+                result = start_failed_result(watch, slot_name, plan, "patch")
                 result["patched"] = True
                 return result
             return {"ok": True, "applied": True, **plan, "start_requested_after_patch": True}
     elif plan["action"] == "start":
         start_result = watch.start_slot(slot_name, "fleet_scheduler_target")
         if start_result is False:
-            return start_failed_result(plan, "start")
+            return start_failed_result(watch, slot_name, plan, "start")
     elif plan["action"] == "cooldown_pending":
         recycled = []
         for instance_id in plan.get("pending_instance_ids") or []:
@@ -518,7 +533,7 @@ def execute_action(watch: Any, target: dict[str, Any], plan: dict[str, Any], *, 
             start_result = watch.start_slot(slot_name, f"stale_pending_same_profile:{restart_reason}")
             restart_requested = True
             if start_result is False:
-                result = start_failed_result(plan, "cooldown_pending")
+                result = start_failed_result(watch, slot_name, plan, "cooldown_pending")
                 result.update(
                     {
                         "recycled_pending_instances": recycled,
@@ -548,7 +563,7 @@ def execute_action(watch: Any, target: dict[str, Any], plan: dict[str, Any], *, 
             start_result = watch.start_slot(slot_name, f"running_no_hash_same_profile:{restart_reason}")
             restart_requested = True
             if start_result is False:
-                result = start_failed_result(plan, "restart_no_hash")
+                result = start_failed_result(watch, slot_name, plan, "restart_no_hash")
                 result.update(
                     {
                         "reallocated_instances": reallocated,

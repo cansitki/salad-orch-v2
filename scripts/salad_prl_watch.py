@@ -287,6 +287,7 @@ FALLBACKS = [
 
 SLOT_CANDIDATE_INDEX: dict[str, int] = {}
 SLOT_LAST_PATCH: dict[str, float] = {}
+START_SLOT_ERRORS: dict[str, str] = {}
 SLOT_RUNNING_WITHOUT_POOL_SINCE: dict[str, float] = {}
 SLOT_EMPTY_DEPLOYING_SINCE: dict[str, float] = {}
 SLOT_EMPTY_CREATING_SINCE: dict[str, float] = {}
@@ -487,6 +488,29 @@ def clear_no_credits_state(reason: str, **fields: Any) -> None:
             refresh_slot_targets()
         except Exception as exc:
             log("slot_targets_refresh_after_credit_restore_failed", org=ORG, error=type(exc).__name__, detail=str(exc)[:180])
+
+
+def public_start_error(error_text: str, *, status: int | None = None) -> str:
+    prefix = f"http_{status}:" if status else ""
+    try:
+        payload = json.loads(error_text) if error_text else {}
+    except json.JSONDecodeError:
+        payload = {}
+    if isinstance(payload, dict):
+        error_type = str(payload.get("type") or "").strip()
+        if error_type:
+            return f"{prefix}{error_type}"
+        title = str(payload.get("title") or "").strip().lower().replace(" ", "_")
+        if title:
+            return f"{prefix}{title[:80]}"
+    text = error_text.strip().lower()
+    if "no_credits_available" in text or "no credits" in text:
+        return f"{prefix}no_credits_available"
+    return f"{prefix}start_failed" if prefix else "start_failed"
+
+
+def start_slot_error(slot: str) -> str | None:
+    return START_SLOT_ERRORS.get(slot)
 
 
 def note_no_gpu_available(reason: str, **fields: Any) -> None:
@@ -1586,17 +1610,20 @@ def start_slot(slot: str, reason: str) -> bool:
     try:
         request("POST", f"/organizations/{ORG}/projects/{PROJECT}/containers/{slot}/start")
         SLOT_LAST_PATCH[slot] = time.time()
+        START_SLOT_ERRORS.pop(slot, None)
         record_slot_action_state(slot, "started", reason)
         clear_no_credits_state("slot_start_requested", slot=slot, start_reason=reason)
         log("slot_start_requested", slot=slot, reason=reason)
         return True
     except requests.HTTPError as exc:
         error_text = exc.response.text
+        START_SLOT_ERRORS[slot] = public_start_error(error_text, status=exc.response.status_code)
         if "no_credits_available" in error_text or "no credits" in error_text.lower():
             note_no_credits(error_text)
         log("slot_start_failed", slot=slot, reason=reason, status=exc.response.status_code, error=error_text[:180])
         return False
     except Exception as exc:
+        START_SLOT_ERRORS[slot] = type(exc).__name__
         log("slot_start_failed", slot=slot, reason=reason, error=type(exc).__name__)
         return False
 

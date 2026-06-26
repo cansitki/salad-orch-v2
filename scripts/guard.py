@@ -126,6 +126,11 @@ def replacement_target(
     decision_price: float,
     min_profit_day: float,
 ) -> dict[str, Any] | None:
+    unstable_profiles = {
+        str(row["profile_key"])
+        for row in state_db.recent_spike_summary(conn, limit=1000).get("profiles", [])
+        if row.get("unstable") and row.get("profile_key")
+    }
     rows = conn.execute(
         """
         SELECT s.profile_key, s.mode, s.decision_price_usd, s.expected_profit_day,
@@ -144,6 +149,8 @@ def replacement_target(
 
     def available(row: Any, *, allow_probe_fallback: bool) -> bool:
         profile = str(row["profile_key"])
+        if profile in unstable_profiles:
+            return False
         if current_profile_key and profile == current_profile_key:
             return False
         if (org_label, slot_name, profile) in cooldowns or (org_label, "*", profile) in cooldowns:

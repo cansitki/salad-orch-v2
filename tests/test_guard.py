@@ -204,6 +204,57 @@ class GuardDecisionTest(unittest.TestCase):
         self.assertNotEqual(target["profile_key"], skipped)
         self.assertEqual(target["profile_key"], fallback)
 
+    def test_guard_replacement_skips_profiles_with_recent_spike_summary_even_when_score_is_stale(self) -> None:
+        profile_scorer.score_profiles(
+            db_path=self.db_path,
+            decision_price_usd=0.64,
+            pearl_fee_rate=0.01,
+            write=True,
+        )
+        now = datetime.now(UTC).replace(microsecond=0)
+        with state_db.connect(self.db_path) as conn:
+            candidates = conn.execute(
+                """
+                SELECT profile_key
+                FROM profile_scores
+                WHERE expected_profit_day >= 0.05
+                  AND risk_tier NOT IN ('negative', 'marginal', 'blocked_priority', 'unstable_recent_spikes')
+                ORDER BY score DESC, expected_profit_day DESC
+                LIMIT 2
+                """
+            ).fetchall()
+            self.assertGreaterEqual(len(candidates), 2)
+            skipped = candidates[0]["profile_key"]
+            fallback = candidates[1]["profile_key"]
+            gpu, priority, _memory = skipped.split(":", 2)
+            for index in range(3):
+                state_db.record_slot_spike_event(
+                    conn,
+                    {
+                        "at_utc": (now - timedelta(minutes=index + 1)).isoformat(timespec="seconds"),
+                        "org_label": "kray",
+                        "slot_name": f"prl-kray-roi-{index + 1:02d}",
+                        "issue_type": "negative",
+                        "profile_key": skipped,
+                        "gpu_key": gpu,
+                        "priority": priority,
+                        "profit_day": -1.0,
+                    },
+                )
+            target = guard.replacement_target(
+                conn,
+                org_label="kray",
+                slot_name="prl-kray-roi-01",
+                issue_type="negative",
+                current_profile_key=None,
+                decision_price=0.64,
+                min_profit_day=0.05,
+            )
+
+        self.assertIsNotNone(target)
+        self.assertNotEqual(target["profile_key"], skipped)
+        self.assertEqual(target["profile_key"], fallback)
+
     def test_guard_stops_when_no_profitable_replacement_exists(self) -> None:
         self.make_issue_old("negative")
         decisions = guard.enforce_issues(

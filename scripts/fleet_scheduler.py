@@ -451,6 +451,11 @@ def build_targets(
 
 
 def active_guard_targets(conn) -> dict[tuple[str, str], dict[str, Any]]:
+    unstable_profiles = {
+        str(row["profile_key"])
+        for row in state_db.recent_spike_summary(conn, limit=1000).get("profiles", [])
+        if row.get("unstable") and row.get("profile_key")
+    }
     rows = conn.execute(
         """
         SELECT t.*, p.gpu_key, p.priority, p.memory_mb, p.label,
@@ -467,6 +472,8 @@ def active_guard_targets(conn) -> dict[tuple[str, str], dict[str, Any]]:
     targets = {}
     for row in rows:
         target = dict(row)
+        if str(target["profile_key"]) in unstable_profiles:
+            continue
         parts = str(target["profile_key"]).split(":")
         if not target.get("gpu_key") and parts:
             target["gpu_key"] = parts[0]

@@ -745,6 +745,27 @@ def start_failed_result(watch: Any, slot_name: str, plan: dict[str, Any], origin
     }
 
 
+def failed_action_result(
+    watch: Any,
+    slot_name: str,
+    plan: dict[str, Any],
+    original_action: str,
+    exc: Exception,
+) -> dict[str, Any]:
+    fallback = f"{type(exc).__name__}: {str(exc)[:180]}"
+    error = start_error_for_result(watch, slot_name)
+    if error == "start_slot returned false":
+        error = fallback
+    return {
+        "ok": False,
+        "applied": False,
+        **plan,
+        "action": f"{original_action}_failed",
+        "original_action": original_action,
+        "error": error,
+    }
+
+
 def stopped_patch_failed_start_existing_allowed(plan: dict[str, Any]) -> bool:
     if not env_bool("PRL_STOPPED_PATCH_FAIL_START_EXISTING", True):
         return False
@@ -772,7 +793,10 @@ def execute_action(watch: Any, target: dict[str, Any], plan: dict[str, Any], *, 
     candidate = candidate_from_target(watch, target)
     slot_name = str(target["slot_name"])
     if plan["action"] == "create":
-        watch.create_slot(slot_name, candidate)
+        try:
+            watch.create_slot(slot_name, candidate)
+        except Exception as exc:
+            return failed_action_result(watch, slot_name, plan, "create", exc)
     elif plan["action"] == "patch":
         start_after_patch = not has_active_instances(plan)
         ok = watch.patch_slot(

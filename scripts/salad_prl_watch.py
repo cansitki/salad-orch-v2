@@ -1603,6 +1603,7 @@ def create_slot(slot: str, candidate: Candidate, *, start_after: bool = True) ->
     try:
         request("POST", f"/organizations/{ORG}/projects/{PROJECT}/containers", payload)
         SLOT_LAST_PATCH[slot] = time.time()
+        START_SLOT_ERRORS.pop(slot, None)
         record_slot_action_state(slot, "created", "create_slot", candidate.label)
         log("slot_created", slot=slot, candidate=candidate.label, gpu_ids=candidate.gpu_ids, memory=candidate.memory)
         if start_after:
@@ -1610,7 +1611,11 @@ def create_slot(slot: str, candidate: Candidate, *, start_after: bool = True) ->
         else:
             log("slot_start_deferred_no_credits", slot=slot, candidate=candidate.label, reason="after_create")
     except requests.HTTPError as exc:
-        log("slot_create_failed", slot=slot, candidate=candidate.label, status=exc.response.status_code, error=exc.response.text[:180])
+        error_text = exc.response.text
+        START_SLOT_ERRORS[slot] = public_start_error(error_text, status=exc.response.status_code)
+        if "no_credits_available" in error_text or "no credits" in error_text.lower():
+            note_no_credits(error_text)
+        log("slot_create_failed", slot=slot, candidate=candidate.label, status=exc.response.status_code, error=error_text[:180])
         raise
 
 
@@ -1625,6 +1630,7 @@ def patch_slot(slot: str, candidate: Candidate, reason: str, *, start_after: boo
             patch=True,
         )
         SLOT_LAST_PATCH[slot] = time.time()
+        START_SLOT_ERRORS.pop(slot, None)
         record_slot_action_state(slot, "patched", reason, candidate.label)
         log("slot_patched", slot=slot, candidate=candidate.label, gpu_ids=candidate.gpu_ids, memory=candidate.memory, reason=reason)
         if start_after:
@@ -1633,7 +1639,11 @@ def patch_slot(slot: str, candidate: Candidate, reason: str, *, start_after: boo
             log("slot_start_deferred_after_patch", slot=slot, candidate=candidate.label, reason=f"after_patch:{reason}")
         return True
     except requests.HTTPError as exc:
-        log("slot_patch_failed", slot=slot, candidate=candidate.label, status=exc.response.status_code, error=exc.response.text[:180])
+        error_text = exc.response.text
+        START_SLOT_ERRORS[slot] = public_start_error(error_text, status=exc.response.status_code)
+        if "no_credits_available" in error_text or "no credits" in error_text.lower():
+            note_no_credits(error_text)
+        log("slot_patch_failed", slot=slot, candidate=candidate.label, status=exc.response.status_code, error=error_text[:180])
         return False
 
 

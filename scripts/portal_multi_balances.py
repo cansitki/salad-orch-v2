@@ -180,6 +180,63 @@ def wake_availability_on_balance_restore(
     }
 
 
+def wake_rollout_on_balance_restore(
+    *,
+    db_path: str | None,
+    restored_orgs: list[str],
+    availability_wake: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    if not restored_orgs or not env_bool("PRL_PORTAL_BALANCE_WAKE_ROLLOUT", True):
+        return None
+    if availability_wake is not None and not availability_wake.get("ok"):
+        return {
+            "ok": False,
+            "skipped": True,
+            "reason": "availability_wake_failed",
+            "restored_positive_balance_orgs": restored_orgs,
+        }
+    try:
+        import runtime_monitor
+
+        payload = runtime_monitor.run_monitor_tick(
+            db_path=db_path,
+            fee=env_float("PRL_PORTAL_BALANCE_WAKE_FEE", 0.01),
+            require_secrets=env_bool("PRL_PORTAL_BALANCE_WAKE_REQUIRE_SECRETS", True),
+            apply_all_orgs_pending=True,
+            guard_on_issues=True,
+            guard_due=True,
+            guard_actionable_only=True,
+            confirm_live_actions=True,
+            pending_retarget_after_seconds=env_int("PRL_PORTAL_BALANCE_WAKE_PENDING_RETARGET_SECONDS", 60),
+            pending_status_retarget_after_seconds=env_int("PRL_PORTAL_BALANCE_WAKE_PENDING_STATUS_SECONDS", 180),
+            runner_timeout_seconds=env_float("PRL_PORTAL_BALANCE_WAKE_RUNNER_TIMEOUT_SECONDS", 420.0),
+            worker_parallelism=env_int("PRL_PORTAL_BALANCE_WAKE_WORKER_PARALLELISM", 25),
+            skip_shadow_workers=env_bool("PRL_PORTAL_BALANCE_WAKE_SKIP_SHADOW_WORKERS", True),
+        )
+    except Exception as exc:
+        return {
+            "ok": False,
+            "error_type": type(exc).__name__,
+            "error": str(exc)[:240],
+            "restored_positive_balance_orgs": restored_orgs,
+        }
+    shadow = payload.get("shadow") or {}
+    action_result = payload.get("action_result") or {}
+    return {
+        "ok": bool(payload.get("ok")),
+        "action": payload.get("action"),
+        "restored_positive_balance_orgs": restored_orgs,
+        "shadow_ok": shadow.get("ok"),
+        "shadow_health": shadow.get("health"),
+        "action_ok": action_result.get("ok") if action_result else None,
+        "action_stage": action_result.get("stage") if action_result else None,
+        "live_hashing_gpus": shadow.get("live_hashing_gpus"),
+        "no_hash": shadow.get("no_hash"),
+        "negative": shadow.get("negative"),
+        "stuck": shadow.get("stuck"),
+    }
+
+
 def refresh_account(
     account: PortalAccount,
     *,
@@ -228,6 +285,7 @@ def record_multi_refresh(
     account_errors: list[dict[str, str]],
     restored_positive_balance_orgs: list[str] | None = None,
     availability_wake: dict[str, Any] | None = None,
+    rollout_wake: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     config = load_config()
     enabled_orgs = [org.label for org in config.enabled_orgs()]
@@ -243,6 +301,7 @@ def record_multi_refresh(
         "checked_at_utc": utc_now(),
         "restored_positive_balance_orgs": restored_positive_balance_orgs or [],
         "availability_wake": availability_wake,
+        "rollout_wake": rollout_wake,
     }
     with state_db.connect(db_path) as conn:
         state_db.init_db(conn)
@@ -334,6 +393,11 @@ def run_once(
         db_path=db_path,
         restored_orgs=restored_orgs,
     )
+    rollout_wake = wake_rollout_on_balance_restore(
+        db_path=db_path,
+        restored_orgs=restored_orgs,
+        availability_wake=availability_wake,
+    )
     return record_multi_refresh(
         db_path=db_path,
         balance_file=balance_file,
@@ -342,6 +406,7 @@ def run_once(
         account_errors=account_errors,
         restored_positive_balance_orgs=restored_orgs,
         availability_wake=availability_wake,
+        rollout_wake=rollout_wake,
     )
 
 

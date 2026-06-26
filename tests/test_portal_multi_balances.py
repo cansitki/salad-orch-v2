@@ -102,6 +102,11 @@ class PortalMultiBalancesTest(unittest.TestCase):
                 "wake_availability_on_balance_restore",
                 return_value={"ok": True, "probed": 2},
             ) as wake_mock,
+            mock.patch.object(
+                portal_multi_balances,
+                "wake_rollout_on_balance_restore",
+                return_value={"ok": True, "action": "all-orgs-pending"},
+            ) as rollout_wake_mock,
         ):
             payload = portal_multi_balances.run_once(
                 db_path=self.db_path,
@@ -125,6 +130,12 @@ class PortalMultiBalancesTest(unittest.TestCase):
         )
         self.assertEqual(payload["restored_positive_balance_orgs"], ["kray", "kray2", "kry2"])
         self.assertEqual(payload["availability_wake"], {"ok": True, "probed": 2})
+        rollout_wake_mock.assert_called_once_with(
+            db_path=self.db_path,
+            restored_orgs=["kray", "kray2", "kry2"],
+            availability_wake={"ok": True, "probed": 2},
+        )
+        self.assertEqual(payload["rollout_wake"], {"ok": True, "action": "all-orgs-pending"})
 
     def test_run_once_preserves_existing_balances_on_account_failure(self) -> None:
         balance_file = self.tmp_path / "state" / "salad_balances.json"
@@ -143,6 +154,11 @@ class PortalMultiBalancesTest(unittest.TestCase):
                 "wake_availability_on_balance_restore",
                 return_value={"ok": True, "probed": 1},
             ) as wake_mock,
+            mock.patch.object(
+                portal_multi_balances,
+                "wake_rollout_on_balance_restore",
+                return_value={"ok": True, "action": "all-orgs-pending"},
+            ) as rollout_wake_mock,
         ):
             payload = portal_multi_balances.run_once(
                 db_path=self.db_path,
@@ -160,6 +176,11 @@ class PortalMultiBalancesTest(unittest.TestCase):
         self.assertEqual(payload["status"], "degraded")
         wake_mock.assert_called_once_with(db_path=self.db_path, restored_orgs=["kry2"])
         self.assertEqual(payload["restored_positive_balance_orgs"], ["kry2"])
+        rollout_wake_mock.assert_called_once_with(
+            db_path=self.db_path,
+            restored_orgs=["kry2"],
+            availability_wake={"ok": True, "probed": 1},
+        )
 
     def test_wake_availability_can_be_disabled(self) -> None:
         with mock.patch.dict(os.environ, {"PRL_PORTAL_BALANCE_WAKE_AVAILABILITY": "0"}, clear=False):
@@ -169,6 +190,91 @@ class PortalMultiBalancesTest(unittest.TestCase):
                     restored_orgs=["kray"],
                 )
             )
+
+    def test_wake_rollout_can_be_disabled(self) -> None:
+        with mock.patch.dict(os.environ, {"PRL_PORTAL_BALANCE_WAKE_ROLLOUT": "0"}, clear=False):
+            self.assertIsNone(
+                portal_multi_balances.wake_rollout_on_balance_restore(
+                    db_path=self.db_path,
+                    restored_orgs=["kray"],
+                    availability_wake={"ok": True},
+                )
+            )
+
+    def test_wake_rollout_skips_after_failed_availability_wake(self) -> None:
+        payload = portal_multi_balances.wake_rollout_on_balance_restore(
+            db_path=self.db_path,
+            restored_orgs=["kray"],
+            availability_wake={"ok": False, "error_type": "RuntimeError"},
+        )
+
+        self.assertEqual(
+            payload,
+            {
+                "ok": False,
+                "skipped": True,
+                "reason": "availability_wake_failed",
+                "restored_positive_balance_orgs": ["kray"],
+            },
+        )
+
+    def test_wake_rollout_runs_existing_runtime_monitor_gates(self) -> None:
+        monitor_payload = {
+            "ok": True,
+            "action": "all-orgs-pending",
+            "shadow": {
+                "ok": True,
+                "health": "healthy",
+                "live_hashing_gpus": 0,
+                "no_hash": 0,
+                "negative": 0,
+                "stuck": 0,
+            },
+            "action_result": {"ok": True, "stage": "all-orgs"},
+        }
+        with (
+            mock.patch.dict(
+                os.environ,
+                {
+                    "PRL_PORTAL_BALANCE_WAKE_FEE": "0.01",
+                    "PRL_PORTAL_BALANCE_WAKE_WORKER_PARALLELISM": "7",
+                },
+                clear=False,
+            ),
+            mock.patch("runtime_monitor.run_monitor_tick", return_value=monitor_payload) as monitor_mock,
+        ):
+            payload = portal_multi_balances.wake_rollout_on_balance_restore(
+                db_path=self.db_path,
+                restored_orgs=["kray"],
+                availability_wake={"ok": True, "probed": 1},
+            )
+
+        monitor_mock.assert_called_once()
+        kwargs = monitor_mock.call_args.kwargs
+        self.assertEqual(kwargs["db_path"], self.db_path)
+        self.assertEqual(kwargs["fee"], 0.01)
+        self.assertTrue(kwargs["require_secrets"])
+        self.assertTrue(kwargs["apply_all_orgs_pending"])
+        self.assertTrue(kwargs["confirm_live_actions"])
+        self.assertTrue(kwargs["guard_actionable_only"])
+        self.assertTrue(kwargs["skip_shadow_workers"])
+        self.assertEqual(kwargs["worker_parallelism"], 7)
+        self.assertEqual(
+            payload,
+            {
+                "ok": True,
+                "action": "all-orgs-pending",
+                "restored_positive_balance_orgs": ["kray"],
+                "shadow_ok": True,
+                "shadow_health": "healthy",
+                "action_ok": True,
+                "action_stage": "all-orgs",
+                "live_hashing_gpus": 0,
+                "no_hash": 0,
+                "negative": 0,
+                "stuck": 0,
+            },
+        )
 
 
 if __name__ == "__main__":

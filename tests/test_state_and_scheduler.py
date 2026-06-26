@@ -634,6 +634,117 @@ class StateAndSchedulerTest(unittest.TestCase):
         self.assertEqual(slot_status["protected"], 0)
         self.assertIn("no_credits_skip", heartbeat["payload_json"])
 
+    def test_org_worker_clears_no_credits_cooldown_after_fresh_positive_balance(self) -> None:
+        balance_file = pathlib.Path(self.tmpdir.name) / "balances.json"
+        balance_file.write_text(json.dumps({"kry1": 1.25}), encoding="utf-8")
+        original_balance_file = os.environ.get("PRL_BALANCE_FILE")
+        original_skip = os.environ.get("PRL_SKIP_ZERO_BALANCE_ORGS")
+        original_load_watch_module = org_worker.load_watch_module
+        original_install_rate_limited_request = org_worker.install_rate_limited_request
+        os.environ["PRL_BALANCE_FILE"] = str(balance_file)
+        os.environ["PRL_SKIP_ZERO_BALANCE_ORGS"] = "1"
+
+        class Watch:
+            ORG = "kry1"
+            PROJECT = "default"
+            GPU = {"4070tis": "gpu-rtx-4070ti-super"}
+
+            class Candidate:
+                def __init__(self, label, priority, gpu_keys, memory):
+                    self.label = label
+                    self.priority = priority
+                    self.gpu_keys = gpu_keys
+                    self.memory = memory
+
+            def __init__(self):
+                self.created_slots = []
+
+            def request(self, method, path, payload=None):
+                if method == "GET" and path.endswith("/quotas"):
+                    return {"container_groups_quotas": {"container_replicas_quota": 10, "container_replicas_used": 0}}
+                raise AssertionError(f"unexpected request {method} {path}")
+
+            def slot_state(self, _slot_name):
+                return None, []
+
+            def create_slot(self, slot_name, _candidate):
+                self.created_slots.append(slot_name)
+
+        watch = Watch()
+        try:
+            with state_db.connect(self.db_path) as conn:
+                state_db.init_db(conn)
+                state_db.sync_config(conn, load_config())
+                state_db.upsert_gpu_profiles(conn, profit_model.load_profiles())
+                state_db.set_slot_target(
+                    conn,
+                    {
+                        "org_label": "kry1",
+                        "slot_name": "prl-kry1-roi-01",
+                        "profile_key": "4070tis:low:4096",
+                        "mode": "risk_off",
+                        "decision_price_usd": 0.64,
+                        "expected_profit_day": 0.5,
+                        "protected": False,
+                        "reason": "test",
+                    },
+                )
+                state_db.record_search_state(
+                    conn,
+                    {
+                        "org_label": "kry1",
+                        "slot_name": "*",
+                        "profile_key": "*",
+                        "no_gpu_since_utc": datetime.now(UTC).isoformat(timespec="seconds"),
+                        "sleep_until_utc": (datetime.now(UTC) + timedelta(minutes=2)).isoformat(timespec="seconds"),
+                        "attempts": 1,
+                        "reason": "http_400:no_credits_available",
+                        "updated_at_utc": datetime.now(UTC).isoformat(timespec="seconds"),
+                    },
+                )
+                conn.commit()
+
+            org_worker.load_watch_module = lambda *_args, **_kwargs: watch
+            org_worker.install_rate_limited_request = lambda *_args, **_kwargs: None
+            payload = org_worker.run_once(
+                org_label="kry1",
+                db_path=self.db_path,
+                apply=True,
+                schedule_if_empty=False,
+            )
+        finally:
+            if original_balance_file is None:
+                os.environ.pop("PRL_BALANCE_FILE", None)
+            else:
+                os.environ["PRL_BALANCE_FILE"] = original_balance_file
+            if original_skip is None:
+                os.environ.pop("PRL_SKIP_ZERO_BALANCE_ORGS", None)
+            else:
+                os.environ["PRL_SKIP_ZERO_BALANCE_ORGS"] = original_skip
+            org_worker.load_watch_module = original_load_watch_module
+            org_worker.install_rate_limited_request = original_install_rate_limited_request
+
+        self.assertEqual(watch.created_slots, ["prl-kry1-roi-01"])
+        self.assertEqual(payload["action_counts"], {"create": 1})
+        self.assertIsNotNone(payload["no_credits_cooldown_cleared"])
+        with state_db.connect(self.db_path) as conn:
+            cooldown = state_db.active_org_cooldown(conn, "kry1")
+            cleared = conn.execute(
+                """
+                SELECT reason, sleep_until_utc
+                FROM search_cooldowns
+                WHERE org_label='kry1' AND slot_name='*' AND profile_key='*'
+                """
+            ).fetchone()
+            heartbeat = conn.execute(
+                "SELECT payload_json FROM heartbeats WHERE process_name = 'org_worker:kry1'"
+            ).fetchone()
+
+        self.assertIsNone(cooldown)
+        self.assertEqual(cleared["reason"], "positive_balance_restored")
+        self.assertIsNone(cleared["sleep_until_utc"])
+        self.assertIn("no_credits_cooldown_cleared", heartbeat["payload_json"])
+
     def test_org_worker_sets_no_credits_cooldown_and_skips_remaining_targets(self) -> None:
         original_skip = os.environ.get("PRL_SKIP_ZERO_BALANCE_ORGS")
         os.environ["PRL_SKIP_ZERO_BALANCE_ORGS"] = "0"

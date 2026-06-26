@@ -296,7 +296,7 @@ def balance_file_path() -> pathlib.Path:
     return pathlib.Path(raw) if raw else DEFAULT_BALANCE_FILE
 
 
-def explicit_zero_balance_skip(org_label: str, *, path: pathlib.Path | None = None) -> dict[str, Any] | None:
+def explicit_org_balance(org_label: str, *, path: pathlib.Path | None = None) -> dict[str, Any] | None:
     if not env_bool("PRL_SKIP_ZERO_BALANCE_ORGS", True):
         return None
     selected_path = path or balance_file_path()
@@ -317,8 +317,6 @@ def explicit_zero_balance_skip(org_label: str, *, path: pathlib.Path | None = No
     except (TypeError, ValueError):
         return None
     threshold = env_float("PRL_ZERO_BALANCE_SKIP_THRESHOLD_USD", 0.0)
-    if balance > threshold:
-        return None
     return {
         "org_label": org_label,
         "balance_usd": balance,
@@ -326,6 +324,24 @@ def explicit_zero_balance_skip(org_label: str, *, path: pathlib.Path | None = No
         "balance_file": str(selected_path),
         "balance_age_seconds": round(age, 1),
     }
+
+
+def explicit_zero_balance_skip(org_label: str, *, path: pathlib.Path | None = None) -> dict[str, Any] | None:
+    balance = explicit_org_balance(org_label, path=path)
+    if balance is None:
+        return None
+    if float(balance["balance_usd"]) > float(balance["threshold_usd"]):
+        return None
+    return balance
+
+
+def explicit_positive_balance_restore(org_label: str, *, path: pathlib.Path | None = None) -> dict[str, Any] | None:
+    balance = explicit_org_balance(org_label, path=path)
+    if balance is None:
+        return None
+    if float(balance["balance_usd"]) <= float(balance["threshold_usd"]):
+        return None
+    return balance
 
 
 def zero_balance_skip_result(target: dict[str, Any], skip: dict[str, Any]) -> dict[str, Any]:
@@ -504,6 +520,25 @@ def no_credits_cooldown_row(org_label: str, *, error: str | None = None) -> dict
         "attempts": 1,
         "reason": error or NO_CREDITS_ERROR_TEXT,
         "updated_at_utc": now.isoformat(timespec="seconds"),
+    }
+
+
+def clear_no_credits_cooldown_row(
+    org_label: str,
+    *,
+    cooldown: dict[str, Any],
+    balance_restore: dict[str, Any],
+) -> dict[str, Any]:
+    return {
+        "org_label": org_label,
+        "slot_name": "*",
+        "profile_key": "*",
+        "no_gpu_since_utc": cooldown.get("no_gpu_since_utc"),
+        "sleep_until_utc": None,
+        "attempts": int(cooldown.get("attempts") or 0),
+        "reason": "positive_balance_restored",
+        "updated_at_utc": datetime.now(UTC).isoformat(timespec="seconds"),
+        "balance_restore": balance_restore,
     }
 
 
@@ -1022,10 +1057,36 @@ def run_once(
         }
 
     no_credits_skip: dict[str, Any] | None = None
+    no_credits_cooldown_cleared: dict[str, Any] | None = None
     if apply:
         with state_db.connect(db_path) as conn:
             state_db.init_db(conn)
             no_credits_skip = state_db.active_org_cooldown(conn, org_label)
+            if no_credits_skip is not None:
+                positive_balance = explicit_positive_balance_restore(org_label)
+                if positive_balance is not None:
+                    clear_row = clear_no_credits_cooldown_row(
+                        org_label,
+                        cooldown=no_credits_skip,
+                        balance_restore=positive_balance,
+                    )
+                    state_db.record_search_state(conn, clear_row)
+                    state_db.record_event(
+                        conn,
+                        "org_worker_no_credits_cooldown_cleared",
+                        source=f"org_worker:{org_label}",
+                        message="org worker cleared no-credits cooldown after fresh positive balance",
+                        payload={
+                            "cooldown": no_credits_skip,
+                            "balance_restore": positive_balance,
+                        },
+                    )
+                    no_credits_cooldown_cleared = {
+                        "cooldown": no_credits_skip,
+                        "balance_restore": positive_balance,
+                    }
+                    no_credits_skip = None
+            conn.commit()
 
     if no_credits_skip is not None:
         results = [no_credits_skip_result(target, no_credits_skip) for target in targets]
@@ -1332,6 +1393,7 @@ def run_once(
                 "pending_status_retarget_after_seconds": pending_status_retarget_after_seconds,
                 "targets": len(targets),
                 "actions": action_counts,
+                "no_credits_cooldown_cleared": no_credits_cooldown_cleared,
             },
         )
         state_db.record_event(
@@ -1346,6 +1408,7 @@ def run_once(
                 "pending_retarget_after_seconds": pending_retarget_after_seconds,
                 "pending_status_retarget_after_seconds": pending_status_retarget_after_seconds,
                 "targets": len(targets),
+                "no_credits_cooldown_cleared": no_credits_cooldown_cleared,
                 "results": results,
             },
         )
@@ -1358,6 +1421,7 @@ def run_once(
         "pending_retarget_after_seconds": pending_retarget_after_seconds,
         "pending_status_retarget_after_seconds": pending_status_retarget_after_seconds,
         "targets": len(targets),
+        "no_credits_cooldown_cleared": no_credits_cooldown_cleared,
         "action_counts": action_counts,
         "results": results,
     }

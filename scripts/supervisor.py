@@ -27,11 +27,13 @@ def _with_db(cmd: list[str], db_path: str | None) -> list[str]:
 def process_plan(
     *,
     apply_workers: bool = False,
+    runtime_monitor_apply: bool = False,
     db_path: str | None = None,
     include_audit: bool = True,
     include_spike_report: bool = True,
     include_maintenance: bool = False,
     maintenance_apply: bool = False,
+    include_runtime_monitor: bool = True,
 ) -> list[dict[str, Any]]:
     config = load_config()
     portal_balance_interval = str(max(1, int(os.environ.get("PRL_PORTAL_BALANCE_INTERVAL_SECONDS", "60"))))
@@ -154,6 +156,37 @@ def process_plan(
                 "cmd": _with_db(cmd, db_path),
             }
         )
+    if include_runtime_monitor:
+        cmd = [
+            "python3",
+            str(SCRIPT_DIR / "runtime_monitor.py"),
+            "--loop",
+            "--interval",
+            os.environ.get("PRL_RUNTIME_MONITOR_INTERVAL_SECONDS", "35"),
+            "--runner-timeout-seconds",
+            os.environ.get("PRL_RUNTIME_MONITOR_RUNNER_TIMEOUT_SECONDS", "420"),
+            "--fee",
+            os.environ.get("PRL_PEARL_FEE_RATE", "0.01"),
+            "--guard-on-issues-every",
+            os.environ.get("PRL_RUNTIME_MONITOR_GUARD_ON_ISSUES_EVERY", "1"),
+            "--guard-actionable-only",
+            "--pending-retarget-after-seconds",
+            os.environ.get("PRL_RUNTIME_MONITOR_PENDING_RETARGET_SECONDS", "60"),
+            "--pending-status-retarget-after-seconds",
+            os.environ.get("PRL_RUNTIME_MONITOR_PENDING_STATUS_SECONDS", "180"),
+            "--worker-parallelism",
+            os.environ.get("PRL_RUNTIME_MONITOR_WORKER_PARALLELISM", "25"),
+            "--skip-shadow-workers",
+        ]
+        if runtime_monitor_apply:
+            cmd.extend(["--require-secrets", "--apply-all-orgs-pending", "--confirm-live-actions"])
+        plan.append(
+            {
+                "name": "salad-runtime-monitor",
+                "heartbeat": "runtime_monitor",
+                "cmd": _with_db(cmd, db_path),
+            }
+        )
     for org in config.enabled_orgs():
         cmd = ["python3", str(SCRIPT_DIR / "org_worker.py"), "--org", org.label, "--loop", "--interval", "30"]
         if apply_workers:
@@ -173,6 +206,8 @@ def tmux_command(session: str, cmd: list[str]) -> list[str]:
         "cd "
         + shlex.quote(str(REPO_ROOT))
         + " && if [ -f .env ]; then set -a; . ./.env; set +a; fi && "
+        + "unset PRL_ENABLED_ORGS && "
+        + "export SALAD_FLEET_CONFIG_PATH=${SALAD_FLEET_CONFIG_PATH:-config/fleet.current.json} && "
         + " ".join(shlex.quote(part) for part in cmd)
     )
     return ["tmux", "new-session", "-d", "-s", session, joined]
@@ -181,20 +216,24 @@ def tmux_command(session: str, cmd: list[str]) -> list[str]:
 def start_tmux_sessions(
     *,
     apply_workers: bool = False,
+    runtime_monitor_apply: bool = False,
     db_path: str | None = None,
     include_audit: bool = True,
     include_spike_report: bool = True,
     include_maintenance: bool = False,
     maintenance_apply: bool = False,
+    include_runtime_monitor: bool = True,
 ) -> list[dict[str, Any]]:
     results = []
     for item in process_plan(
         apply_workers=apply_workers,
+        runtime_monitor_apply=runtime_monitor_apply,
         db_path=db_path,
         include_audit=include_audit,
         include_spike_report=include_spike_report,
         include_maintenance=include_maintenance,
         maintenance_apply=maintenance_apply,
+        include_runtime_monitor=include_runtime_monitor,
     ):
         subprocess.run(["tmux", "has-session", "-t", item["name"]], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         subprocess.run(["tmux", "kill-session", "-t", item["name"]], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -229,20 +268,24 @@ def restart_tmux_session(item: dict[str, Any]) -> dict[str, Any]:
 def ensure_tmux_sessions(
     *,
     apply_workers: bool = False,
+    runtime_monitor_apply: bool = False,
     db_path: str | None = None,
     include_audit: bool = True,
     include_spike_report: bool = True,
     include_maintenance: bool = False,
     maintenance_apply: bool = False,
+    include_runtime_monitor: bool = True,
     restart_stale: bool = True,
 ) -> list[dict[str, Any]]:
     plan = process_plan(
         apply_workers=apply_workers,
+        runtime_monitor_apply=runtime_monitor_apply,
         db_path=db_path,
         include_audit=include_audit,
         include_spike_report=include_spike_report,
         include_maintenance=include_maintenance,
         maintenance_apply=maintenance_apply,
+        include_runtime_monitor=include_runtime_monitor,
     )
     results: list[dict[str, Any]] = []
     with state_db.connect(db_path) as conn:
@@ -308,8 +351,10 @@ def main() -> None:
     parser.add_argument("--ensure", action="store_true", help="Start missing tmux sessions and restart stale heartbeats.")
     parser.add_argument("--no-restart-stale", action="store_true", help="Only start missing sessions during --ensure.")
     parser.add_argument("--apply-workers", action="store_true", help="Include --apply for org workers when starting tmux.")
+    parser.add_argument("--runtime-monitor-apply", action="store_true", help="Let runtime_monitor.py run confirmed all-org pending fill actions.")
     parser.add_argument("--no-audit", action="store_true", help="Do not include fleet_audit.py in tmux process plans.")
     parser.add_argument("--no-spike-report", action="store_true", help="Do not include spike_report.py in tmux process plans.")
+    parser.add_argument("--no-runtime-monitor", action="store_true", help="Do not include runtime_monitor.py in tmux process plans.")
     parser.add_argument("--include-maintenance", action="store_true", help="Include maintenance.py loop in the tmux plan.")
     parser.add_argument("--maintenance-apply", action="store_true", help="Let maintenance.py delete old historical rows.")
     parser.add_argument("--json", action="store_true")
@@ -318,33 +363,39 @@ def main() -> None:
     if args.print_plan:
         payload = process_plan(
             apply_workers=args.apply_workers,
+            runtime_monitor_apply=args.runtime_monitor_apply,
             db_path=args.db,
             include_audit=not args.no_audit,
             include_spike_report=not args.no_spike_report,
             include_maintenance=args.include_maintenance,
             maintenance_apply=args.maintenance_apply,
+            include_runtime_monitor=not args.no_runtime_monitor,
         )
         print(json_dumps(payload) if args.json else "\n".join(f"{item['name']}: {' '.join(item['cmd'])}" for item in payload))
         return
     if args.start_tmux:
         payload = start_tmux_sessions(
             apply_workers=args.apply_workers,
+            runtime_monitor_apply=args.runtime_monitor_apply,
             db_path=args.db,
             include_audit=not args.no_audit,
             include_spike_report=not args.no_spike_report,
             include_maintenance=args.include_maintenance,
             maintenance_apply=args.maintenance_apply,
+            include_runtime_monitor=not args.no_runtime_monitor,
         )
         print(json_dumps(payload) if args.json else "\n".join(f"{item['name']}: rc={item['returncode']}" for item in payload))
         return
     if args.ensure:
         payload = ensure_tmux_sessions(
             apply_workers=args.apply_workers,
+            runtime_monitor_apply=args.runtime_monitor_apply,
             db_path=args.db,
             include_audit=not args.no_audit,
             include_spike_report=not args.no_spike_report,
             include_maintenance=args.include_maintenance,
             maintenance_apply=args.maintenance_apply,
+            include_runtime_monitor=not args.no_runtime_monitor,
             restart_stale=not args.no_restart_stale,
         )
         print(json_dumps(payload) if args.json else "\n".join(f"{item['name']}: {item['action']}" for item in payload))

@@ -118,7 +118,18 @@ The watcher sessions can run independently. The guard consumes the same public s
 
 ## Start Commands
 
-Create a private `.env` from `.env.example`, fill only local secrets, then run:
+Create a private `.env` from `.env.example`, fill only local secrets, then run
+the v2 supervisor for the current scheduler stack:
+
+```bash
+SALAD_FLEET_CONFIG_PATH=config/fleet.current.json python3 scripts/supervisor.py --ensure --runtime-monitor-apply
+```
+
+The supervisor clears stale `PRL_ENABLED_ORGS` filters for tmux children. This
+matters because the live fleet should use all enabled orgs from
+`config/fleet.current.json`.
+
+The legacy watcher-first stack is still available when explicitly needed:
 
 ```bash
 PRL_FLEET_MODE=fill bash scripts/start_watchers.sh

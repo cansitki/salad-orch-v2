@@ -114,7 +114,33 @@ class MaintenanceTest(unittest.TestCase):
 
         self.assertEqual(command[:5], ["tmux", "new-session", "-d", "-s", "salad-test"])
         self.assertIn("if [ -f .env ]; then set -a; . ./.env; set +a; fi", command[-1])
+        self.assertIn("unset PRL_ENABLED_ORGS", command[-1])
+        self.assertIn("export SALAD_FLEET_CONFIG_PATH=${SALAD_FLEET_CONFIG_PATH:-config/fleet.current.json}", command[-1])
         self.assertIn("python3 scripts/price_oracle.py --loop", command[-1])
+
+    def test_supervisor_includes_runtime_monitor_process(self) -> None:
+        plan = supervisor.process_plan(db_path=self.db_path)
+        monitor = next(item for item in plan if item["name"] == "salad-runtime-monitor")
+
+        self.assertEqual(monitor["heartbeat"], "runtime_monitor")
+        self.assertIn("runtime_monitor.py", " ".join(monitor["cmd"]))
+        self.assertIn("--loop", monitor["cmd"])
+        self.assertIn("--skip-shadow-workers", monitor["cmd"])
+        self.assertNotIn("--apply-all-orgs-pending", monitor["cmd"])
+
+    def test_supervisor_runtime_monitor_can_apply_all_orgs_when_enabled(self) -> None:
+        plan = supervisor.process_plan(runtime_monitor_apply=True, db_path=self.db_path)
+        monitor = next(item for item in plan if item["name"] == "salad-runtime-monitor")
+
+        self.assertIn("--apply-all-orgs-pending", monitor["cmd"])
+        self.assertIn("--confirm-live-actions", monitor["cmd"])
+        self.assertIn("--require-secrets", monitor["cmd"])
+
+    def test_supervisor_apply_workers_does_not_also_apply_runtime_monitor(self) -> None:
+        plan = supervisor.process_plan(apply_workers=True, db_path=self.db_path)
+        monitor = next(item for item in plan if item["name"] == "salad-runtime-monitor")
+
+        self.assertNotIn("--apply-all-orgs-pending", monitor["cmd"])
 
 
 if __name__ == "__main__":

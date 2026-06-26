@@ -11,6 +11,7 @@ import guard
 import state_db
 from config_loader import load_config
 from fleet_common import env_int, json_dumps
+from org_worker import explicit_org_balance
 
 
 def _age_seconds(at_utc: str | None) -> float | None:
@@ -134,6 +135,73 @@ def _derive_profit_at_price(latest_profit: Any, latest_payload: dict[str, Any], 
         "at_utc": latest_profit["at_utc"],
         "prl_day": prl_day,
         "source": "latest_snapshot",
+    }
+
+
+def _capacity_actions(
+    replica_quotas: list[dict[str, Any]],
+    org_slot_counts: dict[str, int],
+) -> dict[str, Any]:
+    top_up_quota_available_orgs = []
+    quota_blocked_funded_orgs = []
+    zero_balance_zero_quota_orgs = []
+    for quota in replica_quotas:
+        org_label = str(quota.get("org_label") or "")
+        if not org_label:
+            continue
+        org_slots = int(org_slot_counts.get(org_label) or 0)
+        quota_value = int(quota.get("quota") or 0)
+        used_value = int(quota.get("used") or 0)
+        available_value = int(quota.get("available") if quota.get("available") is not None else max(0, quota_value - used_value))
+        balance = explicit_org_balance(org_label)
+        balance_usd = float(balance["balance_usd"]) if balance is not None else None
+        available_slots_if_funded = max(0, min(org_slots, quota_value) - min(org_slots, used_value))
+        if quota_value > 0 and (balance_usd is None or balance_usd <= 0):
+            top_up_quota_available_orgs.append(
+                {
+                    "org_label": org_label,
+                    "action": "add_credit",
+                    "reason": "quota_available_but_balance_zero_or_missing",
+                    "balance_usd": balance_usd,
+                    "quota": quota_value,
+                    "quota_used": used_value,
+                    "quota_available": available_value,
+                    "slots": org_slots,
+                    "available_slots_if_funded": available_slots_if_funded,
+                }
+            )
+        elif quota_value <= 0 and balance_usd is not None and balance_usd > 0:
+            quota_blocked_funded_orgs.append(
+                {
+                    "org_label": org_label,
+                    "action": "wait_for_quota_or_request_restore",
+                    "reason": "positive_balance_but_zero_replica_quota",
+                    "balance_usd": balance_usd,
+                    "quota": quota_value,
+                    "slots": org_slots,
+                    "blocked_slots": org_slots,
+                }
+            )
+        elif quota_value <= 0 and balance_usd is not None and balance_usd <= 0:
+            zero_balance_zero_quota_orgs.append(
+                {
+                    "org_label": org_label,
+                    "action": "deprioritize_until_credit_or_quota_changes",
+                    "reason": "zero_balance_and_zero_replica_quota",
+                    "balance_usd": balance_usd,
+                    "quota": quota_value,
+                    "slots": org_slots,
+                }
+            )
+    return {
+        "top_up_quota_available_orgs": top_up_quota_available_orgs,
+        "quota_blocked_funded_orgs": quota_blocked_funded_orgs,
+        "zero_balance_zero_quota_orgs": zero_balance_zero_quota_orgs,
+        "summary": {
+            "top_up_slots": sum(int(row.get("available_slots_if_funded") or 0) for row in top_up_quota_available_orgs),
+            "quota_blocked_funded_slots": sum(int(row.get("blocked_slots") or 0) for row in quota_blocked_funded_orgs),
+            "zero_balance_zero_quota_slots": sum(int(row.get("slots") or 0) for row in zero_balance_zero_quota_orgs),
+        },
     }
 
 
@@ -353,6 +421,7 @@ def build_report(
         "balance_blocked_slots": balance_blocked_slots,
         "quota_unknown_slots": quota_unknown_slots,
     }
+    capacity_actions = _capacity_actions(replica_quotas, org_slot_counts)
     status_counts: dict[str, int] = {}
     for slot in slot_rows:
         key = str(slot.get("observed_status") or "unknown")
@@ -497,6 +566,7 @@ def build_report(
         "replica_quota_summary": status.get("replica_quota_summary") or [],
         "quota_blockers": quota_blockers,
         "capacity_summary": capacity_summary,
+        "capacity_actions": capacity_actions,
         "status": status,
         "top_scores": scores,
         "targets": targets,

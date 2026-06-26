@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import os
 import pathlib
 import sys
 import tempfile
@@ -19,12 +21,26 @@ class ReporterTest(unittest.TestCase):
     def setUp(self) -> None:
         self.tmpdir = tempfile.TemporaryDirectory()
         self.db_path = str(pathlib.Path(self.tmpdir.name) / "fleet.db")
+        self.balance_file = pathlib.Path(self.tmpdir.name) / "balances.json"
+        self._balance_env = {
+            "PRL_ORG_BALANCE_FILE": os.environ.get("PRL_ORG_BALANCE_FILE"),
+            "PRL_BALANCE_FILE": os.environ.get("PRL_BALANCE_FILE"),
+            "SALAD_BALANCE_FILE": os.environ.get("SALAD_BALANCE_FILE"),
+        }
+        os.environ.pop("PRL_ORG_BALANCE_FILE", None)
+        os.environ.pop("SALAD_BALANCE_FILE", None)
+        os.environ["PRL_BALANCE_FILE"] = str(self.balance_file)
         with state_db.connect(self.db_path) as conn:
             state_db.init_db(conn)
             state_db.sync_config(conn, load_config())
             conn.commit()
 
     def tearDown(self) -> None:
+        for key, value in self._balance_env.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
         self.tmpdir.cleanup()
 
     def test_live_th_falls_back_to_latest_slot_snapshots(self) -> None:
@@ -427,6 +443,73 @@ class ReporterTest(unittest.TestCase):
         self.assertEqual(report["capacity_summary"]["quota_blocked_slots"], 10)
         self.assertEqual(report["capacity_summary"]["balance_blocked_slots"], 0)
         self.assertEqual(report["capacity_summary"]["quota_unknown_slots"], 20)
+
+    def test_report_includes_capacity_actions_from_quota_and_balance(self) -> None:
+        self.balance_file.write_text(
+            json.dumps(
+                {
+                    "kray": 0.0,
+                    "kry1": 4.25,
+                    "kray2": 0.0,
+                }
+            ),
+            encoding="utf-8",
+        )
+        with state_db.connect(self.db_path) as conn:
+            state_db.upsert_org_replica_quota(
+                conn,
+                {
+                    "org_label": "kray",
+                    "quota": 10,
+                    "used": 0,
+                    "available": 10,
+                    "status": "available",
+                    "reason": "container_replicas_quota_available",
+                    "source": "test",
+                },
+            )
+            state_db.upsert_org_replica_quota(
+                conn,
+                {
+                    "org_label": "kry1",
+                    "quota": 0,
+                    "used": 0,
+                    "available": 0,
+                    "status": "zero_quota",
+                    "reason": "container_replicas_quota_zero",
+                    "source": "test",
+                },
+            )
+            state_db.upsert_org_replica_quota(
+                conn,
+                {
+                    "org_label": "kray2",
+                    "quota": 0,
+                    "used": 0,
+                    "available": 0,
+                    "status": "zero_quota",
+                    "reason": "container_replicas_quota_zero",
+                    "source": "test",
+                },
+            )
+            conn.commit()
+
+        report = reporter.build_report(self.db_path)
+        actions = report["capacity_actions"]
+
+        self.assertEqual([row["org_label"] for row in actions["top_up_quota_available_orgs"]], ["kray"])
+        self.assertEqual(actions["top_up_quota_available_orgs"][0]["available_slots_if_funded"], 10)
+        self.assertEqual([row["org_label"] for row in actions["quota_blocked_funded_orgs"]], ["kry1"])
+        self.assertEqual(actions["quota_blocked_funded_orgs"][0]["balance_usd"], 4.25)
+        self.assertEqual([row["org_label"] for row in actions["zero_balance_zero_quota_orgs"]], ["kray2"])
+        self.assertEqual(
+            actions["summary"],
+            {
+                "top_up_slots": 10,
+                "quota_blocked_funded_slots": 10,
+                "zero_balance_zero_quota_slots": 10,
+            },
+        )
 
     def test_zero_balance_slots_are_not_counted_as_unknown_quota(self) -> None:
         with state_db.connect(self.db_path) as conn:

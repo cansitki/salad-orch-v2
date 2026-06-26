@@ -138,13 +138,51 @@ def _derive_profit_at_price(latest_profit: Any, latest_payload: dict[str, Any], 
     }
 
 
+def _target_estimates_by_org(
+    targets: list[dict[str, Any]],
+    profile_cost_day: dict[str, float],
+) -> dict[str, dict[str, Any]]:
+    estimates: dict[str, dict[str, Any]] = {}
+    for target in targets:
+        org_label = str(target.get("org_label") or "")
+        if not org_label:
+            continue
+        estimate = estimates.setdefault(
+            org_label,
+            {
+                "target_slots": 0,
+                "target_cost_day_usd": 0.0,
+                "target_profit_day_usd": 0.0,
+            },
+        )
+        estimate["target_slots"] += 1
+        estimate["target_profit_day_usd"] += float(target.get("expected_profit_day") or 0)
+        estimate["target_cost_day_usd"] += float(profile_cost_day.get(str(target.get("profile_key") or ""), 0.0))
+    for estimate in estimates.values():
+        target_slots = int(estimate.get("target_slots") or 0)
+        estimate["target_profit_per_slot_day_usd"] = (
+            float(estimate["target_profit_day_usd"]) / target_slots if target_slots > 0 else 0.0
+        )
+        estimate["target_min_balance_24h_usd"] = float(estimate["target_cost_day_usd"])
+        for key in (
+            "target_cost_day_usd",
+            "target_profit_day_usd",
+            "target_profit_per_slot_day_usd",
+            "target_min_balance_24h_usd",
+        ):
+            estimate[key] = round(float(estimate[key]), 4)
+    return estimates
+
+
 def _capacity_actions(
     replica_quotas: list[dict[str, Any]],
     org_slot_counts: dict[str, int],
+    target_estimates: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     top_up_quota_available_orgs = []
     quota_blocked_funded_orgs = []
     zero_balance_zero_quota_orgs = []
+    estimates = target_estimates or {}
     for quota in replica_quotas:
         org_label = str(quota.get("org_label") or "")
         if not org_label:
@@ -156,6 +194,7 @@ def _capacity_actions(
         balance = explicit_org_balance(org_label)
         balance_usd = float(balance["balance_usd"]) if balance is not None else None
         available_slots_if_funded = max(0, min(org_slots, quota_value) - min(org_slots, used_value))
+        target_estimate = dict(estimates.get(org_label) or {})
         if quota_value > 0 and (balance_usd is None or balance_usd <= 0):
             top_up_quota_available_orgs.append(
                 {
@@ -168,6 +207,7 @@ def _capacity_actions(
                     "quota_available": available_value,
                     "slots": org_slots,
                     "available_slots_if_funded": available_slots_if_funded,
+                    **target_estimate,
                 }
             )
         elif quota_value <= 0 and balance_usd is not None and balance_usd > 0:
@@ -180,6 +220,7 @@ def _capacity_actions(
                     "quota": quota_value,
                     "slots": org_slots,
                     "blocked_slots": org_slots,
+                    **target_estimate,
                 }
             )
         elif quota_value <= 0 and balance_usd is not None and balance_usd <= 0:
@@ -191,6 +232,7 @@ def _capacity_actions(
                     "balance_usd": balance_usd,
                     "quota": quota_value,
                     "slots": org_slots,
+                    **target_estimate,
                 }
             )
     return {
@@ -208,11 +250,18 @@ def _capacity_actions(
 def _format_capacity_action_item(row: dict[str, Any]) -> str:
     balance = row.get("balance_usd")
     balance_text = "unknown" if balance is None else f"${float(balance):.2f}"
+    parts = [
+        f"balance={balance_text}",
+        f"quota={int(row.get('quota') or 0)}",
+        f"slots={int(row.get('slots') or 0)}",
+    ]
+    if row.get("target_profit_day_usd") is not None:
+        parts.append(f"target_profit=${float(row.get('target_profit_day_usd') or 0):.2f}/day")
+    if row.get("target_cost_day_usd") is not None:
+        parts.append(f"target_cost=${float(row.get('target_cost_day_usd') or 0):.2f}/day")
     return (
         f"{row.get('org_label')}("
-        f"balance={balance_text},"
-        f"quota={int(row.get('quota') or 0)},"
-        f"slots={int(row.get('slots') or 0)}"
+        f"{','.join(parts)}"
         ")"
     )
 
@@ -375,6 +424,15 @@ def build_report(
                 """
             ).fetchall()
         ]
+        profile_cost_day = {
+            str(row["profile_key"]): float(row["static_hourly_usd"] or 0) * 24.0
+            for row in conn.execute(
+                """
+                SELECT profile_key, static_hourly_usd
+                FROM gpu_profiles
+                """
+            ).fetchall()
+        }
         latest_profit = conn.execute(
             """
             SELECT *
@@ -461,7 +519,8 @@ def build_report(
         "balance_blocked_slots": balance_blocked_slots,
         "quota_unknown_slots": quota_unknown_slots,
     }
-    capacity_actions = _capacity_actions(replica_quotas, org_slot_counts)
+    target_estimates = _target_estimates_by_org(targets, profile_cost_day)
+    capacity_actions = _capacity_actions(replica_quotas, org_slot_counts, target_estimates)
     status_counts: dict[str, int] = {}
     for slot in slot_rows:
         key = str(slot.get("observed_status") or "unknown")

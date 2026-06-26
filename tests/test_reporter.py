@@ -511,6 +511,81 @@ class ReporterTest(unittest.TestCase):
             },
         )
 
+    def test_capacity_actions_include_target_profit_and_cost_estimates(self) -> None:
+        self.balance_file.write_text(json.dumps({"kray": 0.0}), encoding="utf-8")
+        with state_db.connect(self.db_path) as conn:
+            state_db.upsert_gpu_profiles(
+                conn,
+                [
+                    {
+                        "profile_key": "4090:batch:2048",
+                        "gpu_key": "4090",
+                        "gpu_id": "gpu-4090",
+                        "priority": "batch",
+                        "label": "RTX 4090 batch",
+                        "memory_mb": 2048,
+                        "expected_th": 230.0,
+                        "static_hourly_usd": 0.16,
+                    },
+                    {
+                        "profile_key": "3060ti:batch:2048",
+                        "gpu_key": "3060ti",
+                        "gpu_id": "gpu-3060ti",
+                        "priority": "batch",
+                        "label": "RTX 3060 Ti batch",
+                        "memory_mb": 2048,
+                        "expected_th": 80.0,
+                        "static_hourly_usd": 0.03,
+                    },
+                ],
+            )
+            state_db.set_slot_target(
+                conn,
+                {
+                    "org_label": "kray",
+                    "slot_name": "prl-kray-roi-01",
+                    "profile_key": "4090:batch:2048",
+                    "mode": "risk_off",
+                    "decision_price_usd": 0.64,
+                    "expected_profit_day": 1.25,
+                    "reason": "test",
+                },
+            )
+            state_db.set_slot_target(
+                conn,
+                {
+                    "org_label": "kray",
+                    "slot_name": "prl-kray-roi-02",
+                    "profile_key": "3060ti:batch:2048",
+                    "mode": "risk_off",
+                    "decision_price_usd": 0.64,
+                    "expected_profit_day": 0.25,
+                    "reason": "test",
+                },
+            )
+            state_db.upsert_org_replica_quota(
+                conn,
+                {
+                    "org_label": "kray",
+                    "quota": 10,
+                    "used": 0,
+                    "available": 10,
+                    "status": "available",
+                    "reason": "container_replicas_quota_available",
+                    "source": "test",
+                },
+            )
+            conn.commit()
+
+        report = reporter.build_report(self.db_path)
+        row = report["capacity_actions"]["top_up_quota_available_orgs"][0]
+
+        self.assertEqual(row["org_label"], "kray")
+        self.assertEqual(row["target_slots"], 2)
+        self.assertAlmostEqual(row["target_profit_day_usd"], 1.5)
+        self.assertAlmostEqual(row["target_cost_day_usd"], 4.56)
+        self.assertAlmostEqual(row["target_min_balance_24h_usd"], 4.56)
+
     def test_capacity_action_lines_include_actionable_orgs(self) -> None:
         actions = {
             "summary": {

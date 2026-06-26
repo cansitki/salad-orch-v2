@@ -133,6 +133,30 @@
       "display_prefix": "PearlFortune CHARLIE1"
     },
     {
+      "label": "charlie2",
+      "slug": "charlie2",
+      "api_key_env": "SALAD_API_KEY_CHARLIE1",
+      "slot_prefix": "prl-charlie2-roi",
+      "slots": 10,
+      "enabled": true,
+      "worker_prefix": "charlie2-prl",
+      "worker_slot_prefix": "charlie2-roi-",
+      "pool_worker_prefix": "charlie2-prl-charlie2",
+      "display_prefix": "PearlFortune CHARLIE2"
+    },
+    {
+      "label": "charlie3",
+      "slug": "charlie3",
+      "api_key_env": "SALAD_API_KEY_CHARLIE1",
+      "slot_prefix": "prl-charlie3-roi",
+      "slots": 10,
+      "enabled": true,
+      "worker_prefix": "charlie3-prl",
+      "worker_slot_prefix": "charlie3-roi-",
+      "pool_worker_prefix": "charlie3-prl-charlie3",
+      "display_prefix": "PearlFortune CHARLIE3"
+    },
+    {
       "label": "can1",
       "slug": "can1",
       "api_key_env": "SALAD_API_KEY_SAL3",
@@ -227,6 +251,18 @@
       "worker_slot_prefix": "sal5-2-roi-",
       "pool_worker_prefix": "sal5-2-prl-sal5-2",
       "display_prefix": "PearlFortune SAL5-2"
+    },
+    {
+      "label": "sal5-3",
+      "slug": "sal5-3",
+      "api_key_env": "SALAD_API_KEY_SAL5",
+      "slot_prefix": "prl-sal5-3-roi",
+      "slots": 10,
+      "enabled": true,
+      "worker_prefix": "sal5-3-prl",
+      "worker_slot_prefix": "sal5-3-roi-",
+      "pool_worker_prefix": "sal5-3-prl-sal5-3",
+      "display_prefix": "PearlFortune SAL5-3"
     },
     {
       "label": "sal6-1",

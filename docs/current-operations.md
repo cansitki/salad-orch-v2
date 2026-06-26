@@ -176,6 +176,11 @@ shorter than `PRL_PENDING_PROFILE_COOLDOWN_SECONDS` so a retarget that
 immediately lands on another bad GPU can be corrected without waiting through
 the longer search cooldown.
 
+For the current fill-first operation with scarce Salad GPUs, run the monitor
+with `--pending-status-retarget-after-seconds 180`. That rotates
+creating/allocating/deploying slots sooner than the previous five-minute wait,
+while still giving fresh pending slots enough time to settle before retargeting.
+
 Check Salad replica quota when funded orgs refuse to start:
 
 ```bash

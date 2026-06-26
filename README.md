@@ -465,7 +465,7 @@ unless `--apply-workers` or `--apply-guard` is passed.
    Continuous fill monitor with live pending retargets:
 
    ```bash
-   PRL_PEARL_FEE_RATE=0.01 python3 scripts/runtime_monitor.py --loop --interval 60 --runner-timeout-seconds 240 --fee 0.01 --require-secrets --apply-all-orgs-pending --guard-on-issues-every 1 --guard-actionable-only --confirm-live-actions --pending-retarget-after-seconds 60 --worker-parallelism 4 --skip-shadow-workers
+   PRL_PEARL_FEE_RATE=0.01 python3 scripts/runtime_monitor.py --loop --interval 60 --runner-timeout-seconds 240 --fee 0.01 --require-secrets --apply-all-orgs-pending --guard-on-issues-every 1 --guard-actionable-only --confirm-live-actions --pending-retarget-after-seconds 60 --pending-status-retarget-after-seconds 180 --worker-parallelism 4 --skip-shadow-workers
    ```
 
    This mode still runs a shadow gate first, but `--skip-shadow-workers` makes
@@ -479,8 +479,11 @@ unless `--apply-workers` or `--apply-guard` is passed.
    `--pending-retarget-after-seconds` controls running slots that have no live
    pool hashrate. Creating/allocating/deploying slots use the separate
    `--pending-status-retarget-after-seconds` grace, defaulting to at least 120
-   seconds, and the scheduler's pending-target protection follows that longer
-   window. When `PRL_PENDING_PROFILE_COOLDOWN_SECONDS` is not explicitly set,
+   seconds. During aggressive fill with scarce GPU inventory, `180` seconds is
+   the current operational target; it gives Salad time to allocate without
+   letting empty slots sit for a full five-minute cycle. The scheduler's
+   pending-target protection follows that longer window. When
+   `PRL_PENDING_PROFILE_COOLDOWN_SECONDS` is not explicitly set,
    the monitor keeps stale pending profile cooldowns on the shorter no-hash
    cadence so failed searches can rotate quickly after the longer pending wait.
    `--worker-parallelism 4` runs each organization in an isolated process so

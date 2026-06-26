@@ -44,6 +44,15 @@ class PortalMultiBalancesTest(unittest.TestCase):
         self.assertEqual([account.label for account in accounts], ["a_example_com", "b_example_com"])
         self.assertEqual([account.email for account in accounts], ["a@example.com", "b@example.com"])
 
+    def test_restored_positive_balance_orgs_detects_zero_to_positive(self) -> None:
+        restored = portal_multi_balances.restored_positive_balance_orgs(
+            {"kray": 0.0, "kray2": 1.0, "kry1": 0.01},
+            {"kray": 2.5, "kray2": 1.25, "kry1": 0.01, "kr1": 4.0},
+            threshold=0.0,
+        )
+
+        self.assertEqual(restored, ["kr1", "kray"])
+
     def test_run_once_merges_account_balances(self) -> None:
         balance_file = self.tmp_path / "state" / "salad_balances.json"
         account_state_dir = self.tmp_path / "state" / "accounts"
@@ -58,6 +67,11 @@ class PortalMultiBalancesTest(unittest.TestCase):
                     {"status": "ok", "balances": {"kry1": 0.0, "kry2": 7.42}},
                 ],
             ) as refresh_mock,
+            mock.patch.object(
+                portal_multi_balances,
+                "wake_availability_on_balance_restore",
+                return_value={"ok": True, "probed": 2},
+            ) as wake_mock,
         ):
             payload = portal_multi_balances.run_once(
                 db_path=self.db_path,
@@ -75,6 +89,12 @@ class PortalMultiBalancesTest(unittest.TestCase):
         self.assertEqual(payload["org_count"], 4)
         self.assertEqual(refresh_mock.call_count, 2)
         self.assertTrue(refresh_mock.call_args_list[0].kwargs["force_login"])
+        wake_mock.assert_called_once_with(
+            db_path=self.db_path,
+            restored_orgs=["kray", "kray2", "kry2"],
+        )
+        self.assertEqual(payload["restored_positive_balance_orgs"], ["kray", "kray2", "kry2"])
+        self.assertEqual(payload["availability_wake"], {"ok": True, "probed": 2})
 
     def test_run_once_preserves_existing_balances_on_account_failure(self) -> None:
         balance_file = self.tmp_path / "state" / "salad_balances.json"
@@ -88,6 +108,11 @@ class PortalMultiBalancesTest(unittest.TestCase):
                 "refresh_account",
                 side_effect=[RuntimeError("network down"), {"status": "ok", "balances": {"kry2": 7.42}}],
             ),
+            mock.patch.object(
+                portal_multi_balances,
+                "wake_availability_on_balance_restore",
+                return_value={"ok": True, "probed": 1},
+            ) as wake_mock,
         ):
             payload = portal_multi_balances.run_once(
                 db_path=self.db_path,
@@ -103,6 +128,17 @@ class PortalMultiBalancesTest(unittest.TestCase):
         )
         self.assertEqual(payload["failed_accounts"], ["first_example_com"])
         self.assertEqual(payload["status"], "degraded")
+        wake_mock.assert_called_once_with(db_path=self.db_path, restored_orgs=["kry2"])
+        self.assertEqual(payload["restored_positive_balance_orgs"], ["kry2"])
+
+    def test_wake_availability_can_be_disabled(self) -> None:
+        with mock.patch.dict(os.environ, {"PRL_PORTAL_BALANCE_WAKE_AVAILABILITY": "0"}, clear=False):
+            self.assertIsNone(
+                portal_multi_balances.wake_availability_on_balance_restore(
+                    db_path=self.db_path,
+                    restored_orgs=["kray"],
+                )
+            )
 
 
 if __name__ == "__main__":

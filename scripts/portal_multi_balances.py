@@ -13,7 +13,7 @@ from typing import Any
 import portal_balances
 import state_db
 from config_loader import load_config
-from fleet_common import json_dumps, load_env_file, safe_public_payload, utc_now
+from fleet_common import env_bool, env_float, env_int, json_dumps, load_env_file, safe_public_payload, utc_now
 
 
 DEFAULT_BALANCE_FILE = pathlib.Path("state/salad_balances.json")
@@ -79,6 +79,64 @@ def load_accounts(*, accounts_json: str | None = None, emails: str | None = None
     return [account_from_payload(fallback_email)] if fallback_email else []
 
 
+def restored_positive_balance_orgs(
+    previous: dict[str, float],
+    current: dict[str, float],
+    *,
+    threshold: float | None = None,
+) -> list[str]:
+    selected_threshold = env_float("PRL_PORTAL_BALANCE_RESTORE_THRESHOLD_USD", 0.0) if threshold is None else threshold
+    restored = []
+    for org, value in sorted(current.items()):
+        try:
+            current_value = float(value)
+            previous_value = float(previous.get(org, 0.0))
+        except (TypeError, ValueError):
+            continue
+        if previous_value <= selected_threshold < current_value:
+            restored.append(str(org))
+    return restored
+
+
+def wake_availability_on_balance_restore(
+    *,
+    db_path: str | None,
+    restored_orgs: list[str],
+) -> dict[str, Any] | None:
+    if not restored_orgs or not env_bool("PRL_PORTAL_BALANCE_WAKE_AVAILABILITY", True):
+        return None
+    priorities = tuple(
+        item.strip().lower()
+        for item in os.environ.get("PRL_PORTAL_BALANCE_WAKE_PRIORITIES", "batch,low").split(",")
+        if item.strip()
+    )
+    try:
+        import availability_probe
+
+        payload = availability_probe.run_once(
+            db_path=db_path,
+            priorities=priorities or ("batch", "low"),
+            org_parallelism=env_int("PRL_PORTAL_BALANCE_WAKE_ORG_PARALLELISM", 2),
+            profile_parallelism=env_int("PRL_PORTAL_BALANCE_WAKE_PROFILE_PARALLELISM", 4),
+        )
+    except Exception as exc:
+        return {
+            "ok": False,
+            "error_type": type(exc).__name__,
+            "error": str(exc)[:240],
+            "restored_positive_balance_orgs": restored_orgs,
+        }
+    return {
+        "ok": True,
+        "restored_positive_balance_orgs": restored_orgs,
+        "probed": int(payload.get("probed") or 0),
+        "by_profile": payload.get("by_profile") or {},
+        "skipped_zero_balance_count": len(payload.get("skipped_zero_balance_orgs") or []),
+        "skipped_zero_quota_count": len(payload.get("skipped_zero_replica_quota_orgs") or []),
+        "cleared_no_credits_count": len(payload.get("cleared_no_credits_cooldowns") or []),
+    }
+
+
 def refresh_account(
     account: PortalAccount,
     *,
@@ -125,6 +183,8 @@ def record_multi_refresh(
     balances: dict[str, float],
     account_results: list[dict[str, Any]],
     account_errors: list[dict[str, str]],
+    restored_positive_balance_orgs: list[str] | None = None,
+    availability_wake: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     config = load_config()
     enabled_orgs = [org.label for org in config.enabled_orgs()]
@@ -138,6 +198,8 @@ def record_multi_refresh(
         "balance_file": str(balance_file),
         "missing_enabled_orgs": missing_enabled_orgs,
         "checked_at_utc": utc_now(),
+        "restored_positive_balance_orgs": restored_positive_balance_orgs or [],
+        "availability_wake": availability_wake,
     }
     with state_db.connect(db_path) as conn:
         state_db.init_db(conn)
@@ -188,7 +250,8 @@ def run_once(
         raise portal_balances.PortalBalanceError("no portal balance accounts configured")
     account_state_dir.mkdir(parents=True, exist_ok=True)
     run_cwd = cwd or pathlib.Path.cwd()
-    balances = portal_balances.load_existing_balance_file(balance_file) if preserve_existing_on_failure else {}
+    previous_balances = portal_balances.load_existing_balance_file(balance_file)
+    balances = dict(previous_balances) if preserve_existing_on_failure else {}
     account_results: list[dict[str, Any]] = []
     account_errors: list[dict[str, str]] = []
     for account in accounts:
@@ -223,12 +286,19 @@ def run_once(
             }
         )
     portal_balances.write_balance_file(balance_file, balances)
+    restored_orgs = restored_positive_balance_orgs(previous_balances, balances)
+    availability_wake = wake_availability_on_balance_restore(
+        db_path=db_path,
+        restored_orgs=restored_orgs,
+    )
     return record_multi_refresh(
         db_path=db_path,
         balance_file=balance_file,
         balances=balances,
         account_results=account_results,
         account_errors=account_errors,
+        restored_positive_balance_orgs=restored_orgs,
+        availability_wake=availability_wake,
     )
 
 

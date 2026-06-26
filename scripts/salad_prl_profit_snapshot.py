@@ -546,7 +546,8 @@ def wallet_observed_economics_24h(
         "revenue_usd_at_market_price": round(market_revenue, 6),
         **cost,
     }
-    if estimated_cost is not None:
+    coverage_ratio = float_or_none(cost.get("coverage_ratio"))
+    if estimated_cost is not None and coverage_ratio is not None and coverage_ratio >= 0.95:
         result.update(
             {
                 "profit_usd_at_assumed_price": round(assumed_revenue - estimated_cost, 6),
@@ -554,6 +555,8 @@ def wallet_observed_economics_24h(
                 "break_even_price_usd": round(estimated_cost / total_prl, 6) if total_prl > 0 else None,
             }
         )
+    elif estimated_cost is not None:
+        result["error"] = "cost_coverage_incomplete"
     return result
 
 
@@ -816,7 +819,18 @@ def append_snapshot_csv(snapshot: dict[str, Any]) -> None:
             try:
                 with path.open(newline="") as existing:
                     reader = csv.reader(existing)
-                    write_header = not any(row == CSV_FIELDS for row in reader)
+                    existing_header = next(reader, None)
+                if existing_header == CSV_FIELDS:
+                    write_header = False
+                else:
+                    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+                    backup = path.with_name(f"{path.stem}.schema-mismatch-{stamp}{path.suffix}")
+                    suffix = 1
+                    while backup.exists():
+                        backup = path.with_name(f"{path.stem}.schema-mismatch-{stamp}.{suffix}{path.suffix}")
+                        suffix += 1
+                    path.rename(backup)
+                    write_header = True
             except OSError:
                 write_header = True
         with path.open("a", newline="") as handle:

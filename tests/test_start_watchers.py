@@ -65,9 +65,12 @@ class StartWatchersShellTest(unittest.TestCase):
                 "PRL_FLEET_ORGS": "kray,kry1",
                 "PRL_WATCH_DEFAULT_API_KEY_ENV": "SALAD_API_KEY",
                 "PRL_WATCH_API_KEY_ENV_KRY1": "SALAD_API_KEY_KRY1",
+                "PRL_SKIP_PROCESS_KILL": "1",
                 "SALAD_API_KEY": "test-default-key",
                 "SALAD_API_KEY_KRY1": "test-kry1-key",
                 "PRL_WALLET": "test-wallet",
+                "PRL_LIVE_UPGRADE_MIN_LIVE_WORKERS": "9",
+                "PRL_LIVE_UPGRADE_GLOBAL_MIN_FRESH_WORKERS": "17",
             }
 
             result = subprocess.run(

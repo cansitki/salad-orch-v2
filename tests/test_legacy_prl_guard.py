@@ -33,6 +33,7 @@ class LegacyPrlGuardTest(unittest.TestCase):
                 "PRL_STUCK_NON_LIVE_SECONDS": "3600",
                 "PRL_EMPTY_STUCK_NON_LIVE_SECONDS": "3600",
                 "PRL_STUCK_RUNNING_ZERO_DEFER_SECONDS": "0",
+                "PRL_GLOBAL_POOL_MIN_FRESH_WORKERS": "8",
             }
         )
         for name in (
@@ -231,7 +232,7 @@ class LegacyPrlGuardTest(unittest.TestCase):
         reallocated: list[tuple[str, str, str]] = []
         self.guard.SEEN_SINCE[("kray", slot)] = time.time() - 7200.0
         self.guard.snapshot.build_snapshot = lambda _price: self.low_fresh_no_hash_snapshot(slot)
-        self.guard.reallocate_slot = lambda org, slot_name, reason, retarget=True: reallocated.append(
+        self.guard.reallocate_slot = lambda org, slot_name, reason, retarget=True, **_kwargs: reallocated.append(
             (org, slot_name, reason)
         )
 
@@ -257,7 +258,7 @@ class LegacyPrlGuardTest(unittest.TestCase):
         self.write_recent_slot_action(slot, age_seconds=60.0)
         self.guard.snapshot.build_snapshot = lambda _price: self.no_hash_snapshot(slot)
         reallocated: list[tuple[str, str, str]] = []
-        self.guard.reallocate_slot = lambda org, slot_name, reason, retarget=True: reallocated.append(
+        self.guard.reallocate_slot = lambda org, slot_name, reason, retarget=True, **_kwargs: reallocated.append(
             (org, slot_name, reason)
         )
 
@@ -291,7 +292,7 @@ class LegacyPrlGuardTest(unittest.TestCase):
         slot = "prl-kray-roi-01"
         self.guard.NEGATIVE_SLOT_SEEN_SINCE[("kray", slot)] = time.time() - 7200.0
         self.guard.snapshot.build_snapshot = lambda _price: self.negative_snapshot(slot)
-        self.guard.reallocate_slot = lambda org, slot_name, reason, retarget=True: [
+        self.guard.reallocate_slot = lambda org, slot_name, reason, retarget=True, **_kwargs: [
             {"org": org, "slot": slot_name, "reason": reason, "retargeted": None}
         ]
 
@@ -305,7 +306,7 @@ class LegacyPrlGuardTest(unittest.TestCase):
         self.guard.NEGATIVE_SLOT_SEEN_SINCE[("kray", slot)] = time.time() - 7200.0
         self.guard.snapshot.build_snapshot = lambda _price: self.band_negative_market_positive_snapshot(slot)
         reallocated: list[tuple[str, str, str]] = []
-        self.guard.reallocate_slot = lambda org, slot_name, reason, retarget=True: reallocated.append(
+        self.guard.reallocate_slot = lambda org, slot_name, reason, retarget=True, **_kwargs: reallocated.append(
             (org, slot_name, reason)
         )
 

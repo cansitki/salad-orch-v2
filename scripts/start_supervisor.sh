@@ -50,8 +50,12 @@ esac
 tmux has-session -t "$SESSION" 2>/dev/null && tmux kill-session -t "$SESSION"
 SUPERVISOR_INTERVAL_SECONDS=${PRL_SUPERVISOR_INTERVAL_SECONDS:-30}
 SUPERVISOR_MAX_HEARTBEAT_AGE_SECONDS=${PRL_SUPERVISOR_MAX_HEARTBEAT_AGE_SECONDS:-300}
+tmux_env_prefix() {
+  printf 'cd %q && set -a && { [ ! -f %q ] || . %q; } && set +a && env' "$REPO_ROOT" "$ENV_FILE" "$ENV_FILE"
+}
+
 supervisor_cmd() {
-  printf 'cd %q && env' "$REPO_ROOT"
+  tmux_env_prefix
   local key
   for key in \
     SALAD_PRL_ENV \

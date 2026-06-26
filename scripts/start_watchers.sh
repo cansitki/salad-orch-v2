@@ -212,6 +212,10 @@ restart_tmux() {
   tmux new-session -d -s "$session" "$*"
 }
 
+tmux_env_prefix() {
+  printf 'cd %q && set -a && { [ ! -f %q ] || . %q; } && set +a && env' "$REPO_ROOT" "$ENV_FILE" "$ENV_FILE"
+}
+
 watch_cmd() {
   local watch_name=$1
   local log_path=$2
@@ -224,7 +228,7 @@ watch_cmd() {
   local display_prefix=$9
   local api_key_env=${10:-SALAD_API_KEY_2}
 
-  printf 'cd %q && env' "$REPO_ROOT"
+  tmux_env_prefix
   printf ' PRL_FLEET_MODE=%q' "$FLEET_MODE"
   printf ' PRL_WATCH_NAME=%q' "$watch_name"
   printf ' PRL_WATCH_LOG=%q' "$log_path"
@@ -282,7 +286,7 @@ watch_cmd() {
 }
 
 guard_cmd() {
-  printf 'cd %q && env' "$REPO_ROOT"
+  tmux_env_prefix
   printf ' PRL_FLEET_MODE=%q' "$FLEET_MODE"
   printf ' PRL_GUARD_ORGS=%q' "$COMMON_ORGS"
   printf ' PRL_PRICE_BAND_USD=%q' "0.02"
@@ -331,8 +335,10 @@ guard_cmd() {
   printf ' %q %q >> %q 2>&1' "$PYTHON" "$GUARD" "$LOG_DIR/prl_nohash_guard.log"
 }
 
-pkill -f '[s]alad_prl_watch.py' || true
-pkill -f '[s]alad_prl_guard.py' || true
+if [[ "${PRL_SKIP_PROCESS_KILL:-0}" != "1" ]]; then
+  pkill -f '[s]alad_prl_watch.py' || true
+  pkill -f '[s]alad_prl_guard.py' || true
+fi
 
 if [[ -n "${PRL_FLEET_ORGS:-}" ]]; then
   IFS=',' read -ra ORGS <<< "$COMMON_ORGS"

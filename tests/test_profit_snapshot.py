@@ -187,15 +187,41 @@ class ProfitSnapshotTest(unittest.TestCase):
         self.assertEqual(result["profit_usd_at_market_price"], 46)
         self.assertEqual(result["break_even_price_usd"], 0.24)
 
-    def test_append_snapshot_csv_does_not_repeat_migrated_header(self) -> None:
+    def test_wallet_observed_economics_skips_break_even_with_partial_cost_coverage(self) -> None:
+        snapshot_at = datetime(2026, 6, 25, 12, tzinfo=UTC)
+        observed = {"total_prl_24h": 100}
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = pathlib.Path(temp_dir) / "snapshots.csv"
+            path.write_text(
+                "\n".join(
+                    [
+                        "at_utc,total_cost_day",
+                        (snapshot_at - timedelta(hours=1)).isoformat() + ",24",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            with patch.object(salad_prl_profit_snapshot, "snapshot_csv_path", return_value=path):
+                result = salad_prl_profit_snapshot.wallet_observed_economics_24h(
+                    observed,
+                    snapshot_at=snapshot_at,
+                    current_cost_day=24,
+                    assumed_price=0.6,
+                    market_price=0.7,
+                )
+
+        self.assertEqual(result["coverage_hours"], 1)
+        self.assertEqual(result["error"], "cost_coverage_incomplete")
+        self.assertNotIn("break_even_price_usd", result)
+
+    def test_append_snapshot_csv_rotates_mismatched_schema(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             path = pathlib.Path(temp_dir) / "snapshots.csv"
             old_header = [field for field in salad_prl_profit_snapshot.CSV_FIELDS if not field.startswith("wallet_realized")]
+            old_contents = ",".join(old_header) + "\n" + ",".join(salad_prl_profit_snapshot.CSV_FIELDS) + "\n"
             path.write_text(
-                ",".join(old_header)
-                + "\n"
-                + ",".join(salad_prl_profit_snapshot.CSV_FIELDS)
-                + "\n",
+                old_contents,
                 encoding="utf-8",
             )
             snapshot = {
@@ -213,8 +239,12 @@ class ProfitSnapshotTest(unittest.TestCase):
                 salad_prl_profit_snapshot.append_snapshot_csv(snapshot)
 
             rows = path.read_text(encoding="utf-8").splitlines()
+            backups = list(path.parent.glob("snapshots.schema-mismatch-*.csv"))
 
-        self.assertEqual(rows.count(",".join(salad_prl_profit_snapshot.CSV_FIELDS)), 1)
+            self.assertEqual(rows[0], ",".join(salad_prl_profit_snapshot.CSV_FIELDS))
+            self.assertEqual(len(rows), 2)
+            self.assertEqual(len(backups), 1)
+            self.assertEqual(backups[0].read_text(encoding="utf-8"), old_contents)
 
     def test_slot_action_detail_path_matches_existing_writers(self) -> None:
         org = "cantemir1"

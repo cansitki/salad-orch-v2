@@ -830,7 +830,7 @@ Implemented files:
 
 Current behavior:
 
-- `scripts/supervisor.py --print-plan` includes price oracle, availability probe, scheduler, guard, and one worker per enabled org
+- `scripts/supervisor.py --print-plan` includes price oracle, availability probe, scheduler, guard, runtime monitor, audits, and optional worker loops only when requested
 - `scripts/supervisor.py --ensure` starts missing tmux sessions and restarts sessions with stale heartbeats
 - `scripts/reporter.py --refresh` records fresh guard snapshots at `0.64` and `0.70`
 - `scripts/reporter.py` reports live TH/hash count from fresh mapped `workers`, then `slots.live_hashrate_th`, and finally the latest per-slot `profit_snapshots` batch when newer runtime rows are unavailable

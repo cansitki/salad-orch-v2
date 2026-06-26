@@ -169,6 +169,24 @@ class MaintenanceTest(unittest.TestCase):
 
         self.assertNotIn("--apply-all-orgs-pending", monitor["cmd"])
 
+    def test_supervisor_excludes_org_worker_loops_by_default(self) -> None:
+        names = {item["name"] for item in supervisor.process_plan(db_path=self.db_path)}
+
+        self.assertFalse(any(name.startswith("salad-orch-v2-worker-") for name in names))
+
+    def test_supervisor_can_include_read_only_org_worker_loops(self) -> None:
+        plan = supervisor.process_plan(include_workers=True, db_path=self.db_path)
+        worker = next(item for item in plan if item["name"] == "salad-orch-v2-worker-kray")
+
+        self.assertEqual(worker["heartbeat"], "org_worker:kray")
+        self.assertNotIn("--apply", worker["cmd"])
+
+    def test_supervisor_apply_workers_includes_live_org_worker_loops(self) -> None:
+        plan = supervisor.process_plan(apply_workers=True, db_path=self.db_path)
+        worker = next(item for item in plan if item["name"] == "salad-orch-v2-worker-kray")
+
+        self.assertIn("--apply", worker["cmd"])
+
     def test_supervisor_uses_live_stack_session_names(self) -> None:
         names = {item["name"] for item in supervisor.process_plan(db_path=self.db_path)}
 

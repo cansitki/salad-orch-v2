@@ -16,12 +16,13 @@ It replaces ad hoc per-org target choice with:
 - one price oracle
 - one availability probe
 - one central fleet scheduler
-- one worker per Salad organization
+- optional worker loops per Salad organization
 - one global guard
 - one runtime monitor for safe live testing
 
-The scheduler decides target GPU profiles. Workers execute those targets. The
-guard handles no-hash and negative-profit active slots.
+The scheduler decides target GPU profiles. Runtime monitor can execute all-org
+workers under a single confirmed live action gate; standalone worker loops are
+optional. The guard handles no-hash and negative-profit active slots.
 
 ## Safety Defaults
 

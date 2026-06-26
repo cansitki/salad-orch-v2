@@ -274,13 +274,15 @@ heartbeat is stale. Use `--no-restart-stale` for a start-missing-only pass.
 The default supervisor plan includes `scripts/fleet_audit.py` and the read-only
 runtime monitor. `--runtime-monitor-apply` adds the confirmed live fill monitor
 (`runtime_monitor.py --apply-all-orgs-pending --confirm-live-actions`).
-`--apply-workers` is separate and makes the per-org worker loops live. Each tmux
-session clears stale `PRL_ENABLED_ORGS` and uses `config/fleet.current.json` by
-default, so newly added orgs are not hidden by an old shell filter. The
-supervisor uses the live `salad-orch-v2-*` tmux session names, so `--ensure`
-does not duplicate an already-running stack. If account cookie jars exist under
-`state/portal_balance_accounts/`, it starts `portal_multi_balances.py` instead
-of the single-account balance watcher.
+Per-org worker loops are not included by default because the runtime monitor
+already runs all-org workers under one confirmed live action gate. Use
+`--include-workers` for read-only worker loops, or `--apply-workers` for live
+per-org worker loops. Each tmux session clears stale `PRL_ENABLED_ORGS` and
+uses `config/fleet.current.json` by default, so newly added orgs are not hidden
+by an old shell filter. The supervisor uses the live `salad-orch-v2-*` tmux
+session names, so `--ensure` does not duplicate an already-running stack. If
+account cookie jars exist under `state/portal_balance_accounts/`, it starts
+`portal_multi_balances.py` instead of the single-account balance watcher.
 
 Balance audit input is intentionally private. The standard portal balance
 watcher refreshes this local untracked file from an already-authenticated
@@ -873,10 +875,11 @@ The supervisor keeps the tmux sessions alive. It also switches modes:
 - `optimize` only when all target orgs have 10 live hashing workers.
 
 The new `scripts/supervisor.py` keeps the scheduler stack alive: price oracle,
-availability probe, scheduler, guard, runtime monitor, active/balance audit, and
-one org worker per enabled organization. It loads the private `.env` file before
-starting each tmux session, clears stale `PRL_ENABLED_ORGS`, defaults to
-`config/fleet.current.json`, then uses DB heartbeats to avoid restart loops.
+availability probe, scheduler, guard, runtime monitor, and active/balance audit.
+Per-org worker loops are optional and are only included with `--include-workers`
+or `--apply-workers`. It loads the private `.env` file before starting each tmux
+session, clears stale `PRL_ENABLED_ORGS`, defaults to `config/fleet.current.json`,
+then uses DB heartbeats to avoid restart loops.
 
 `scripts/fleet_audit.py` writes:
 

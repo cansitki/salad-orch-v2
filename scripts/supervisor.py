@@ -43,6 +43,7 @@ def process_plan(
     include_maintenance: bool = False,
     maintenance_apply: bool = False,
     include_runtime_monitor: bool = True,
+    include_workers: bool = False,
 ) -> list[dict[str, Any]]:
     config = load_config()
     portal_balance_interval = str(max(1, int(os.environ.get("PRL_PORTAL_BALANCE_INTERVAL_SECONDS", "60"))))
@@ -198,17 +199,18 @@ def process_plan(
                 "cmd": _with_db(cmd, db_path),
             }
         )
-    for org in config.enabled_orgs():
-        cmd = ["python3", str(SCRIPT_DIR / "org_worker.py"), "--org", org.label, "--loop", "--interval", "30"]
-        if apply_workers:
-            cmd.append("--apply")
-        plan.append(
-            {
-                "name": f"salad-orch-v2-worker-{org.label}",
-                "heartbeat": f"org_worker:{org.label}",
-                "cmd": _with_db(cmd, db_path),
-            }
-        )
+    if include_workers or apply_workers:
+        for org in config.enabled_orgs():
+            cmd = ["python3", str(SCRIPT_DIR / "org_worker.py"), "--org", org.label, "--loop", "--interval", "30"]
+            if apply_workers:
+                cmd.append("--apply")
+            plan.append(
+                {
+                    "name": f"salad-orch-v2-worker-{org.label}",
+                    "heartbeat": f"org_worker:{org.label}",
+                    "cmd": _with_db(cmd, db_path),
+                }
+            )
     return plan
 
 
@@ -236,6 +238,7 @@ def start_tmux_sessions(
     include_maintenance: bool = False,
     maintenance_apply: bool = False,
     include_runtime_monitor: bool = True,
+    include_workers: bool = False,
 ) -> list[dict[str, Any]]:
     results = []
     for item in process_plan(
@@ -247,6 +250,7 @@ def start_tmux_sessions(
         include_maintenance=include_maintenance,
         maintenance_apply=maintenance_apply,
         include_runtime_monitor=include_runtime_monitor,
+        include_workers=include_workers,
     ):
         subprocess.run(["tmux", "has-session", "-t", item["name"]], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         subprocess.run(["tmux", "kill-session", "-t", item["name"]], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -288,6 +292,7 @@ def ensure_tmux_sessions(
     include_maintenance: bool = False,
     maintenance_apply: bool = False,
     include_runtime_monitor: bool = True,
+    include_workers: bool = False,
     restart_stale: bool = True,
 ) -> list[dict[str, Any]]:
     plan = process_plan(
@@ -299,6 +304,7 @@ def ensure_tmux_sessions(
         include_maintenance=include_maintenance,
         maintenance_apply=maintenance_apply,
         include_runtime_monitor=include_runtime_monitor,
+        include_workers=include_workers,
     )
     results: list[dict[str, Any]] = []
     with state_db.connect(db_path) as conn:
@@ -368,6 +374,7 @@ def main() -> None:
     parser.add_argument("--no-audit", action="store_true", help="Do not include fleet_audit.py in tmux process plans.")
     parser.add_argument("--no-spike-report", action="store_true", help="Do not include spike_report.py in tmux process plans.")
     parser.add_argument("--no-runtime-monitor", action="store_true", help="Do not include runtime_monitor.py in tmux process plans.")
+    parser.add_argument("--include-workers", action="store_true", help="Include read-only per-org worker loops in the tmux process plan.")
     parser.add_argument("--include-maintenance", action="store_true", help="Include maintenance.py loop in the tmux plan.")
     parser.add_argument("--maintenance-apply", action="store_true", help="Let maintenance.py delete old historical rows.")
     parser.add_argument("--json", action="store_true")
@@ -383,6 +390,7 @@ def main() -> None:
             include_maintenance=args.include_maintenance,
             maintenance_apply=args.maintenance_apply,
             include_runtime_monitor=not args.no_runtime_monitor,
+            include_workers=args.include_workers,
         )
         print(json_dumps(payload) if args.json else "\n".join(f"{item['name']}: {' '.join(item['cmd'])}" for item in payload))
         return
@@ -396,6 +404,7 @@ def main() -> None:
             include_maintenance=args.include_maintenance,
             maintenance_apply=args.maintenance_apply,
             include_runtime_monitor=not args.no_runtime_monitor,
+            include_workers=args.include_workers,
         )
         print(json_dumps(payload) if args.json else "\n".join(f"{item['name']}: rc={item['returncode']}" for item in payload))
         return
@@ -409,6 +418,7 @@ def main() -> None:
             include_maintenance=args.include_maintenance,
             maintenance_apply=args.maintenance_apply,
             include_runtime_monitor=not args.no_runtime_monitor,
+            include_workers=args.include_workers,
             restart_stale=not args.no_restart_stale,
         )
         print(json_dumps(payload) if args.json else "\n".join(f"{item['name']}: {item['action']}" for item in payload))

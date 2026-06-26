@@ -100,6 +100,23 @@ class SpikeReportTest(unittest.TestCase):
             count = conn.execute("SELECT COUNT(*) FROM search_cooldowns").fetchone()[0]
         self.assertEqual(count, 0)
 
+    def test_heartbeat_stale_window_can_match_loop_interval(self) -> None:
+        self.record_unstable_profile()
+
+        spike_report.report_once(
+            db_path=self.db_path,
+            write_heartbeat=True,
+            apply_cooldowns=False,
+            heartbeat_stale_after_seconds=600,
+            limit=10,
+        )
+
+        with state_db.connect(self.db_path) as conn:
+            heartbeat = conn.execute(
+                "SELECT stale_after_seconds FROM heartbeats WHERE process_name = 'spike_report'"
+            ).fetchone()
+        self.assertEqual(heartbeat["stale_after_seconds"], 600)
+
     def test_cooldown_scan_is_not_limited_by_display_limit(self) -> None:
         self.record_unstable_profile("4070tis:low:2048")
         self.record_unstable_profile("5090:batch:2048")

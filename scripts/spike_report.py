@@ -84,6 +84,7 @@ def report_once(
     windows_minutes: tuple[int, ...] = (30, 60),
     limit: int = 20,
     write_heartbeat: bool = False,
+    heartbeat_stale_after_seconds: int = 120,
     apply_cooldowns: bool | None = None,
     cooldown_seconds: int | None = None,
 ) -> dict[str, Any]:
@@ -117,6 +118,7 @@ def report_once(
             state_db.write_heartbeat(
                 conn,
                 "spike_report",
+                stale_after_seconds=max(120, heartbeat_stale_after_seconds),
                 payload={
                     "event_count": summary["event_count"],
                     "unstable_profiles": sum(1 for row in summary["profiles"] if row.get("unstable")),
@@ -190,6 +192,7 @@ def main() -> None:
             windows_minutes=args.windows,
             limit=args.limit,
             write_heartbeat=args.heartbeat,
+            heartbeat_stale_after_seconds=max(120, args.interval * 2 if args.loop else 120),
             apply_cooldowns=False if args.no_auto_cooldown else None,
             cooldown_seconds=args.cooldown_seconds,
         )

@@ -22,6 +22,10 @@ from fleet_common import json_dumps
 
 STAGES = {"shadow", "one-org", "all-orgs", "guard-apply"}
 NONBLOCKING_RUNTIME_FAILURE_COMPONENTS = {"portal_balances"}
+TRANSIENT_WORKER_FAILURE_ERRORS = {
+    "http_400:cannot_start_container_group_with_current_status",
+    "http_400:replicas_quota_exceeded",
+}
 
 
 def _enabled_org_labels() -> list[str]:
@@ -92,7 +96,7 @@ def _worker_failures(worker_payloads: list[dict[str, Any]]) -> list[dict[str, An
     failures = []
     for payload in worker_payloads:
         for result in payload.get("results") or []:
-            if not result.get("ok", True):
+            if not result.get("ok", True) and not _is_transient_worker_failure(result):
                 failures.append(
                     {
                         "org": payload.get("org"),
@@ -102,6 +106,29 @@ def _worker_failures(worker_payloads: list[dict[str, Any]]) -> list[dict[str, An
                     }
                 )
     return failures
+
+
+def _transient_worker_failures(worker_payloads: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    failures = []
+    for payload in worker_payloads:
+        for result in payload.get("results") or []:
+            if not result.get("ok", True) and _is_transient_worker_failure(result):
+                failures.append(
+                    {
+                        "org": payload.get("org"),
+                        "slot_name": result.get("slot_name"),
+                        "action": result.get("action"),
+                        "error": result.get("error"),
+                    }
+                )
+    return failures
+
+
+def _is_transient_worker_failure(result: dict[str, Any]) -> bool:
+    if str(result.get("action") or "") != "start_failed":
+        return False
+    error = str(result.get("error") or "")
+    return error in TRANSIENT_WORKER_FAILURE_ERRORS
 
 
 def _worker_payloads_have_action(worker_payloads: list[dict[str, Any]], action: str) -> bool:
@@ -153,6 +180,7 @@ def evaluate_gates(
     min_profit = config.risk.min_profit_for_mode(str(scheduler_payload.get("mode") or None))
     target_violations = _target_profit_violations(db_path, min_profit)
     worker_failures = _worker_failures(worker_payloads)
+    transient_worker_failures = _transient_worker_failures(worker_payloads)
     runtime_failures = health_payload.get("runtime_failures") or []
     blocking_runtime_failures = _blocking_runtime_failures(runtime_failures)
     nonblocking_runtime_failures = _nonblocking_runtime_failures(runtime_failures)
@@ -183,6 +211,14 @@ def evaluate_gates(
                 "gate": "worker_actions",
                 "message": f"{len(worker_failures)} worker action failures",
                 "examples": worker_failures[:5],
+            }
+        )
+    if transient_worker_failures:
+        warnings.append(
+            {
+                "gate": "worker_actions",
+                "message": f"{len(transient_worker_failures)} transient worker action failures",
+                "examples": transient_worker_failures[:5],
             }
         )
     if health_payload.get("health") == "down":

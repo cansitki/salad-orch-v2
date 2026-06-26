@@ -200,6 +200,59 @@ class RolloutTest(unittest.TestCase):
         self.assertFalse(gates["ok"])
         self.assertEqual(gates["failed"][0]["gate"], "stale_heartbeats")
 
+    def test_transient_worker_start_failure_warns_without_blocking_fill(self) -> None:
+        gates = rollout.evaluate_gates(
+            db_path=self.db_path,
+            scheduler_payload={"mode": "base_fill", "assigned_targets": 40, "target_slots": 40},
+            worker_payloads=[
+                {
+                    "org": "kray",
+                    "results": [
+                        {
+                            "slot_name": "prl-kray-roi-01",
+                            "action": "start_failed",
+                            "ok": False,
+                            "error": "http_400:replicas_quota_exceeded",
+                        }
+                    ],
+                }
+            ],
+            guard_payload=None,
+            report_payload={"running_no_live_billable_slots": [], "negative_slots": []},
+            health_payload={"health": "healthy", "runtime_failures": [], "stale_heartbeats": []},
+            allow_degraded=False,
+        )
+
+        self.assertTrue(gates["ok"])
+        self.assertEqual(gates["failed"], [])
+        self.assertEqual(gates["warnings"][0]["gate"], "worker_actions")
+
+    def test_non_transient_worker_start_failure_still_blocks(self) -> None:
+        gates = rollout.evaluate_gates(
+            db_path=self.db_path,
+            scheduler_payload={"mode": "base_fill", "assigned_targets": 40, "target_slots": 40},
+            worker_payloads=[
+                {
+                    "org": "kray",
+                    "results": [
+                        {
+                            "slot_name": "prl-kray-roi-01",
+                            "action": "start_failed",
+                            "ok": False,
+                            "error": "http_401:unauthorized",
+                        }
+                    ],
+                }
+            ],
+            guard_payload=None,
+            report_payload={"running_no_live_billable_slots": [], "negative_slots": []},
+            health_payload={"health": "healthy", "runtime_failures": [], "stale_heartbeats": []},
+            allow_degraded=False,
+        )
+
+        self.assertFalse(gates["ok"])
+        self.assertEqual(gates["failed"][0]["gate"], "worker_actions")
+
     def test_all_org_live_apply_requires_confirmation(self) -> None:
         with self.assertRaises(SystemExit):
             rollout.run_rollout(

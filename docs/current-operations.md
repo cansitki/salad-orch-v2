@@ -62,8 +62,10 @@ The public org labels are:
 | `alpha1` | 10 | `SALAD_API_KEY_ALPHA` |
 | `alpha2` | 10 | `SALAD_API_KEY_ALPHA` when sharing the alpha1 token |
 
-Base target capacity is 40 active or pending slots. With `kry2`, `kr1`, `kr2`,
-`kr3`, `alpha1`, and `alpha2` enabled, target capacity is 100 slots.
+The durable live layout is `config/fleet.current.json`: 28 enabled SaladCloud
+organizations at 10 container groups each, for 280 active or pending target
+slots. Do not keep a stale `PRL_ENABLED_ORGS` filter in tmux or shell env; it
+will hide newly added orgs from the scheduler.
 
 Slot names follow:
 
@@ -112,7 +114,7 @@ kray-prl-nonstop-supervisor
 salad-pearl-monitor
 ```
 
-The four watcher sessions can run independently. The guard consumes the same public state and reuses the watcher logic for retargeting. The supervisor should keep the sessions alive instead of relying on a manual terminal.
+The watcher sessions can run independently. The guard consumes the same public state and reuses the watcher logic for retargeting. The supervisor should keep the sessions alive instead of relying on a manual terminal.
 
 ## Start Commands
 

@@ -48,25 +48,16 @@ Fill first. Optimize after the fleet is full.
 
 ## Organizations
 
-The fleet currently uses four SaladCloud organizations:
+The durable fleet source of truth is `config/fleet.current.json`. It currently
+tracks 28 SaladCloud organizations at 10 container groups each, for 280 active
+or pending target slots. The file contains only public org labels and API key
+environment variable names, never key values.
 
-| Public label | Salad organization slug | API key env var |
-| --- | --- | --- |
-| kray | kray | SALAD_API_KEY_2 |
-| kry1 | kry1 | SALAD_API_KEY_KRY1 |
-| kray2 | kray2 | SALAD_API_KEY_2 |
-| kray3 | kray3 | SALAD_API_KEY_2 |
+Check the live public layout with:
 
-Each org targets 10 container groups:
-
-```text
-prl-kray-roi-01  ... prl-kray-roi-10
-prl-kry1-roi-01  ... prl-kry1-roi-10
-prl-kray2-roi-01 ... prl-kray2-roi-10
-prl-kray3-roi-01 ... prl-kray3-roi-10
+```bash
+SALAD_FLEET_CONFIG_PATH=config/fleet.current.json python3 scripts/config_loader.py
 ```
-
-Total target capacity: 40 active or pending slots.
 
 ## Secret Handling
 
@@ -219,7 +210,7 @@ environment variable name. Use `SALAD_FLEET_EXTRA_ORGS_JSON` to append to the
 default orgs; use `SALAD_FLEET_ORGS_JSON` only when intentionally replacing the
 whole org list. Do not put the API key value in git.
 
-The current public 25-organization layout is committed at
+The current public 28-organization layout is committed at
 `config/fleet.current.json`. Use it for durable restarts:
 
 ```bash

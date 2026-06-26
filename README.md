@@ -327,7 +327,10 @@ that org. This avoids burning API calls when an org has remaining credits but
 Salad has disabled GPU replicas for that organization. Once the quota becomes
 positive again, the normal fill/optimize loop can resume. The availability
 probe uses the same quota check, so quota-zero orgs do not consume profile probe
-budget either.
+budget either. Each quota read is also persisted in `org_replica_quotas`;
+`health.py --json` exposes `quota_blockers`, and `reporter.py` prints
+`quota_blockers=N/M`, so recovery from server-side quota zero is visible without
+digging through heartbeat payloads.
 
 If the older local monitor is running, the audit can also read balances directly
 from its SQLite DB:

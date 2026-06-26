@@ -49,6 +49,16 @@ def build_health(db_path: str | None = None) -> dict[str, Any]:
                 """
             ).fetchall()
         ]
+        replica_quotas = [
+            dict(row)
+            for row in conn.execute(
+                """
+                SELECT *
+                FROM org_replica_quotas
+                ORDER BY org_label
+                """
+            ).fetchall()
+        ]
         target_count = int(conn.execute("SELECT COUNT(*) AS count FROM slot_targets").fetchone()["count"])
         slot_count = int(conn.execute("SELECT COUNT(*) AS count FROM slots").fetchone()["count"])
 
@@ -80,6 +90,8 @@ def build_health(db_path: str | None = None) -> dict[str, Any]:
         "runtime_failures": failures,
         "guard_issues": guard_issues,
         "api_rate_limits": api_rate_limits,
+        "replica_quotas": replica_quotas,
+        "quota_blockers": [row for row in replica_quotas if str(row.get("status") or "") == "zero_quota"],
         "latest_risk_mode": status.get("latest_risk_mode"),
         "latest_price_sample": status.get("latest_price_sample"),
         "slot_status": status.get("slot_status"),

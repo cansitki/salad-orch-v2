@@ -17,7 +17,13 @@ import profit_model
 import state_db
 from config_loader import OrgConfig, load_config
 from fleet_common import env_int, json_dumps, utc_now
-from org_worker import explicit_zero_balance_skip, install_rate_limited_request, zero_replica_quota_skip
+from org_worker import (
+    explicit_zero_balance_skip,
+    install_rate_limited_request,
+    record_replica_quota_status,
+    replica_quota_status,
+    zero_replica_quota_skip_from_status,
+)
 
 
 SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
@@ -60,7 +66,18 @@ def _probe_org_profiles(
 ) -> list[dict[str, Any]]:
     watch = load_watch_module(org)
     install_rate_limited_request(watch, org, db_path=db_path)
-    replica_quota_skip = zero_replica_quota_skip(watch)
+    quota_status = replica_quota_status(watch)
+    if quota_status is not None:
+        with state_db.connect(db_path) as conn:
+            state_db.init_db(conn)
+            record_replica_quota_status(
+                conn,
+                org_label=org.label,
+                quota_status=quota_status,
+                source="availability_probe",
+            )
+            conn.commit()
+    replica_quota_skip = zero_replica_quota_skip_from_status(quota_status)
     if replica_quota_skip is not None:
         return [
             {

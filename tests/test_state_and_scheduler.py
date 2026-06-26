@@ -439,10 +439,51 @@ class StateAndSchedulerTest(unittest.TestCase):
                 WHERE org_label='kray' AND observed_status='zero_quota'
                 """
             ).fetchone()
+            quota = conn.execute("SELECT * FROM org_replica_quotas WHERE org_label='kray'").fetchone()
         self.assertEqual(attempts, 10)
         self.assertIn("zero_replica_quota_skip", heartbeat["payload_json"])
         self.assertEqual(slot_summary["count"], 10)
         self.assertEqual(slot_summary["th"], 0)
+        self.assertEqual(quota["quota"], 0)
+        self.assertEqual(quota["used"], 0)
+        self.assertEqual(quota["available"], 0)
+        self.assertEqual(quota["status"], "zero_quota")
+
+    def test_replica_quota_status_transition_records_recovery_event(self) -> None:
+        with state_db.connect(self.db_path) as conn:
+            state_db.init_db(conn)
+            org_worker.record_replica_quota_status(
+                conn,
+                org_label="kray",
+                quota_status={
+                    "quota": 0,
+                    "used": 0,
+                    "available": 0,
+                    "status": "zero_quota",
+                    "reason": "container_replicas_quota_zero",
+                },
+                source="test",
+            )
+            org_worker.record_replica_quota_status(
+                conn,
+                org_label="kray",
+                quota_status={
+                    "quota": 10,
+                    "used": 0,
+                    "available": 10,
+                    "status": "available",
+                    "reason": "container_replicas_quota_available",
+                },
+                source="test",
+            )
+            quota = conn.execute("SELECT * FROM org_replica_quotas WHERE org_label='kray'").fetchone()
+            event = conn.execute(
+                "SELECT * FROM events WHERE event_type='org_replica_quota_restored'"
+            ).fetchone()
+        self.assertEqual(quota["quota"], 10)
+        self.assertEqual(quota["available"], 10)
+        self.assertEqual(quota["status"], "available")
+        self.assertIsNotNone(event)
 
     def test_zero_balance_skip_requires_explicit_fresh_org_balance(self) -> None:
         balance_file = pathlib.Path(self.tmpdir.name) / "balances.json"

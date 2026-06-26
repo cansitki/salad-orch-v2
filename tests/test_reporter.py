@@ -220,6 +220,41 @@ class ReporterTest(unittest.TestCase):
         self.assertAlmostEqual(report["profit_at_0_70"]["revenue_day"], 32.8125)
         self.assertAlmostEqual(report["profit_at_0_70"]["profit_day"], 12.8125)
 
+    def test_report_includes_replica_quota_blockers(self) -> None:
+        with state_db.connect(self.db_path) as conn:
+            state_db.upsert_org_replica_quota(
+                conn,
+                {
+                    "org_label": "kray",
+                    "quota": 0,
+                    "used": 0,
+                    "available": 0,
+                    "status": "zero_quota",
+                    "reason": "container_replicas_quota_zero",
+                    "source": "test",
+                },
+            )
+            state_db.upsert_org_replica_quota(
+                conn,
+                {
+                    "org_label": "kray2",
+                    "quota": 10,
+                    "used": 7,
+                    "available": 3,
+                    "status": "available",
+                    "reason": "container_replicas_quota_available",
+                    "source": "test",
+                },
+            )
+            conn.commit()
+
+        report = reporter.build_report(self.db_path)
+
+        self.assertEqual(len(report["replica_quotas"]), 2)
+        self.assertEqual([row["org_label"] for row in report["quota_blockers"]], ["kray"])
+        self.assertEqual(report["replica_quota_summary"][0]["status"], "available")
+        self.assertEqual(report["replica_quota_summary"][1]["status"], "zero_quota")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -351,7 +351,7 @@ def zero_balance_skip_result(target: dict[str, Any], skip: dict[str, Any]) -> di
     }
 
 
-def zero_replica_quota_skip(watch: Any) -> dict[str, Any] | None:
+def replica_quota_status(watch: Any) -> dict[str, Any] | None:
     if not env_bool("PRL_SKIP_ZERO_REPLICA_QUOTA_ORGS", True):
         return None
     try:
@@ -367,15 +367,78 @@ def zero_replica_quota_skip(watch: Any) -> dict[str, Any] | None:
         used = int(quotas.get("container_replicas_used") or 0)
     except (TypeError, ValueError):
         return None
-    if quota > 0:
-        return None
+    available = max(0, quota - used)
+    status = "available" if quota > 0 else "zero_quota"
     return {
         "quota": quota,
         "used": used,
-        "reason": "container_replicas_quota_zero",
+        "available": available,
+        "status": status,
+        "reason": "container_replicas_quota_zero" if quota <= 0 else "container_replicas_quota_available",
         "quota_update_time": payload.get("update_time"),
         "quota_create_time": payload.get("create_time"),
     }
+
+
+def zero_replica_quota_skip_from_status(status: dict[str, Any] | None) -> dict[str, Any] | None:
+    if status is None:
+        return None
+    try:
+        quota = int(status.get("quota") or 0)
+    except (TypeError, ValueError):
+        return None
+    if quota > 0:
+        return None
+    return status
+
+
+def zero_replica_quota_skip(watch: Any) -> dict[str, Any] | None:
+    return zero_replica_quota_skip_from_status(replica_quota_status(watch))
+
+
+def record_replica_quota_status(
+    conn: Any,
+    *,
+    org_label: str,
+    quota_status: dict[str, Any],
+    source: str,
+) -> None:
+    row = {
+        "org_label": org_label,
+        "source": source,
+        "checked_at_utc": utc_now(),
+        **quota_status,
+        "payload": {
+            "quota": quota_status.get("quota"),
+            "used": quota_status.get("used"),
+            "available": quota_status.get("available"),
+            "status": quota_status.get("status"),
+            "reason": quota_status.get("reason"),
+            "quota_update_time": quota_status.get("quota_update_time"),
+            "quota_create_time": quota_status.get("quota_create_time"),
+        },
+    }
+    previous = state_db.upsert_org_replica_quota(conn, row)
+    if previous is None:
+        return
+    previous_quota = int(previous.get("quota") or 0)
+    current_quota = int(row.get("quota") or 0)
+    if previous_quota <= 0 < current_quota:
+        state_db.record_event(
+            conn,
+            "org_replica_quota_restored",
+            source=source,
+            message="Salad replica quota became available for an organization",
+            payload=row,
+        )
+    elif previous_quota > 0 and current_quota <= 0:
+        state_db.record_event(
+            conn,
+            "org_replica_quota_blocked",
+            source=source,
+            message="Salad replica quota dropped to zero for an organization",
+            payload=row,
+        )
 
 
 def zero_replica_quota_skip_result(target: dict[str, Any], skip: dict[str, Any]) -> dict[str, Any]:
@@ -1027,7 +1090,18 @@ def run_once(
 
     watch = load_watch_module(org, decision_price=decision_price, min_profit_day=min_profit)
     install_rate_limited_request(watch, org, db_path=db_path)
-    zero_quota_skip = zero_replica_quota_skip(watch) if apply else None
+    replica_quota = replica_quota_status(watch) if apply else None
+    if replica_quota is not None:
+        with state_db.connect(db_path) as conn:
+            state_db.init_db(conn)
+            record_replica_quota_status(
+                conn,
+                org_label=org_label,
+                quota_status=replica_quota,
+                source=f"org_worker:{org_label}",
+            )
+            conn.commit()
+    zero_quota_skip = zero_replica_quota_skip_from_status(replica_quota)
     if zero_quota_skip is not None:
         results = [
             (

@@ -186,6 +186,11 @@ live start/patch/create actions. If `container_replicas_quota=0`, the worker
 records `skip_zero_replica_quota` attempts and marks slots as `zero_quota`.
 That means the org may still have credit, but Salad currently allows zero GPU
 replicas there; there is no profitable fill action until the quota is raised.
+Quota reads are persisted in `org_replica_quotas`, including positive quota
+reads. Use `python3 scripts/health.py --json` to inspect `quota_blockers`, or
+`python3 scripts/reporter.py` for the concise `quota_blockers=N/M` line.
+When an org moves from quota 0 back to positive quota, the DB records an
+`org_replica_quota_restored` event and the normal monitor loop can fill it.
 
 ## Profit Model
 

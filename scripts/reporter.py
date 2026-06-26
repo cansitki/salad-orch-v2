@@ -260,6 +260,8 @@ def build_report(
     profile_counts: dict[str, int] = {}
     for target in targets:
         profile_counts[str(target["profile_key"])] = profile_counts.get(str(target["profile_key"]), 0) + 1
+    replica_quotas = status.get("org_replica_quotas") or []
+    quota_blockers = [row for row in replica_quotas if str(row.get("status") or "") == "zero_quota"]
     status_counts: dict[str, int] = {}
     for slot in slot_rows:
         key = str(slot.get("observed_status") or "unknown")
@@ -362,6 +364,9 @@ def build_report(
         ),
         "risky_profiles": risky_profiles,
         "heartbeat_status": heartbeat_status,
+        "replica_quotas": replica_quotas,
+        "replica_quota_summary": status.get("replica_quota_summary") or [],
+        "quota_blockers": quota_blockers,
         "status": status,
         "top_scores": scores,
         "targets": targets,
@@ -406,6 +411,9 @@ def main() -> None:
         f"no_hash={len(report['running_no_live_billable_slots'])} "
         f"negative={len(report['negative_slots'])} stuck={len(report['stuck_slots'])}"
     )
+    if report.get("quota_blockers"):
+        total_quota_orgs = len(report.get("replica_quotas") or [])
+        print(f"quota_blockers={len(report['quota_blockers'])}/{total_quota_orgs}")
     print("profile targets:")
     for profile_key, count in sorted(report["profile_counts"].items(), key=lambda item: item[1], reverse=True):
         print(f"  {count:>3} {profile_key}")

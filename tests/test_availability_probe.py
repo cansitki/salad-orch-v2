@@ -384,7 +384,10 @@ class AvailabilityProbeTest(unittest.TestCase):
         self.assertEqual(watch.request_call, ("GET", "/organizations/kray/quotas"))
         with state_db.connect(self.db_path) as conn:
             count = conn.execute("SELECT COUNT(*) FROM profile_availability").fetchone()[0]
+            quota = conn.execute("SELECT * FROM org_replica_quotas WHERE org_label='kray'").fetchone()
         self.assertEqual(count, 0)
+        self.assertEqual(quota["status"], "zero_quota")
+        self.assertEqual(quota["quota"], 0)
 
     def test_probe_org_profiles_uses_profile_parallelism(self) -> None:
         org = OrgConfig(

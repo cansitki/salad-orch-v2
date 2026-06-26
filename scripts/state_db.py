@@ -264,6 +264,21 @@ CREATE TABLE IF NOT EXISTS api_rate_limits (
   updated_at_utc TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS org_replica_quotas (
+  org_label TEXT PRIMARY KEY,
+  quota INTEGER NOT NULL,
+  used INTEGER NOT NULL,
+  available INTEGER NOT NULL,
+  status TEXT NOT NULL,
+  reason TEXT,
+  quota_update_time TEXT,
+  quota_create_time TEXT,
+  checked_at_utc TEXT NOT NULL,
+  source TEXT NOT NULL,
+  payload_json TEXT NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS idx_org_replica_quotas_status ON org_replica_quotas(status);
+
 CREATE TABLE IF NOT EXISTS rollout_checkpoints (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   created_at_utc TEXT NOT NULL,
@@ -443,6 +458,50 @@ def record_failure(
 
 def clear_failure(conn: sqlite3.Connection, component: str) -> None:
     conn.execute("DELETE FROM runtime_failures WHERE component = ?", (component,))
+
+
+def upsert_org_replica_quota(conn: sqlite3.Connection, row: dict[str, Any]) -> dict[str, Any] | None:
+    org_label = str(row["org_label"])
+    quota = int(row.get("quota") or 0)
+    used = int(row.get("used") or 0)
+    available = int(row.get("available") if row.get("available") is not None else max(0, quota - used))
+    status = str(row.get("status") or ("available" if quota > 0 else "zero_quota"))
+    checked_at = str(row.get("checked_at_utc") or utc_now())
+    previous = conn.execute("SELECT * FROM org_replica_quotas WHERE org_label = ?", (org_label,)).fetchone()
+    conn.execute(
+        """
+        INSERT INTO org_replica_quotas(
+          org_label, quota, used, available, status, reason,
+          quota_update_time, quota_create_time, checked_at_utc, source, payload_json
+        )
+        VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(org_label) DO UPDATE SET
+          quota=excluded.quota,
+          used=excluded.used,
+          available=excluded.available,
+          status=excluded.status,
+          reason=excluded.reason,
+          quota_update_time=excluded.quota_update_time,
+          quota_create_time=excluded.quota_create_time,
+          checked_at_utc=excluded.checked_at_utc,
+          source=excluded.source,
+          payload_json=excluded.payload_json
+        """,
+        (
+            org_label,
+            quota,
+            used,
+            available,
+            status,
+            row.get("reason"),
+            row.get("quota_update_time"),
+            row.get("quota_create_time"),
+            checked_at,
+            str(row.get("source") or "unknown"),
+            compact_json(safe_public_payload(row.get("payload") or {})),
+        ),
+    )
+    return dict(previous) if previous else None
 
 
 def write_heartbeat(
@@ -1471,6 +1530,7 @@ def status_payload(conn: sqlite3.Connection) -> dict[str, Any]:
         "runtime_failures",
         "guard_issues",
         "api_rate_limits",
+        "org_replica_quotas",
         "rollout_checkpoints",
         "events",
         "fleet_active_snapshots",
@@ -1507,6 +1567,30 @@ def status_payload(conn: sqlite3.Connection) -> dict[str, Any]:
             """
         )
     ]
+    org_replica_quotas = [
+        dict(row)
+        for row in conn.execute(
+            """
+            SELECT *
+            FROM org_replica_quotas
+            ORDER BY org_label
+            """
+        ).fetchall()
+    ]
+    replica_quota_summary = [
+        dict(row)
+        for row in conn.execute(
+            """
+            SELECT status, COUNT(*) AS orgs,
+                   SUM(quota) AS quota,
+                   SUM(used) AS used,
+                   SUM(available) AS available
+            FROM org_replica_quotas
+            GROUP BY status
+            ORDER BY status
+            """
+        ).fetchall()
+    ]
     return {
         "db": str(conn.execute("PRAGMA database_list").fetchone()["file"]),
         "tables": tables,
@@ -1519,6 +1603,8 @@ def status_payload(conn: sqlite3.Connection) -> dict[str, Any]:
         ],
         "slot_status": slot_status,
         "worker_status": worker_status,
+        "org_replica_quotas": org_replica_quotas,
+        "replica_quota_summary": replica_quota_summary,
     }
 
 

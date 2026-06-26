@@ -18,6 +18,8 @@ import state_db
 from config_loader import OrgConfig, load_config
 from fleet_common import env_int, json_dumps, utc_now
 from org_worker import (
+    clear_no_credits_cooldown_row,
+    explicit_positive_balance_restore,
     explicit_zero_balance_skip,
     install_rate_limited_request,
     record_replica_quota_status,
@@ -258,19 +260,42 @@ def run_once(
         state_db.init_db(conn)
         state_db.sync_config(conn, config)
         state_db.upsert_gpu_profiles(conn, profiles)
-        skipped_no_credits = [
-            cooldown
-            for org in enabled_orgs
-            if org.label not in skipped_zero_balance_labels
-            if (cooldown := state_db.active_org_cooldown(conn, org.label)) is not None
-        ]
-        skipped_no_credits_labels = {str(skip["org_label"]) for skip in skipped_no_credits}
-        probe_orgs = [
-            org
-            for org in enabled_orgs
-            if org.label not in skipped_zero_balance_labels
-            and org.label not in skipped_no_credits_labels
-        ]
+        skipped_no_credits = []
+        cleared_no_credits_cooldowns = []
+        probe_orgs = []
+        for org in enabled_orgs:
+            if org.label in skipped_zero_balance_labels:
+                continue
+            cooldown = state_db.active_org_cooldown(conn, org.label)
+            if cooldown is not None:
+                positive_balance = explicit_positive_balance_restore(org.label)
+                if positive_balance is None:
+                    skipped_no_credits.append(cooldown)
+                    continue
+                clear_row = clear_no_credits_cooldown_row(
+                    org.label,
+                    cooldown=cooldown,
+                    balance_restore=positive_balance,
+                )
+                state_db.record_search_state(conn, clear_row)
+                state_db.record_event(
+                    conn,
+                    "availability_no_credits_cooldown_cleared",
+                    source="availability_probe",
+                    message="availability probe cleared no-credits cooldown after fresh positive balance",
+                    payload={
+                        "cooldown": cooldown,
+                        "balance_restore": positive_balance,
+                    },
+                )
+                cleared_no_credits_cooldowns.append(
+                    {
+                        "org_label": org.label,
+                        "cooldown": cooldown,
+                        "balance_restore": positive_balance,
+                    }
+                )
+            probe_orgs.append(org)
         state_db.write_heartbeat(
             conn,
             "availability_probe",
@@ -283,6 +308,7 @@ def run_once(
                 "profile_parallelism": selected_profile_parallelism,
                 "skipped_zero_balance_orgs": skipped_zero_balance,
                 "skipped_no_credits_orgs": skipped_no_credits,
+                "cleared_no_credits_cooldowns": cleared_no_credits_cooldowns,
             },
         )
         conn.commit()
@@ -398,6 +424,7 @@ def run_once(
                 "profile_parallelism": selected_profile_parallelism,
                 "skipped_zero_balance_orgs": skipped_zero_balance,
                 "skipped_no_credits_orgs": skipped_no_credits,
+                "cleared_no_credits_cooldowns": cleared_no_credits_cooldowns,
                 "skipped_zero_replica_quota_orgs": skipped_zero_replica_quota,
             },
         )
@@ -411,6 +438,7 @@ def run_once(
                 "profiles": by_profile,
                 "skipped_zero_balance_orgs": skipped_zero_balance,
                 "skipped_no_credits_orgs": skipped_no_credits,
+                "cleared_no_credits_cooldowns": cleared_no_credits_cooldowns,
                 "skipped_zero_replica_quota_orgs": skipped_zero_replica_quota,
             },
         )
@@ -423,6 +451,7 @@ def run_once(
         "profile_parallelism": selected_profile_parallelism,
         "skipped_zero_balance_orgs": skipped_zero_balance,
         "skipped_no_credits_orgs": skipped_no_credits,
+        "cleared_no_credits_cooldowns": cleared_no_credits_cooldowns,
         "skipped_zero_replica_quota_orgs": skipped_zero_replica_quota,
         "by_profile": by_profile,
         "results": results,

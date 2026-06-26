@@ -330,6 +330,82 @@ class AvailabilityProbeTest(unittest.TestCase):
         self.assertEqual([item["org_label"] for item in payload["skipped_no_credits_orgs"]], ["kry1"])
         load_watch.assert_called_once_with(config.organizations[0])
 
+    def test_run_once_clears_no_credits_cooldown_after_fresh_positive_balance(self) -> None:
+        config = FleetConfig(
+            organizations=(
+                OrgConfig(
+                    label="kray",
+                    slug="kray",
+                    api_key_env="SALAD_API_KEY_2",
+                    slot_prefix="prl-kray-roi",
+                ),
+                OrgConfig(
+                    label="kry1",
+                    slug="kry1",
+                    api_key_env="SALAD_API_KEY_KRY1",
+                    slot_prefix="prl-kry1-roi",
+                ),
+            )
+        )
+        profile = profit_model.Profile(
+            profile_key="4090:batch:2048",
+            gpu_key="4090",
+            gpu_id="gpu-4090",
+            priority="batch",
+            label="RTX 4090 batch",
+            memory_mb=2048,
+            expected_th=230.0,
+            static_hourly_usd=0.16,
+        )
+        pathlib.Path(os.environ["PRL_BALANCE_FILE"]).write_text(json.dumps({"kry1": 1.25}), encoding="utf-8")
+        with state_db.connect(self.db_path) as conn:
+            state_db.init_db(conn)
+            state_db.record_search_state(
+                conn,
+                {
+                    "org_label": "kry1",
+                    "slot_name": "*",
+                    "profile_key": "*",
+                    "no_gpu_since_utc": datetime.now(UTC).isoformat(timespec="seconds"),
+                    "sleep_until_utc": (datetime.now(UTC) + timedelta(minutes=2)).isoformat(timespec="seconds"),
+                    "attempts": 1,
+                    "reason": "http_400:no_credits_available",
+                    "updated_at_utc": datetime.now(UTC).isoformat(timespec="seconds"),
+                },
+            )
+            conn.commit()
+
+        with (
+            mock.patch.object(availability_probe, "load_config", return_value=config),
+            mock.patch.object(availability_probe.profit_model, "load_profiles", return_value=[profile]),
+            mock.patch.object(availability_probe, "load_watch_module", return_value=FakeWatch()) as load_watch,
+            mock.patch.object(availability_probe, "install_rate_limited_request"),
+        ):
+            payload = availability_probe.run_once(db_path=self.db_path, profile_limit=1, org_parallelism=1)
+
+        self.assertEqual(payload["probed"], 2)
+        self.assertEqual([row["org_label"] for row in payload["results"]], ["kray", "kry1"])
+        self.assertEqual(payload["skipped_no_credits_orgs"], [])
+        self.assertEqual([item["org_label"] for item in payload["cleared_no_credits_cooldowns"]], ["kry1"])
+        self.assertEqual(load_watch.call_count, 2)
+        with state_db.connect(self.db_path) as conn:
+            cooldown = state_db.active_org_cooldown(conn, "kry1")
+            cleared = conn.execute(
+                """
+                SELECT reason, sleep_until_utc
+                FROM search_cooldowns
+                WHERE org_label='kry1' AND slot_name='*' AND profile_key='*'
+                """
+            ).fetchone()
+            heartbeat = conn.execute(
+                "SELECT payload_json FROM heartbeats WHERE process_name='availability_probe'"
+            ).fetchone()
+
+        self.assertIsNone(cooldown)
+        self.assertEqual(cleared["reason"], "positive_balance_restored")
+        self.assertIsNone(cleared["sleep_until_utc"])
+        self.assertIn("cleared_no_credits_cooldowns", heartbeat["payload_json"])
+
     def test_run_once_skips_zero_replica_quota_orgs(self) -> None:
         config = FleetConfig(
             organizations=(

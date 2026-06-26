@@ -330,6 +330,62 @@ class AvailabilityProbeTest(unittest.TestCase):
         self.assertEqual([item["org_label"] for item in payload["skipped_no_credits_orgs"]], ["kry1"])
         load_watch.assert_called_once_with(config.organizations[0])
 
+    def test_run_once_skips_zero_replica_quota_orgs(self) -> None:
+        config = FleetConfig(
+            organizations=(
+                OrgConfig(
+                    label="kray",
+                    slug="kray",
+                    api_key_env="SALAD_API_KEY_2",
+                    slot_prefix="prl-kray-roi",
+                ),
+            )
+        )
+        profile = profit_model.Profile(
+            profile_key="4090:batch:2048",
+            gpu_key="4090",
+            gpu_id="gpu-4090",
+            priority="batch",
+            label="RTX 4090 batch",
+            memory_mb=2048,
+            expected_th=230.0,
+            static_hourly_usd=0.16,
+        )
+
+        class QuotaZeroWatch(FakeWatch):
+            ORG = "kray"
+
+            def request(self, method: str, path: str, _payload=None, **_kwargs):
+                self.request_call = (method, path)
+                return {
+                    "container_groups_quotas": {
+                        "container_replicas_quota": 0,
+                        "container_replicas_used": 0,
+                    },
+                    "update_time": "2026-06-26T14:50:00+00:00",
+                }
+
+            def candidate_availability(self, _slot_name, _candidate):
+                raise AssertionError("zero quota org should not probe profile availability")
+
+        watch = QuotaZeroWatch()
+        with (
+            mock.patch.object(availability_probe, "load_config", return_value=config),
+            mock.patch.object(availability_probe.profit_model, "load_profiles", return_value=[profile]),
+            mock.patch.object(availability_probe, "load_watch_module", return_value=watch),
+            mock.patch.object(availability_probe, "install_rate_limited_request"),
+        ):
+            payload = availability_probe.run_once(db_path=self.db_path, profile_limit=1)
+
+        self.assertEqual(payload["probed"], 0)
+        self.assertEqual(payload["results"], [])
+        self.assertEqual(payload["by_profile"], {})
+        self.assertEqual([item["org_label"] for item in payload["skipped_zero_replica_quota_orgs"]], ["kray"])
+        self.assertEqual(watch.request_call, ("GET", "/organizations/kray/quotas"))
+        with state_db.connect(self.db_path) as conn:
+            count = conn.execute("SELECT COUNT(*) FROM profile_availability").fetchone()[0]
+        self.assertEqual(count, 0)
+
     def test_probe_org_profiles_uses_profile_parallelism(self) -> None:
         org = OrgConfig(
             label="test",

@@ -17,7 +17,7 @@ import profit_model
 import state_db
 from config_loader import OrgConfig, load_config
 from fleet_common import env_int, json_dumps, utc_now
-from org_worker import explicit_zero_balance_skip, install_rate_limited_request
+from org_worker import explicit_zero_balance_skip, install_rate_limited_request, zero_replica_quota_skip
 
 
 SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
@@ -60,6 +60,20 @@ def _probe_org_profiles(
 ) -> list[dict[str, Any]]:
     watch = load_watch_module(org)
     install_rate_limited_request(watch, org, db_path=db_path)
+    replica_quota_skip = zero_replica_quota_skip(watch)
+    if replica_quota_skip is not None:
+        return [
+            {
+                "org_label": org.label,
+                "profile_key": "*",
+                "available_count": None,
+                "ok": True,
+                "error": None,
+                "checked_at_utc": utc_now(),
+                "skip_reason": "zero_replica_quota",
+                "zero_replica_quota_skip": replica_quota_skip,
+            }
+        ]
 
     def probe_profile(profile: profit_model.Profile) -> dict[str, Any]:
         checked_at = utc_now()
@@ -263,6 +277,19 @@ def run_once(
         org_parallelism=selected_org_parallelism,
         profile_parallelism=selected_profile_parallelism,
     )
+    skipped_zero_replica_quota = []
+    filtered_org_rows = []
+    for row in org_rows:
+        if row.get("skip_reason") == "zero_replica_quota":
+            skipped_zero_replica_quota.append(
+                {
+                    "org_label": row["org_label"],
+                    **dict(row.get("zero_replica_quota_skip") or {}),
+                }
+            )
+        else:
+            filtered_org_rows.append(row)
+    org_rows = filtered_org_rows
     for row in org_rows:
         available = row.get("available_count")
         ok = bool(row.get("ok"))
@@ -354,6 +381,7 @@ def run_once(
                 "profile_parallelism": selected_profile_parallelism,
                 "skipped_zero_balance_orgs": skipped_zero_balance,
                 "skipped_no_credits_orgs": skipped_no_credits,
+                "skipped_zero_replica_quota_orgs": skipped_zero_replica_quota,
             },
         )
         state_db.record_event(
@@ -366,6 +394,7 @@ def run_once(
                 "profiles": by_profile,
                 "skipped_zero_balance_orgs": skipped_zero_balance,
                 "skipped_no_credits_orgs": skipped_no_credits,
+                "skipped_zero_replica_quota_orgs": skipped_zero_replica_quota,
             },
         )
         conn.commit()
@@ -377,6 +406,7 @@ def run_once(
         "profile_parallelism": selected_profile_parallelism,
         "skipped_zero_balance_orgs": skipped_zero_balance,
         "skipped_no_credits_orgs": skipped_no_credits,
+        "skipped_zero_replica_quota_orgs": skipped_zero_replica_quota,
         "by_profile": by_profile,
         "results": results,
     }

@@ -325,7 +325,9 @@ Balance is not the only gate. `org_worker.py` also checks Salad's public
 marks the slots as `zero_quota`, and does not attempt create/patch/start for
 that org. This avoids burning API calls when an org has remaining credits but
 Salad has disabled GPU replicas for that organization. Once the quota becomes
-positive again, the normal fill/optimize loop can resume.
+positive again, the normal fill/optimize loop can resume. The availability
+probe uses the same quota check, so quota-zero orgs do not consume profile probe
+budget either.
 
 If the older local monitor is running, the audit can also read balances directly
 from its SQLite DB:

@@ -354,7 +354,9 @@ budget either. Each quota read is also persisted in `org_replica_quotas`;
 `quota_blockers=N/M` plus
 `quota_capacity=used/capacity blocked=X balance_blocked=Y unknown=Z`,
 so recovery from server-side quota zero is visible without digging through
-heartbeat payloads.
+heartbeat payloads. Use `python3 scripts/reporter.py --capacity-limit 0` when
+you need the full per-org top-up/quota-blocked lists instead of the default
+truncated operator summary.
 
 If the older local monitor is running, the audit can also read balances directly
 from its SQLite DB:

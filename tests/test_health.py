@@ -125,6 +125,35 @@ class HealthTest(unittest.TestCase):
         self.assertEqual(payload["health"], "healthy")
         self.assertEqual(payload["stale_heartbeats"], [])
 
+    def test_health_ignores_stale_one_shot_supervisor_heartbeat(self) -> None:
+        with state_db.connect(self.db_path) as conn:
+            state_db.init_db(conn)
+            state_db.sync_config(conn, load_config())
+            state_db.set_slot_target(
+                conn,
+                {
+                    "org_label": "kray",
+                    "slot_name": "prl-kray-roi-01",
+                    "profile_key": "4090:batch:2048",
+                    "mode": "base_fill",
+                    "decision_price_usd": 0.64,
+                    "expected_profit_day": 1.0,
+                    "reason": "test",
+                },
+            )
+            conn.execute(
+                """
+                INSERT INTO heartbeats(process_name, status, at_utc, stale_after_seconds, payload_json)
+                VALUES('supervisor', 'ok', '2026-06-24T12:00:00+00:00', 1, '{}')
+                """
+            )
+            conn.commit()
+
+        payload = health.build_health(self.db_path)
+
+        self.assertEqual(payload["health"], "healthy")
+        self.assertEqual(payload["stale_heartbeats"], [])
+
 
 if __name__ == "__main__":
     unittest.main()

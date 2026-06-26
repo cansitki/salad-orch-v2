@@ -9,7 +9,7 @@ import state_db
 from fleet_common import json_dumps
 
 
-OPTIONAL_STALE_HEARTBEATS = {"reporter"}
+OPTIONAL_STALE_HEARTBEATS = {"reporter", "supervisor"}
 
 
 def age_seconds(value: str | None) -> float | None:

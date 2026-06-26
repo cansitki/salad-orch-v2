@@ -310,6 +310,16 @@ def _format_capacity_action_item(row: dict[str, Any]) -> str:
 
 def capacity_action_lines(capacity_actions: dict[str, Any], *, limit: int = 8) -> list[str]:
     summary = capacity_actions.get("summary") or {}
+    selected_limit = max(0, int(limit))
+
+    def limited(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return rows if selected_limit == 0 else rows[:selected_limit]
+
+    def more_suffix(total: int) -> str:
+        if selected_limit == 0 or total <= selected_limit:
+            return ""
+        return f", +{total - selected_limit} more"
+
     lines = [
         "capacity_actions "
         f"top_up_slots={int(summary.get('top_up_slots') or 0)} "
@@ -320,21 +330,26 @@ def capacity_action_lines(capacity_actions: dict[str, Any], *, limit: int = 8) -
     ]
     top_up = list(capacity_actions.get("top_up_quota_available_orgs") or [])
     if top_up:
-        lines.append("  add_credit: " + ", ".join(_format_capacity_action_item(row) for row in top_up[:limit]))
+        lines.append(
+            "  add_credit: "
+            + ", ".join(_format_capacity_action_item(row) for row in limited(top_up))
+            + more_suffix(len(top_up))
+        )
     funded_zero_quota = sorted(
         list(capacity_actions.get("quota_blocked_funded_orgs") or []),
         key=lambda row: float(row.get("balance_usd") or 0),
         reverse=True,
     )
     if funded_zero_quota:
-        rendered = ", ".join(_format_capacity_action_item(row) for row in funded_zero_quota[:limit])
-        suffix = ""
-        if len(funded_zero_quota) > limit:
-            suffix = f", +{len(funded_zero_quota) - limit} more"
-        lines.append(f"  wait_quota_funded: {rendered}{suffix}")
+        rendered = ", ".join(_format_capacity_action_item(row) for row in limited(funded_zero_quota))
+        lines.append(f"  wait_quota_funded: {rendered}{more_suffix(len(funded_zero_quota))}")
     zero_zero = list(capacity_actions.get("zero_balance_zero_quota_orgs") or [])
     if zero_zero:
-        lines.append("  deprioritized_zero_balance_zero_quota: " + ", ".join(_format_capacity_action_item(row) for row in zero_zero[:limit]))
+        lines.append(
+            "  deprioritized_zero_balance_zero_quota: "
+            + ", ".join(_format_capacity_action_item(row) for row in limited(zero_zero))
+            + more_suffix(len(zero_zero))
+        )
     return lines
 
 
@@ -721,6 +736,12 @@ def main() -> None:
     parser.add_argument("--db", default=None)
     parser.add_argument("--refresh", action="store_true", help="Fetch fresh live guard snapshots at 0.64 and 0.70.")
     parser.add_argument("--refresh-timeout", type=int, default=45)
+    parser.add_argument(
+        "--capacity-limit",
+        type=int,
+        default=8,
+        help="Max orgs shown per capacity action line; use 0 for the full list.",
+    )
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
 
@@ -767,7 +788,7 @@ def main() -> None:
             f"balance_blocked={capacity.get('balance_blocked_slots')} "
             f"unknown={capacity.get('quota_unknown_slots')}"
         )
-    for line in capacity_action_lines(report.get("capacity_actions") or {}):
+    for line in capacity_action_lines(report.get("capacity_actions") or {}, limit=args.capacity_limit):
         print(line)
     print("profile targets:")
     for profile_key, count in sorted(report["profile_counts"].items(), key=lambda item: item[1], reverse=True):

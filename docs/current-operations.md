@@ -216,6 +216,8 @@ Quota reads are persisted in `org_replica_quotas`, including positive quota
 reads. Use `python3 scripts/health.py --json` to inspect `quota_blockers`, or
 `python3 scripts/reporter.py` for the concise `quota_blockers=N/M` and
 `quota_capacity=used/capacity blocked=X balance_blocked=Y unknown=Z` lines.
+Use `python3 scripts/reporter.py --capacity-limit 0` to print every org in the
+top-up and quota-blocked action lists.
 When an org moves from quota 0 back to positive quota, the DB records an
 `org_replica_quota_restored` event and the normal monitor loop can fill it.
 

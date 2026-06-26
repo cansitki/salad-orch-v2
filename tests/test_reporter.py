@@ -638,11 +638,41 @@ class ReporterTest(unittest.TestCase):
             lines,
             [
                 "capacity_actions top_up_slots=20 top_up_gap_24h=$48.48 top_up_profit=$17.40/day quota_blocked_funded_slots=20 zero_balance_zero_quota_slots=10",
-                "  add_credit: kray(balance=$0.00,quota=10,slots=10,target_profit=$8.70/day,target_cost=$24.24/day,runway=0.00h,gap_24h=$24.24)",
+                "  add_credit: kray(balance=$0.00,quota=10,slots=10,target_profit=$8.70/day,target_cost=$24.24/day,runway=0.00h,gap_24h=$24.24), +1 more",
                 "  wait_quota_funded: sal7-3(balance=$8.93,quota=0,slots=10), +1 more",
                 "  deprioritized_zero_balance_zero_quota: alpha1(balance=$0.00,quota=0,slots=10)",
             ],
         )
+
+    def test_capacity_action_lines_limit_zero_prints_full_lists(self) -> None:
+        actions = {
+            "summary": {
+                "top_up_slots": 20,
+                "top_up_target_profit_day_usd": 17.4,
+                "top_up_funding_gap_24h_usd": 48.48,
+                "quota_blocked_funded_slots": 20,
+                "zero_balance_zero_quota_slots": 20,
+            },
+            "top_up_quota_available_orgs": [
+                {"org_label": "kray", "balance_usd": 0.0, "quota": 10, "slots": 10},
+                {"org_label": "kray2", "balance_usd": 0.0, "quota": 10, "slots": 10},
+            ],
+            "quota_blocked_funded_orgs": [
+                {"org_label": "kr1", "balance_usd": 4.25, "quota": 0, "slots": 10},
+                {"org_label": "sal7-3", "balance_usd": 8.93, "quota": 0, "slots": 10},
+            ],
+            "zero_balance_zero_quota_orgs": [
+                {"org_label": "alpha1", "balance_usd": 0.0, "quota": 0, "slots": 10},
+                {"org_label": "alpha2", "balance_usd": 0.0, "quota": 0, "slots": 10},
+            ],
+        }
+
+        lines = reporter.capacity_action_lines(actions, limit=0)
+
+        self.assertIn("kray2(balance=$0.00,quota=10,slots=10)", lines[1])
+        self.assertIn("kr1(balance=$4.25,quota=0,slots=10)", lines[2])
+        self.assertIn("alpha2(balance=$0.00,quota=0,slots=10)", lines[3])
+        self.assertNotIn("more", "\n".join(lines))
 
     def test_zero_balance_slots_are_not_counted_as_unknown_quota(self) -> None:
         with state_db.connect(self.db_path) as conn:

@@ -165,6 +165,45 @@ class GuardDecisionTest(unittest.TestCase):
         self.assertIsNotNone(decisions[0]["target_profile_key"])
         self.assertIn("availability_probe_fallback", decisions[0]["target"]["reason"])
 
+    def test_guard_replacement_skips_recently_unstable_profiles(self) -> None:
+        profile_scorer.score_profiles(
+            db_path=self.db_path,
+            decision_price_usd=0.64,
+            pearl_fee_rate=0.01,
+            write=True,
+        )
+        with state_db.connect(self.db_path) as conn:
+            candidates = conn.execute(
+                """
+                SELECT profile_key
+                FROM profile_scores
+                WHERE expected_profit_day >= 0.05
+                  AND risk_tier NOT IN ('negative', 'marginal', 'blocked_priority')
+                ORDER BY score DESC, expected_profit_day DESC
+                LIMIT 2
+                """
+            ).fetchall()
+            self.assertGreaterEqual(len(candidates), 2)
+            skipped = candidates[0]["profile_key"]
+            fallback = candidates[1]["profile_key"]
+            conn.execute(
+                "UPDATE profile_scores SET risk_tier = 'unstable_recent_spikes' WHERE profile_key = ?",
+                (skipped,),
+            )
+            target = guard.replacement_target(
+                conn,
+                org_label="kray",
+                slot_name="prl-kray-roi-01",
+                issue_type="negative",
+                current_profile_key=None,
+                decision_price=0.64,
+                min_profit_day=0.05,
+            )
+
+        self.assertIsNotNone(target)
+        self.assertNotEqual(target["profile_key"], skipped)
+        self.assertEqual(target["profile_key"], fallback)
+
     def test_guard_stops_when_no_profitable_replacement_exists(self) -> None:
         self.make_issue_old("negative")
         decisions = guard.enforce_issues(

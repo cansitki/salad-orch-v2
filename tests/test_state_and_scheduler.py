@@ -2436,6 +2436,65 @@ class StateAndSchedulerTest(unittest.TestCase):
         self.assertEqual(row["protected"], 0)
         self.assertEqual(row["reason"], "guard_negative_retarget")
 
+    def test_scheduler_does_not_preserve_unstable_active_guard_target(self) -> None:
+        config = load_config()
+        now = datetime.now(UTC).replace(microsecond=0)
+        with state_db.connect(self.db_path) as conn:
+            state_db.init_db(conn)
+            state_db.sync_config(conn, config)
+            state_db.set_slot_target(
+                conn,
+                {
+                    "org_label": "kry1",
+                    "slot_name": "prl-kry1-roi-07",
+                    "profile_key": "5090:batch:2048",
+                    "mode": "base_fill",
+                    "decision_price_usd": 0.64,
+                    "expected_profit_day": 1.09,
+                    "protected": False,
+                    "reason": "guard_negative_retarget",
+                    "assigned_at_utc": now.isoformat(timespec="seconds"),
+                },
+            )
+            state_db.record_guard_issue(
+                conn,
+                {
+                    "org_label": "kry1",
+                    "slot_name": "prl-kry1-roi-07",
+                    "issue_type": "negative",
+                    "payload": {"gpu": "5090", "priority": "batch"},
+                },
+            )
+            for index in range(3):
+                state_db.record_slot_spike_event(
+                    conn,
+                    {
+                        "at_utc": (now - timedelta(minutes=index + 1)).isoformat(timespec="seconds"),
+                        "org_label": "kry1",
+                        "slot_name": f"prl-kry1-roi-{index + 1:02d}",
+                        "issue_type": "negative",
+                        "profile_key": "5090:batch:2048",
+                        "gpu_key": "5090",
+                        "priority": "batch",
+                        "profit_day": -1.0,
+                    },
+                )
+            conn.commit()
+
+        fleet_scheduler.schedule_once(db_path=self.db_path, price=0.64, fee=0.01, dry_run=False)
+
+        with state_db.connect(self.db_path) as conn:
+            row = conn.execute(
+                """
+                SELECT profile_key, reason
+                FROM slot_targets
+                WHERE org_label = 'kry1' AND slot_name = 'prl-kry1-roi-07'
+                """
+            ).fetchone()
+
+        self.assertNotEqual(row["reason"], "guard_negative_retarget")
+        self.assertNotEqual(row["profile_key"], "5090:batch:2048")
+
     def test_optimize_mode_can_upgrade_protected_running_slot_when_delta_is_large(self) -> None:
         config = load_config()
         with state_db.connect(self.db_path) as conn:

@@ -453,11 +453,14 @@ def build_targets(
 def active_guard_targets(conn) -> dict[tuple[str, str], dict[str, Any]]:
     rows = conn.execute(
         """
-        SELECT t.*, p.gpu_key, p.priority, p.memory_mb, p.label
+        SELECT t.*, p.gpu_key, p.priority, p.memory_mb, p.label,
+               s.risk_tier AS score_risk_tier
         FROM slot_targets t
         JOIN guard_issues g ON g.org_label = t.org_label AND g.slot_name = t.slot_name
         LEFT JOIN gpu_profiles p ON p.profile_key = t.profile_key
+        LEFT JOIN profile_scores s ON s.profile_key = t.profile_key AND s.mode = t.mode
         WHERE t.reason LIKE 'guard_%'
+          AND COALESCE(s.risk_tier, '') NOT IN ('negative', 'marginal', 'blocked_priority', 'unstable_recent_spikes')
         ORDER BY t.org_label, t.slot_name
         """
     ).fetchall()
@@ -498,7 +501,6 @@ def schedule_once(
         }
         availability = state_db.latest_profile_availability(conn)
         cooldowns = state_db.active_search_cooldowns(conn)
-        guard_targets = active_guard_targets(conn)
         existing_targets = {
             (str(row["org_label"]), str(row["slot_name"])): dict(row)
             for row in conn.execute("SELECT * FROM slot_targets").fetchall()
@@ -517,6 +519,9 @@ def schedule_once(
         pearl_fee_rate=selected_fee,
         write=not dry_run,
     )
+    with state_db.connect(db_path) as conn:
+        state_db.init_db(conn)
+        guard_targets = active_guard_targets(conn)
     targets = build_targets(
         config,
         scores,

@@ -133,7 +133,7 @@ def replacement_target(
         FROM profile_scores s
         JOIN gpu_profiles p ON p.profile_key = s.profile_key
         WHERE s.expected_profit_day >= ?
-          AND s.risk_tier NOT IN ('negative', 'marginal', 'blocked_priority')
+          AND s.risk_tier NOT IN ('negative', 'marginal', 'blocked_priority', 'unstable_recent_spikes')
         ORDER BY s.score DESC, s.expected_profit_day DESC
         """,
         (min_profit_day,),

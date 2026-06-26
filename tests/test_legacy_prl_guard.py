@@ -32,6 +32,7 @@ class LegacyPrlGuardTest(unittest.TestCase):
                 "PRL_STUCK_NON_LIVE_MIN_ACTIVE_SLOTS": "0",
                 "PRL_STUCK_NON_LIVE_SECONDS": "3600",
                 "PRL_EMPTY_STUCK_NON_LIVE_SECONDS": "3600",
+                "PRL_STUCK_NON_LIVE_MAX_ACTIONS": "1",
                 "PRL_STUCK_RUNNING_ZERO_DEFER_SECONDS": "0",
                 "PRL_GLOBAL_POOL_MIN_FRESH_WORKERS": "8",
             }
@@ -227,18 +228,30 @@ class LegacyPrlGuardTest(unittest.TestCase):
         self.assertEqual(recent["action"], "reallocated_pending")
         self.assertEqual(recent["reason"], "test_zero_running")
 
-    def test_low_fresh_pool_sample_skips_no_hash_reallocation(self) -> None:
+    def test_low_fresh_pool_sample_allows_no_hash_reallocation(self) -> None:
         slot = "prl-kray-roi-01"
         reallocated: list[tuple[str, str, str]] = []
         self.guard.SEEN_SINCE[("kray", slot)] = time.time() - 7200.0
         self.guard.snapshot.build_snapshot = lambda _price: self.low_fresh_no_hash_snapshot(slot)
-        self.guard.reallocate_slot = lambda org, slot_name, reason, retarget=True, **_kwargs: reallocated.append(
-            (org, slot_name, reason)
-        )
+
+        def reallocate_slot(
+            org: str,
+            slot_name: str,
+            reason: str,
+            retarget: bool = True,
+            **_kwargs: Any,
+        ) -> list[dict[str, Any]]:
+            reallocated.append((org, slot_name, reason))
+            return [{"org": org, "slot": slot_name, "reason": reason, "retargeted": None}]
+
+        self.guard.reallocate_slot = reallocate_slot
 
         self.guard.tick()
 
-        self.assertEqual(reallocated, [])
+        self.assertEqual(len(reallocated), 1)
+        self.assertEqual(reallocated[0][0], "kray")
+        self.assertEqual(reallocated[0][1], slot)
+        self.assertIn("auto_nohash_guard", reallocated[0][2])
 
     def test_low_fresh_pool_sample_preserves_negative_observation_age(self) -> None:
         slot = "prl-kray-roi-01"

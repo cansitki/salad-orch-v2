@@ -969,9 +969,6 @@ def tick() -> None:
         )
 
     actions: list[dict[str, Any]] = []
-    if low_fresh_pool_sample:
-        stale_current_workers = []
-        no_hash = []
 
     for item in stale_current_workers:
         slot = str(item.get("slot") or "")

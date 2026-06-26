@@ -51,8 +51,21 @@ class AvailabilityProbeTest(unittest.TestCase):
     def setUp(self) -> None:
         self.tmpdir = tempfile.TemporaryDirectory()
         self.db_path = str(pathlib.Path(self.tmpdir.name) / "fleet.db")
+        self._balance_env = {
+            "PRL_ORG_BALANCE_FILE": os.environ.get("PRL_ORG_BALANCE_FILE"),
+            "PRL_BALANCE_FILE": os.environ.get("PRL_BALANCE_FILE"),
+            "SALAD_BALANCE_FILE": os.environ.get("SALAD_BALANCE_FILE"),
+        }
+        os.environ.pop("PRL_ORG_BALANCE_FILE", None)
+        os.environ.pop("SALAD_BALANCE_FILE", None)
+        os.environ["PRL_BALANCE_FILE"] = str(pathlib.Path(self.tmpdir.name) / "balances.json")
 
     def tearDown(self) -> None:
+        for key, value in self._balance_env.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
         self.tmpdir.cleanup()
 
     def test_probe_installs_rate_limiter_for_org_watch(self) -> None:

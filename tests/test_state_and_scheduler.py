@@ -375,8 +375,17 @@ class StateAndSchedulerTest(unittest.TestCase):
             heartbeat = conn.execute(
                 "SELECT payload_json FROM heartbeats WHERE process_name = 'org_worker:kray'"
             ).fetchone()
+            slot_summary = conn.execute(
+                """
+                SELECT COUNT(*) AS count, SUM(live_hashrate_th) AS th
+                FROM slots
+                WHERE org_label='kray' AND observed_status='zero_balance'
+                """
+            ).fetchone()
         self.assertEqual(attempts, 10)
         self.assertIn("zero_balance_skip", heartbeat["payload_json"])
+        self.assertEqual(slot_summary["count"], 10)
+        self.assertEqual(slot_summary["th"], 0)
 
     def test_zero_balance_skip_requires_explicit_fresh_org_balance(self) -> None:
         balance_file = pathlib.Path(self.tmpdir.name) / "balances.json"

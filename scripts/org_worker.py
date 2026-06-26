@@ -809,6 +809,18 @@ def run_once(
                         "payload": result,
                     },
                 )
+                state_db.update_slot_observation(
+                    conn,
+                    {
+                        "org_label": org_label,
+                        "slot_name": str(target["slot_name"]),
+                        "observed_profile_key": result.get("current_profile_key") or str(target["profile_key"]),
+                        "observed_status": "zero_balance",
+                        "live_hashrate_th": 0,
+                        "protected": False,
+                        "reset_observed_age": True,
+                    },
+                )
             state_db.write_heartbeat(
                 conn,
                 f"org_worker:{org_label}",

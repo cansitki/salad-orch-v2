@@ -219,6 +219,15 @@ reads. Use `python3 scripts/health.py --json` to inspect `quota_blockers`, or
 When an org moves from quota 0 back to positive quota, the DB records an
 `org_replica_quota_restored` event and the normal monitor loop can fill it.
 
+Supervisor-started tmux sessions also enable a bounded zero-balance credit
+probe: `PRL_AVAILABILITY_ZERO_BALANCE_CREDIT_PROBE=1`. The probe only touches
+orgs whose Portal balance file says `0.00` while Salad quota still reports
+available replicas. It runs one `org_worker` pass with the zero-balance skip
+temporarily disabled. A `no_credits_available` response creates an org cooldown
+(`PRL_AVAILABILITY_ZERO_BALANCE_CREDIT_PROBE_COOLDOWN_SECONDS`, default `900`),
+so the system retries occasionally without spending ten failed requests every
+minute. If Salad accepts the create, the slot fill path proceeds immediately.
+
 ## Profit Model
 
 The snapshot uses:

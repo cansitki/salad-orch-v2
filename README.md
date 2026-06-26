@@ -329,6 +329,16 @@ keeps API-key-visible orgs such as `kry1` active even when the current Portal
 account cannot read their balance. The availability probe uses the same rule so
 unfunded orgs do not consume shared Salad API-key budget.
 
+For live supervisor sessions, `supervisor.py` enables a bounded zero-balance
+credit probe with `PRL_AVAILABILITY_ZERO_BALANCE_CREDIT_PROBE=1`. This only
+targets orgs whose balance file says `0.00` but whose Salad replica quota still
+has available slots. It temporarily bypasses the zero-balance skip for one
+`org_worker` pass. If Salad returns `no_credits_available`, the org enters a
+cooldown controlled by `PRL_AVAILABILITY_ZERO_BALANCE_CREDIT_PROBE_COOLDOWN_SECONDS`
+(`900` seconds by default), so the loop does not burn repeated failed create
+requests. If Salad accepts the create despite the stale-looking balance, the
+normal fill loop can immediately use the available quota.
+
 Balance is not the only gate. `org_worker.py` also checks Salad's public
 `/organizations/<org>/quotas` endpoint before live actions. If Salad reports
 `container_replicas_quota=0`, the worker records `skip_zero_replica_quota`,

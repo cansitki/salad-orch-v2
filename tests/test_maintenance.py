@@ -124,6 +124,10 @@ class MaintenanceTest(unittest.TestCase):
         self.assertIn("if [ -f .env ]; then set -a; . ./.env; set +a; fi", command[-1])
         self.assertIn("unset PRL_ENABLED_ORGS", command[-1])
         self.assertIn("export SALAD_FLEET_CONFIG_PATH=${SALAD_FLEET_CONFIG_PATH:-config/fleet.current.json}", command[-1])
+        self.assertIn(
+            "export PRL_AVAILABILITY_ZERO_BALANCE_CREDIT_PROBE=${PRL_AVAILABILITY_ZERO_BALANCE_CREDIT_PROBE:-1}",
+            command[-1],
+        )
         self.assertIn("python3 scripts/price_oracle.py --loop", command[-1])
 
     def test_supervisor_includes_runtime_monitor_process(self) -> None:

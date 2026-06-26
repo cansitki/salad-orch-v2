@@ -203,6 +203,16 @@ running when the active Portal account cannot see its balance. Set
 The availability probe uses the same rule, so unfunded orgs do not consume GPU
 capacity probe requests on shared Salad API keys.
 
+When sessions are launched through `scripts/supervisor.py`, the availability
+probe also enables `PRL_AVAILABILITY_ZERO_BALANCE_CREDIT_PROBE=1`. This is a
+bounded live check for orgs with explicit `0.00` balance but available Salad
+replica quota. It runs one `org_worker` pass with the zero-balance skip
+temporarily disabled. If the API returns `no_credits_available`, the org is put
+on a longer cooldown controlled by
+`PRL_AVAILABILITY_ZERO_BALANCE_CREDIT_PROBE_COOLDOWN_SECONDS` (`900` seconds by
+default). If Salad accepts the create, the normal profitable fill loop can use
+that quota immediately.
+
 When the file is missing, the audit keeps recording active GPUs and writes
 `unavailable` balance rows instead of stopping, unless `PRL_AUDIT_MONITOR_DB` or
 `--monitor-db` points to an existing `salad-pearl-monitor` DB.

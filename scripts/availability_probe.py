@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import concurrent.futures
+from contextlib import contextmanager
 import importlib.util
 import multiprocessing
 import os
@@ -23,6 +24,7 @@ from org_worker import (
     explicit_zero_balance_skip,
     install_rate_limited_request,
     record_replica_quota_status,
+    run_once as run_org_worker_once,
     replica_quota_status,
     zero_replica_quota_skip_from_status,
 )
@@ -242,6 +244,103 @@ def wake_rollout_on_quota_restore(
     }
 
 
+@contextmanager
+def _temporary_env(updates: dict[str, str]):
+    previous = {key: os.environ.get(key) for key in updates}
+    try:
+        for key, value in updates.items():
+            os.environ[key] = value
+        yield
+    finally:
+        for key, value in previous.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+
+def _zero_balance_quota_probe_candidates(
+    enabled_orgs: list[OrgConfig],
+    skipped_zero_balance: list[dict[str, Any]],
+    zero_balance_quota_refreshes: list[dict[str, Any]],
+) -> list[OrgConfig]:
+    zero_balance_labels = {str(skip.get("org_label") or "") for skip in skipped_zero_balance}
+    available_quota_labels = {
+        str(row.get("org_label") or "")
+        for row in zero_balance_quota_refreshes
+        if row.get("ok") and int(row.get("available") or 0) > 0
+    }
+    selected = zero_balance_labels & available_quota_labels
+    return [org for org in enabled_orgs if org.label in selected]
+
+
+def probe_zero_balance_credit_orgs(
+    orgs: list[OrgConfig],
+    *,
+    db_path: str | None,
+) -> list[dict[str, Any]]:
+    if not env_bool("PRL_AVAILABILITY_ZERO_BALANCE_CREDIT_PROBE", False):
+        return []
+    max_orgs = max(0, env_int("PRL_AVAILABILITY_ZERO_BALANCE_CREDIT_PROBE_MAX_ORGS", 5))
+    if max_orgs <= 0:
+        return []
+    cooldown_seconds = max(30, env_int("PRL_AVAILABILITY_ZERO_BALANCE_CREDIT_PROBE_COOLDOWN_SECONDS", 900))
+    pending_retarget_seconds = env_int("PRL_AVAILABILITY_ZERO_BALANCE_CREDIT_PROBE_PENDING_RETARGET_SECONDS", 60)
+    pending_status_seconds = env_int("PRL_AVAILABILITY_ZERO_BALANCE_CREDIT_PROBE_PENDING_STATUS_SECONDS", 180)
+    results: list[dict[str, Any]] = []
+    for org in orgs[:max_orgs]:
+        with state_db.connect(db_path) as conn:
+            state_db.init_db(conn)
+            cooldown = state_db.active_org_cooldown(conn, org.label)
+        if cooldown is not None:
+            results.append(
+                {
+                    "org_label": org.label,
+                    "ok": True,
+                    "skipped": True,
+                    "reason": "active_no_credits_cooldown",
+                    "cooldown": cooldown,
+                }
+            )
+            continue
+        try:
+            with _temporary_env(
+                {
+                    "PRL_SKIP_ZERO_BALANCE_ORGS": "0",
+                    "PRL_NO_CREDITS_ORG_COOLDOWN_SECONDS": str(cooldown_seconds),
+                }
+            ):
+                payload = run_org_worker_once(
+                    org_label=org.label,
+                    db_path=db_path,
+                    apply=True,
+                    schedule_if_empty=True,
+                    allow_pending_retarget=True,
+                    pending_retarget_after_seconds=pending_retarget_seconds,
+                    pending_status_retarget_after_seconds=pending_status_seconds,
+                )
+        except Exception as exc:
+            results.append(
+                {
+                    "org_label": org.label,
+                    "ok": False,
+                    "error_type": type(exc).__name__,
+                    "error": str(exc)[:240],
+                }
+            )
+            continue
+        results.append(
+            {
+                "org_label": org.label,
+                "ok": True,
+                "targets": int(payload.get("targets") or 0),
+                "action_counts": payload.get("action_counts") or {},
+                "no_credits_skip": payload.get("no_credits_skip"),
+            }
+        )
+    return results
+
+
 def _probe_org_process(task: dict[str, Any], result_queue: Any) -> None:
     try:
         result_queue.put(("ok", _probe_org_profiles(**task)))
@@ -381,6 +480,14 @@ def run_once(
             [org for org in enabled_orgs if org.label in skipped_zero_balance_labels],
             db_path=db_path,
         )
+    zero_balance_credit_probe = probe_zero_balance_credit_orgs(
+        _zero_balance_quota_probe_candidates(
+            enabled_orgs,
+            skipped_zero_balance,
+            zero_balance_quota_refreshes,
+        ),
+        db_path=db_path,
+    )
 
     with state_db.connect(db_path) as conn:
         state_db.init_db(conn)
@@ -434,6 +541,7 @@ def run_once(
                 "profile_parallelism": selected_profile_parallelism,
                 "skipped_zero_balance_orgs": skipped_zero_balance,
                 "zero_balance_quota_refreshes": zero_balance_quota_refreshes,
+                "zero_balance_credit_probe": zero_balance_credit_probe,
                 "skipped_no_credits_orgs": skipped_no_credits,
                 "cleared_no_credits_cooldowns": cleared_no_credits_cooldowns,
             },
@@ -559,6 +667,7 @@ def run_once(
                 "profile_parallelism": selected_profile_parallelism,
                 "skipped_zero_balance_orgs": skipped_zero_balance,
                 "zero_balance_quota_refreshes": zero_balance_quota_refreshes,
+                "zero_balance_credit_probe": zero_balance_credit_probe,
                 "skipped_no_credits_orgs": skipped_no_credits,
                 "cleared_no_credits_cooldowns": cleared_no_credits_cooldowns,
                 "skipped_zero_replica_quota_orgs": skipped_zero_replica_quota,
@@ -576,6 +685,7 @@ def run_once(
                 "profiles": by_profile,
                 "skipped_zero_balance_orgs": skipped_zero_balance,
                 "zero_balance_quota_refreshes": zero_balance_quota_refreshes,
+                "zero_balance_credit_probe": zero_balance_credit_probe,
                 "skipped_no_credits_orgs": skipped_no_credits,
                 "cleared_no_credits_cooldowns": cleared_no_credits_cooldowns,
                 "skipped_zero_replica_quota_orgs": skipped_zero_replica_quota,
@@ -592,6 +702,7 @@ def run_once(
         "profile_parallelism": selected_profile_parallelism,
         "skipped_zero_balance_orgs": skipped_zero_balance,
         "zero_balance_quota_refreshes": zero_balance_quota_refreshes,
+        "zero_balance_credit_probe": zero_balance_credit_probe,
         "skipped_no_credits_orgs": skipped_no_credits,
         "cleared_no_credits_cooldowns": cleared_no_credits_cooldowns,
         "skipped_zero_replica_quota_orgs": skipped_zero_replica_quota,

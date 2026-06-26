@@ -217,6 +217,8 @@ def tmux_command(session: str, cmd: list[str]) -> list[str]:
         + " && if [ -f .env ]; then set -a; . ./.env; set +a; fi && "
         + "unset PRL_ENABLED_ORGS && "
         + "export SALAD_FLEET_CONFIG_PATH=${SALAD_FLEET_CONFIG_PATH:-config/fleet.current.json} && "
+        + "export PRL_AVAILABILITY_ZERO_BALANCE_CREDIT_PROBE=${PRL_AVAILABILITY_ZERO_BALANCE_CREDIT_PROBE:-1} && "
+        + "export PRL_AVAILABILITY_ZERO_BALANCE_CREDIT_PROBE_COOLDOWN_SECONDS=${PRL_AVAILABILITY_ZERO_BALANCE_CREDIT_PROBE_COOLDOWN_SECONDS:-900} && "
         + " ".join(shlex.quote(part) for part in cmd)
     )
     return ["tmux", "new-session", "-d", "-s", session, joined]

@@ -306,6 +306,92 @@ class AvailabilityProbeTest(unittest.TestCase):
         self.assertEqual(quota["used"], 2)
         self.assertEqual(quota["source"], "availability_probe_zero_balance")
 
+    def test_run_once_credit_probes_zero_balance_orgs_with_available_quota(self) -> None:
+        config = FleetConfig(
+            organizations=(
+                OrgConfig(
+                    label="kray",
+                    slug="kray",
+                    api_key_env="SALAD_API_KEY_2",
+                    slot_prefix="prl-kray-roi",
+                ),
+            )
+        )
+        profile = profit_model.Profile(
+            profile_key="4090:batch:2048",
+            gpu_key="4090",
+            gpu_id="gpu-4090",
+            priority="batch",
+            label="RTX 4090 batch",
+            memory_mb=2048,
+            expected_th=230.0,
+            static_hourly_usd=0.16,
+        )
+        pathlib.Path(os.environ["PRL_BALANCE_FILE"]).write_text(json.dumps({"kray": 0.0}), encoding="utf-8")
+
+        class QuotaOnlyWatch(FakeWatch):
+            ORG = "kray"
+
+            def request(self, method: str, path: str, _payload=None, **_kwargs):
+                return {
+                    "container_groups_quotas": {
+                        "container_replicas_quota": 10,
+                        "container_replicas_used": 0,
+                    },
+                    "update_time": "2026-06-26T21:30:00+00:00",
+                }
+
+            def candidate_availability(self, _slot_name, _candidate):
+                raise AssertionError("zero balance org should not probe profile availability")
+
+        worker_payload = {
+            "targets": 10,
+            "action_counts": {"create_failed": 1, "skip_no_credits": 9},
+            "no_credits_skip": None,
+        }
+        with (
+            mock.patch.dict(
+                os.environ,
+                {
+                    "PRL_AVAILABILITY_ZERO_BALANCE_CREDIT_PROBE": "1",
+                    "PRL_AVAILABILITY_ZERO_BALANCE_CREDIT_PROBE_COOLDOWN_SECONDS": "777",
+                },
+                clear=False,
+            ),
+            mock.patch.object(availability_probe, "load_config", return_value=config),
+            mock.patch.object(availability_probe.profit_model, "load_profiles", return_value=[profile]),
+            mock.patch.object(availability_probe, "load_watch_module", return_value=QuotaOnlyWatch()),
+            mock.patch.object(availability_probe, "install_rate_limited_request"),
+            mock.patch.object(availability_probe, "run_org_worker_once", return_value=worker_payload) as worker_mock,
+        ):
+            payload = availability_probe.run_once(db_path=self.db_path, profile_limit=1)
+
+        worker_mock.assert_called_once()
+        kwargs = worker_mock.call_args.kwargs
+        self.assertEqual(kwargs["org_label"], "kray")
+        self.assertEqual(kwargs["db_path"], self.db_path)
+        self.assertTrue(kwargs["apply"])
+        self.assertTrue(kwargs["schedule_if_empty"])
+        self.assertTrue(kwargs["allow_pending_retarget"])
+        self.assertEqual(payload["probed"], 0)
+        self.assertEqual(
+            payload["zero_balance_credit_probe"],
+            [
+                {
+                    "org_label": "kray",
+                    "ok": True,
+                    "targets": 10,
+                    "action_counts": {"create_failed": 1, "skip_no_credits": 9},
+                    "no_credits_skip": None,
+                }
+            ],
+        )
+        with state_db.connect(self.db_path) as conn:
+            heartbeat = conn.execute(
+                "SELECT payload_json FROM heartbeats WHERE process_name='availability_probe'"
+            ).fetchone()
+        self.assertIn("zero_balance_credit_probe", heartbeat["payload_json"])
+
     def test_run_once_skips_active_no_credits_orgs(self) -> None:
         config = FleetConfig(
             organizations=(

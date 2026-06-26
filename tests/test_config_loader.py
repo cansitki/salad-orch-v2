@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import pathlib
 import sys
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -124,6 +125,36 @@ class ConfigLoaderTest(unittest.TestCase):
             [org.label for org in config.enabled_orgs()[-6:]],
             ["kry2", "kr1", "kr2", "kr3", "alpha1", "alpha2"],
         )
+
+    def test_config_path_loads_public_fleet_config(self) -> None:
+        payload = {
+            "organizations": [
+                {
+                    "label": "path-org",
+                    "slug": "path-org",
+                    "api_key_env": "SALAD_API_KEY_PATH",
+                    "slot_prefix": "prl-path-org-roi",
+                    "worker_prefix": "path-org-prl",
+                    "worker_slot_prefix": "path-org-roi-",
+                    "pool_worker_prefix": "path-org-prl-path-org",
+                    "display_prefix": "PearlFortune PATH",
+                    "slots": 10,
+                    "enabled": True,
+                }
+            ]
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_path = pathlib.Path(tmpdir) / "fleet.json"
+            config_path.write_text(json.dumps(payload), encoding="utf-8")
+            with patch.object(config_loader, "load_env_file", lambda: None), patch.dict(
+                config_loader.os.environ,
+                {"SALAD_FLEET_CONFIG_PATH": str(config_path)},
+                clear=True,
+            ):
+                config = config_loader.load_config()
+
+        self.assertEqual(config.target_slot_count(), 10)
+        self.assertEqual([org.label for org in config.enabled_orgs()], ["path-org"])
 
     def test_validate_config_catches_duplicate_slot_prefix(self) -> None:
         orgs = (

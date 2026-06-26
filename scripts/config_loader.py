@@ -279,7 +279,11 @@ def validate_config(config: FleetConfig, *, require_secrets: bool = False) -> li
 
 def load_config() -> FleetConfig:
     load_env_file()
-    config_payload = read_json_env("SALAD_FLEET_CONFIG_JSON")
+    config_payload = (
+        read_json_env("SALAD_FLEET_CONFIG_PATH")
+        or read_json_env("PRL_FLEET_CONFIG_PATH")
+        or read_json_env("SALAD_FLEET_CONFIG_JSON")
+    )
 
     if config_payload:
         org_payload = config_payload.get("organizations") or []

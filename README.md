@@ -219,6 +219,17 @@ environment variable name. Use `SALAD_FLEET_EXTRA_ORGS_JSON` to append to the
 default orgs; use `SALAD_FLEET_ORGS_JSON` only when intentionally replacing the
 whole org list. Do not put the API key value in git.
 
+The current public 25-organization layout is committed at
+`config/fleet.current.json`. Use it for durable restarts:
+
+```bash
+export SALAD_FLEET_CONFIG_PATH=config/fleet.current.json
+python3 scripts/config_loader.py --validate
+```
+
+This file contains only organization labels and API key environment variable
+names. Keep the actual API key values in the local shell or `.env`.
+
 Example append:
 
 ```bash

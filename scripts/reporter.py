@@ -205,6 +205,46 @@ def _capacity_actions(
     }
 
 
+def _format_capacity_action_item(row: dict[str, Any]) -> str:
+    balance = row.get("balance_usd")
+    balance_text = "unknown" if balance is None else f"${float(balance):.2f}"
+    return (
+        f"{row.get('org_label')}("
+        f"balance={balance_text},"
+        f"quota={int(row.get('quota') or 0)},"
+        f"slots={int(row.get('slots') or 0)}"
+        ")"
+    )
+
+
+def capacity_action_lines(capacity_actions: dict[str, Any], *, limit: int = 8) -> list[str]:
+    summary = capacity_actions.get("summary") or {}
+    lines = [
+        "capacity_actions "
+        f"top_up_slots={int(summary.get('top_up_slots') or 0)} "
+        f"quota_blocked_funded_slots={int(summary.get('quota_blocked_funded_slots') or 0)} "
+        f"zero_balance_zero_quota_slots={int(summary.get('zero_balance_zero_quota_slots') or 0)}"
+    ]
+    top_up = list(capacity_actions.get("top_up_quota_available_orgs") or [])
+    if top_up:
+        lines.append("  add_credit: " + ", ".join(_format_capacity_action_item(row) for row in top_up[:limit]))
+    funded_zero_quota = sorted(
+        list(capacity_actions.get("quota_blocked_funded_orgs") or []),
+        key=lambda row: float(row.get("balance_usd") or 0),
+        reverse=True,
+    )
+    if funded_zero_quota:
+        rendered = ", ".join(_format_capacity_action_item(row) for row in funded_zero_quota[:limit])
+        suffix = ""
+        if len(funded_zero_quota) > limit:
+            suffix = f", +{len(funded_zero_quota) - limit} more"
+        lines.append(f"  wait_quota_funded: {rendered}{suffix}")
+    zero_zero = list(capacity_actions.get("zero_balance_zero_quota_orgs") or [])
+    if zero_zero:
+        lines.append("  deprioritized_zero_balance_zero_quota: " + ", ".join(_format_capacity_action_item(row) for row in zero_zero[:limit]))
+    return lines
+
+
 def _slot_snapshots_for_batch(conn: Any, snapshot_at_utc: str | None = None) -> list[dict[str, Any]]:
     if snapshot_at_utc:
         return [
@@ -624,6 +664,8 @@ def main() -> None:
             f"balance_blocked={capacity.get('balance_blocked_slots')} "
             f"unknown={capacity.get('quota_unknown_slots')}"
         )
+    for line in capacity_action_lines(report.get("capacity_actions") or {}):
+        print(line)
     print("profile targets:")
     for profile_key, count in sorted(report["profile_counts"].items(), key=lambda item: item[1], reverse=True):
         print(f"  {count:>3} {profile_key}")

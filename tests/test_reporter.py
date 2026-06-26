@@ -511,6 +511,38 @@ class ReporterTest(unittest.TestCase):
             },
         )
 
+    def test_capacity_action_lines_include_actionable_orgs(self) -> None:
+        actions = {
+            "summary": {
+                "top_up_slots": 20,
+                "quota_blocked_funded_slots": 20,
+                "zero_balance_zero_quota_slots": 10,
+            },
+            "top_up_quota_available_orgs": [
+                {"org_label": "kray", "balance_usd": 0.0, "quota": 10, "slots": 10},
+                {"org_label": "kray2", "balance_usd": 0.0, "quota": 10, "slots": 10},
+            ],
+            "quota_blocked_funded_orgs": [
+                {"org_label": "kr1", "balance_usd": 4.25, "quota": 0, "slots": 10},
+                {"org_label": "sal7-3", "balance_usd": 8.93, "quota": 0, "slots": 10},
+            ],
+            "zero_balance_zero_quota_orgs": [
+                {"org_label": "alpha1", "balance_usd": 0.0, "quota": 0, "slots": 10},
+            ],
+        }
+
+        lines = reporter.capacity_action_lines(actions, limit=1)
+
+        self.assertEqual(
+            lines,
+            [
+                "capacity_actions top_up_slots=20 quota_blocked_funded_slots=20 zero_balance_zero_quota_slots=10",
+                "  add_credit: kray(balance=$0.00,quota=10,slots=10)",
+                "  wait_quota_funded: sal7-3(balance=$8.93,quota=0,slots=10), +1 more",
+                "  deprioritized_zero_balance_zero_quota: alpha1(balance=$0.00,quota=0,slots=10)",
+            ],
+        )
+
     def test_zero_balance_slots_are_not_counted_as_unknown_quota(self) -> None:
         with state_db.connect(self.db_path) as conn:
             state_db.upsert_org_replica_quota(

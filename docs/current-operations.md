@@ -215,7 +215,10 @@ replicas there; there is no profitable fill action until the quota is raised.
 Quota reads are persisted in `org_replica_quotas`, including positive quota
 reads. Use `python3 scripts/health.py --json` to inspect `quota_blockers`, or
 `python3 scripts/reporter.py` for the concise `quota_blockers=N/M` and
-`quota_capacity=used/capacity blocked=X balance_blocked=Y unknown=Z` lines.
+`quota_capacity=used/capacity fillable_now=F blocked=X balance_blocked=Y
+unknown=Z` lines. `fillable_now` means the org has both positive balance and
+available Salad replica quota, so the live loop can try to fill those slots
+immediately.
 Use `python3 scripts/reporter.py --capacity-limit 0` to print every org in the
 top-up and quota-blocked action lists.
 When an org moves from quota 0 back to positive quota, the DB records an

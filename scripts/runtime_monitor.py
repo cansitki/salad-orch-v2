@@ -547,6 +547,7 @@ def _print_tick(payload: dict[str, Any]) -> None:
         capacity = shadow["capacity_action_summary"]
         print(
             "capacity "
+            f"fillable_now_slots={int(capacity.get('fillable_now_slots') or 0)} "
             f"top_up_slots={int(capacity.get('top_up_slots') or 0)} "
             f"top_up_gap_24h=${float(capacity.get('top_up_funding_gap_24h_usd') or 0):.2f} "
             f"top_up_profit=${float(capacity.get('top_up_target_profit_day_usd') or 0):.2f}/day "

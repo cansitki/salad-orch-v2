@@ -190,6 +190,7 @@ def _capacity_actions(
     org_slot_counts: dict[str, int],
     target_estimates: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
+    fillable_now_orgs = []
     top_up_quota_available_orgs = []
     quota_blocked_funded_orgs = []
     zero_balance_zero_quota_orgs = []
@@ -217,7 +218,23 @@ def _capacity_actions(
         available_slots_if_funded = max(0, min(org_slots, quota_value) - min(org_slots, used_value))
         target_estimate = dict(estimates.get(org_label) or {})
         funding = _funding_fields(balance_usd, target_estimate)
-        if quota_value > 0 and (balance_usd is None or balance_usd <= 0):
+        if quota_value > 0 and balance_usd is not None and balance_usd > 0 and available_slots_if_funded > 0:
+            fillable_now_orgs.append(
+                {
+                    "org_label": org_label,
+                    "action": "apply_now",
+                    "reason": "quota_available_and_positive_balance",
+                    "balance_usd": balance_usd,
+                    "quota": quota_value,
+                    "quota_used": used_value,
+                    "quota_available": available_value,
+                    "slots": org_slots,
+                    "fillable_slots": available_slots_if_funded,
+                    **target_estimate,
+                    **funding,
+                }
+            )
+        elif quota_value > 0 and (balance_usd is None or balance_usd <= 0):
             top_up_quota_available_orgs.append(
                 {
                     "org_label": org_label,
@@ -260,14 +277,21 @@ def _capacity_actions(
                     **funding,
                 }
             )
+    fillable_totals = totals(fillable_now_orgs, "fillable_slots")
     top_up_totals = totals(top_up_quota_available_orgs, "available_slots_if_funded")
     funded_quota_blocked_totals = totals(quota_blocked_funded_orgs, "blocked_slots")
     zero_balance_zero_quota_totals = totals(zero_balance_zero_quota_orgs, "slots")
     return {
+        "fillable_now_orgs": fillable_now_orgs,
         "top_up_quota_available_orgs": top_up_quota_available_orgs,
         "quota_blocked_funded_orgs": quota_blocked_funded_orgs,
         "zero_balance_zero_quota_orgs": zero_balance_zero_quota_orgs,
         "summary": {
+            "fillable_now_slots": fillable_totals["slots"],
+            "fillable_now_balance_usd": fillable_totals["balance_usd"],
+            "fillable_now_target_cost_day_usd": fillable_totals["target_cost_day_usd"],
+            "fillable_now_target_profit_day_usd": fillable_totals["target_profit_day_usd"],
+            "fillable_now_funding_gap_24h_usd": fillable_totals["funding_gap_24h_usd"],
             "top_up_slots": top_up_totals["slots"],
             "top_up_target_cost_day_usd": top_up_totals["target_cost_day_usd"],
             "top_up_target_profit_day_usd": top_up_totals["target_profit_day_usd"],
@@ -322,12 +346,20 @@ def capacity_action_lines(capacity_actions: dict[str, Any], *, limit: int = 8) -
 
     lines = [
         "capacity_actions "
+        f"fillable_now_slots={int(summary.get('fillable_now_slots') or 0)} "
         f"top_up_slots={int(summary.get('top_up_slots') or 0)} "
         f"top_up_gap_24h=${float(summary.get('top_up_funding_gap_24h_usd') or 0):.2f} "
         f"top_up_profit=${float(summary.get('top_up_target_profit_day_usd') or 0):.2f}/day "
         f"quota_blocked_funded_slots={int(summary.get('quota_blocked_funded_slots') or 0)} "
         f"zero_balance_zero_quota_slots={int(summary.get('zero_balance_zero_quota_slots') or 0)}"
     ]
+    fillable_now = list(capacity_actions.get("fillable_now_orgs") or [])
+    if fillable_now:
+        lines.append(
+            "  fillable_now: "
+            + ", ".join(_format_capacity_action_item(row) for row in limited(fillable_now))
+            + more_suffix(len(fillable_now))
+        )
     top_up = list(capacity_actions.get("top_up_quota_available_orgs") or [])
     if top_up:
         lines.append(
@@ -782,8 +814,10 @@ def main() -> None:
         print(f"quota_blockers={len(report['quota_blockers'])}/{total_quota_orgs}")
     capacity = report.get("capacity_summary") or {}
     if capacity:
+        capacity_action_summary = (report.get("capacity_actions") or {}).get("summary") or {}
         print(
             f"quota_capacity={capacity.get('quota_used_slots')}/{capacity.get('quota_capacity_slots')} "
+            f"fillable_now={capacity_action_summary.get('fillable_now_slots', 0)} "
             f"blocked={capacity.get('quota_blocked_slots')} "
             f"balance_blocked={capacity.get('balance_blocked_slots')} "
             f"unknown={capacity.get('quota_unknown_slots')}"

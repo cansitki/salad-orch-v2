@@ -505,6 +505,11 @@ class ReporterTest(unittest.TestCase):
         self.assertEqual(
             actions["summary"],
             {
+                "fillable_now_slots": 0,
+                "fillable_now_balance_usd": 0,
+                "fillable_now_target_cost_day_usd": 0,
+                "fillable_now_target_profit_day_usd": 0,
+                "fillable_now_funding_gap_24h_usd": 0,
                 "top_up_slots": 10,
                 "top_up_target_cost_day_usd": 0,
                 "top_up_target_profit_day_usd": 0,
@@ -520,6 +525,32 @@ class ReporterTest(unittest.TestCase):
                 "zero_balance_zero_quota_funding_gap_24h_usd": 0,
             },
         )
+
+    def test_capacity_actions_include_fillable_now_orgs(self) -> None:
+        self.balance_file.write_text(json.dumps({"kray": 6.5}), encoding="utf-8")
+        with state_db.connect(self.db_path) as conn:
+            state_db.upsert_org_replica_quota(
+                conn,
+                {
+                    "org_label": "kray",
+                    "quota": 10,
+                    "used": 3,
+                    "available": 7,
+                    "status": "available",
+                    "reason": "container_replicas_quota_available",
+                    "source": "test",
+                },
+            )
+            conn.commit()
+
+        report = reporter.build_report(self.db_path)
+        actions = report["capacity_actions"]
+
+        self.assertEqual([row["org_label"] for row in actions["fillable_now_orgs"]], ["kray"])
+        self.assertEqual(actions["fillable_now_orgs"][0]["fillable_slots"], 7)
+        self.assertEqual(actions["fillable_now_orgs"][0]["balance_usd"], 6.5)
+        self.assertEqual(actions["summary"]["fillable_now_slots"], 7)
+        self.assertEqual(actions["summary"]["fillable_now_balance_usd"], 6.5)
 
     def test_capacity_actions_include_target_profit_and_cost_estimates(self) -> None:
         self.balance_file.write_text(json.dumps({"kray": 0.0}), encoding="utf-8")
@@ -604,6 +635,7 @@ class ReporterTest(unittest.TestCase):
     def test_capacity_action_lines_include_actionable_orgs(self) -> None:
         actions = {
             "summary": {
+                "fillable_now_slots": 0,
                 "top_up_slots": 20,
                 "top_up_target_profit_day_usd": 17.4,
                 "top_up_funding_gap_24h_usd": 48.48,
@@ -637,7 +669,7 @@ class ReporterTest(unittest.TestCase):
         self.assertEqual(
             lines,
             [
-                "capacity_actions top_up_slots=20 top_up_gap_24h=$48.48 top_up_profit=$17.40/day quota_blocked_funded_slots=20 zero_balance_zero_quota_slots=10",
+                "capacity_actions fillable_now_slots=0 top_up_slots=20 top_up_gap_24h=$48.48 top_up_profit=$17.40/day quota_blocked_funded_slots=20 zero_balance_zero_quota_slots=10",
                 "  add_credit: kray(balance=$0.00,quota=10,slots=10,target_profit=$8.70/day,target_cost=$24.24/day,runway=0.00h,gap_24h=$24.24), +1 more",
                 "  wait_quota_funded: sal7-3(balance=$8.93,quota=0,slots=10), +1 more",
                 "  deprioritized_zero_balance_zero_quota: alpha1(balance=$0.00,quota=0,slots=10)",
@@ -647,6 +679,7 @@ class ReporterTest(unittest.TestCase):
     def test_capacity_action_lines_limit_zero_prints_full_lists(self) -> None:
         actions = {
             "summary": {
+                "fillable_now_slots": 0,
                 "top_up_slots": 20,
                 "top_up_target_profit_day_usd": 17.4,
                 "top_up_funding_gap_24h_usd": 48.48,

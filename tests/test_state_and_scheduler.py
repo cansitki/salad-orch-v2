@@ -618,10 +618,20 @@ class StateAndSchedulerTest(unittest.TestCase):
             attempts = conn.execute(
                 "SELECT COUNT(*) FROM attempts WHERE org_label='kry1' AND action='skip_no_credits'"
             ).fetchone()[0]
+            slot_status = conn.execute(
+                """
+                SELECT observed_status, live_hashrate_th, protected
+                FROM slots
+                WHERE org_label='kry1' AND slot_name='prl-kry1-roi-01'
+                """
+            ).fetchone()
             heartbeat = conn.execute(
                 "SELECT payload_json FROM heartbeats WHERE process_name = 'org_worker:kry1'"
             ).fetchone()
         self.assertEqual(attempts, 1)
+        self.assertEqual(slot_status["observed_status"], "zero_balance")
+        self.assertEqual(slot_status["live_hashrate_th"], 0)
+        self.assertEqual(slot_status["protected"], 0)
         self.assertIn("no_credits_skip", heartbeat["payload_json"])
 
     def test_org_worker_sets_no_credits_cooldown_and_skips_remaining_targets(self) -> None:
@@ -709,8 +719,20 @@ class StateAndSchedulerTest(unittest.TestCase):
         self.assertEqual(payload["results"][1]["action"], "skip_no_credits")
         with state_db.connect(self.db_path) as conn:
             cooldown = state_db.active_org_cooldown(conn, "kry1")
+            zero_balance_count = conn.execute(
+                """
+                SELECT COUNT(*)
+                FROM slots
+                WHERE org_label='kry1'
+                  AND slot_name IN ('prl-kry1-roi-01', 'prl-kry1-roi-02')
+                  AND observed_status='zero_balance'
+                  AND live_hashrate_th=0
+                  AND protected=0
+                """
+            ).fetchone()[0]
         self.assertIsNotNone(cooldown)
         self.assertEqual(cooldown["reason"], "http_400:no_credits_available")
+        self.assertEqual(zero_balance_count, 1)
 
     def test_slot_observation_preserves_hashrate_when_omitted(self) -> None:
         with state_db.connect(self.db_path) as conn:

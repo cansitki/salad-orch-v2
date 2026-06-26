@@ -40,6 +40,57 @@ def _pending_status_age_seconds(slot: dict[str, Any]) -> tuple[float | None, str
     return _age_seconds(slot.get("updated_at_utc")), "updated_at_utc"
 
 
+def _running_no_live_from_slot_observations(
+    slot_rows: list[dict[str, Any]],
+    existing_rows: list[dict[str, Any]],
+    live_worker_slots: set[tuple[str, str]],
+    *,
+    grace_seconds: int,
+) -> list[dict[str, Any]]:
+    existing = {
+        (str(row.get("org") or ""), str(row.get("slot") or ""))
+        for row in existing_rows
+        if row.get("org") and row.get("slot")
+    }
+    rows: list[dict[str, Any]] = []
+    for slot in slot_rows:
+        org_label = str(slot.get("org_label") or "")
+        slot_name = str(slot.get("slot_name") or "")
+        if not org_label or not slot_name:
+            continue
+        if (org_label, slot_name) in existing or (org_label, slot_name) in live_worker_slots:
+            continue
+        if str(slot.get("observed_status") or "").lower() != "running":
+            continue
+        if float(slot.get("live_hashrate_th") or 0) > 0:
+            continue
+        age_value = (
+            slot.get("observed_profile_since_utc")
+            or slot.get("observed_status_since_utc")
+            or slot.get("updated_at_utc")
+        )
+        age = _age_seconds(age_value)
+        if age is None or age < grace_seconds:
+            continue
+        profile_key = str(slot.get("observed_profile_key") or slot.get("desired_profile_key") or "")
+        profile_parts = profile_key.split(":")
+        rows.append(
+            {
+                "slot": slot_name,
+                "org": org_label,
+                "priority": profile_parts[1] if len(profile_parts) > 1 else "",
+                "profile_key": profile_key,
+                "status": slot.get("observed_status"),
+                "cost_day": None,
+                "state_age_seconds": round(age, 1),
+                "grace_seconds": grace_seconds,
+                "source": "slot_observation",
+                "protected": bool(int(slot.get("protected") or 0)),
+            }
+        )
+    return rows
+
+
 def _float_or_none(value: Any) -> float | None:
     try:
         if value is None:
@@ -88,7 +139,7 @@ def _derive_profit_at_price(latest_profit: Any, latest_payload: dict[str, Any], 
 
 def _slot_snapshots_for_batch(conn: Any, snapshot_at_utc: str | None = None) -> list[dict[str, Any]]:
     if snapshot_at_utc:
-        rows = [
+        return [
             dict(row)
             for row in conn.execute(
                 """
@@ -101,8 +152,6 @@ def _slot_snapshots_for_batch(conn: Any, snapshot_at_utc: str | None = None) -> 
                 (snapshot_at_utc,),
             ).fetchall()
         ]
-        if rows:
-            return rows
     return [
         dict(row)
         for row in conn.execute(
@@ -332,6 +381,22 @@ def build_report(
         live_hashing_gpus = snapshot_live_hashing_gpus
         live_th_source = "profit_snapshots"
     latest_payload = _payload(latest_profit)
+    snapshot_running_no_live = list(latest_payload.get("running_no_live_billable_slots") or [])
+    no_hash_grace_seconds = env_int(
+        "PRL_REPORT_NOHASH_GRACE_SECONDS",
+        env_int("PRL_GUARD_NOHASH_GRACE_SECONDS", 60),
+    )
+    live_worker_slots = {
+        (str(row.get("org_label") or ""), str(row.get("slot_name") or ""))
+        for row in positive_workers
+        if row.get("org_label") and row.get("slot_name")
+    }
+    running_no_live_billable_slots = snapshot_running_no_live + _running_no_live_from_slot_observations(
+        slot_rows,
+        snapshot_running_no_live,
+        live_worker_slots,
+        grace_seconds=no_hash_grace_seconds,
+    )
     mature_pending_after_seconds = env_int(
         "PRL_REPORT_MATURE_PENDING_AFTER_SECONDS",
         env_int("PRL_PENDING_STATUS_RETARGET_AFTER_SECONDS", 300),
@@ -408,7 +473,7 @@ def build_report(
         "stale_workers": len(stale_workers),
         "worker_th": worker_th,
         "status_counts": status_counts,
-        "running_no_live_billable_slots": latest_payload.get("running_no_live_billable_slots") or [],
+        "running_no_live_billable_slots": running_no_live_billable_slots,
         "negative_slots": latest_payload.get("negative_slots") or [],
         "mature_pending_after_seconds": mature_pending_after_seconds,
         "mature_pending_slots": mature_pending_slots,

@@ -88,6 +88,46 @@ class ReporterTest(unittest.TestCase):
         self.assertEqual(report["snapshot_live_th"], 100.5)
         self.assertEqual(report["snapshot_live_at_utc"], "2026-06-24T12:00:00+00:00")
 
+    def test_newer_zero_fleet_snapshot_does_not_use_stale_slot_snapshots(self) -> None:
+        with state_db.connect(self.db_path) as conn:
+            state_db.record_profit_snapshot(
+                conn,
+                {
+                    "at_utc": "2026-06-24T11:59:00+00:00",
+                    "scope": "slot",
+                    "org_label": "kray",
+                    "slot_name": "prl-kray-roi-01",
+                    "profile_key": "3090:batch:2048",
+                    "decision_price_usd": 0.64,
+                    "th": 100.5,
+                    "cost_day": 2.16,
+                    "revenue_day": 3.0,
+                    "profit_day": 0.84,
+                    "payload": {"worker": "kray-prl-old"},
+                },
+            )
+            state_db.record_profit_snapshot(
+                conn,
+                {
+                    "at_utc": "2026-06-24T12:00:00+00:00",
+                    "scope": "fleet",
+                    "decision_price_usd": 0.64,
+                    "live_price_usd": 0.64,
+                    "th": 0.0,
+                    "cost_day": 0.0,
+                    "revenue_day": 0.0,
+                    "profit_day": 0.0,
+                    "payload": {"totals": {"th": 0.0, "cost_day": 0.0, "prl_day": 0.0}},
+                },
+            )
+            conn.commit()
+
+        report = reporter.build_report(self.db_path)
+
+        self.assertEqual(report["snapshot_live_th"], 0)
+        self.assertEqual(report["snapshot_live_hashing_gpus"], 0)
+        self.assertEqual(report["live_th"], 0)
+
     def test_slot_hashrate_wins_over_snapshot_fallback(self) -> None:
         with state_db.connect(self.db_path) as conn:
             state_db.update_slot_observation(
@@ -171,6 +211,66 @@ class ReporterTest(unittest.TestCase):
         self.assertEqual(report["worker_th"], 101.5)
         self.assertEqual(report["live_th"], 101.5)
         self.assertEqual(report["slot_live_hashing_gpus"], 0)
+        self.assertEqual(report["running_no_live_billable_slots"], [])
+
+    def test_running_no_live_falls_back_to_stale_slot_observation(self) -> None:
+        now = datetime.now(UTC).replace(microsecond=0)
+        with state_db.connect(self.db_path) as conn:
+            conn.execute(
+                """
+                UPDATE slots
+                SET observed_status='running',
+                    observed_profile_key='3090:batch:2048',
+                    live_hashrate_th=0,
+                    protected=0,
+                    observed_profile_since_utc=?,
+                    observed_status_since_utc=?,
+                    updated_at_utc=?
+                WHERE org_label='kray' AND slot_name='prl-kray-roi-01'
+                """,
+                (
+                    (now - timedelta(minutes=3)).isoformat(timespec="seconds"),
+                    (now - timedelta(minutes=10)).isoformat(timespec="seconds"),
+                    now.isoformat(timespec="seconds"),
+                ),
+            )
+            conn.commit()
+
+        report = reporter.build_report(self.db_path)
+
+        self.assertEqual(len(report["running_no_live_billable_slots"]), 1)
+        issue = report["running_no_live_billable_slots"][0]
+        self.assertEqual(issue["source"], "slot_observation")
+        self.assertEqual(issue["org"], "kray")
+        self.assertEqual(issue["slot"], "prl-kray-roi-01")
+        self.assertGreaterEqual(issue["state_age_seconds"], 60)
+
+    def test_fresh_running_no_live_slot_observation_stays_in_grace(self) -> None:
+        now = datetime.now(UTC).replace(microsecond=0)
+        with state_db.connect(self.db_path) as conn:
+            conn.execute(
+                """
+                UPDATE slots
+                SET observed_status='running',
+                    observed_profile_key='3090:batch:2048',
+                    live_hashrate_th=0,
+                    protected=0,
+                    observed_profile_since_utc=?,
+                    observed_status_since_utc=?,
+                    updated_at_utc=?
+                WHERE org_label='kray' AND slot_name='prl-kray-roi-01'
+                """,
+                (
+                    (now - timedelta(seconds=20)).isoformat(timespec="seconds"),
+                    (now - timedelta(minutes=10)).isoformat(timespec="seconds"),
+                    now.isoformat(timespec="seconds"),
+                ),
+            )
+            conn.commit()
+
+        report = reporter.build_report(self.db_path)
+
+        self.assertEqual(report["running_no_live_billable_slots"], [])
 
     def test_deploying_slots_count_as_active_pending(self) -> None:
         with state_db.connect(self.db_path) as conn:

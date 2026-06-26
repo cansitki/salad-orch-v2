@@ -1047,6 +1047,18 @@ def run_once(
                         "payload": result,
                     },
                 )
+                state_db.update_slot_observation(
+                    conn,
+                    {
+                        "org_label": org_label,
+                        "slot_name": str(target["slot_name"]),
+                        "observed_profile_key": result.get("current_profile_key") or str(target["profile_key"]),
+                        "observed_status": "zero_balance",
+                        "live_hashrate_th": 0,
+                        "protected": False,
+                        "reset_observed_age": True,
+                    },
+                )
             state_db.write_heartbeat(
                 conn,
                 f"org_worker:{org_label}",
@@ -1267,27 +1279,35 @@ def run_once(
                 "payload": result,
             }
         )
-        if str(result.get("action") or "") not in {"observe_failed", "skip_no_credits"}:
-            observation_rows.append(
-                {
-                    "org_label": org_label,
-                    "slot_name": str(target["slot_name"]),
-                    "observed_profile_key": observed_profile_key_for_result(target, result, apply=apply),
-                    "observed_status": result.get("observed_status"),
-                    "protected": bool(result.get("protected")),
-                    "reset_observed_age": bool(
-                        apply
-                        and result.get("applied")
-                        and str(result.get("action") or "") in {
-                            "cooldown_pending",
-                            "reallocate_pending_after_patch",
-                            "restart_failed_patch_pending",
-                            "restart_empty_pending_after_patch",
-                            "restart_no_hash",
-                        }
-                    ),
-                }
-            )
+        result_action = str(result.get("action") or "")
+        if result_action != "observe_failed":
+            observation = {
+                "org_label": org_label,
+                "slot_name": str(target["slot_name"]),
+                "observed_profile_key": observed_profile_key_for_result(target, result, apply=apply),
+                "observed_status": "zero_balance" if result_action == "skip_no_credits" else result.get("observed_status"),
+                "protected": False if result_action == "skip_no_credits" else bool(result.get("protected")),
+                "reset_observed_age": bool(
+                    apply
+                    and (
+                        result_action == "skip_no_credits"
+                        or (
+                            result.get("applied")
+                            and result_action
+                            in {
+                                "cooldown_pending",
+                                "reallocate_pending_after_patch",
+                                "restart_failed_patch_pending",
+                                "restart_empty_pending_after_patch",
+                                "restart_no_hash",
+                            }
+                        )
+                    )
+                ),
+            }
+            if result_action == "skip_no_credits":
+                observation["live_hashrate_th"] = 0
+            observation_rows.append(observation)
         results.append(result)
     with state_db.connect(db_path) as conn:
         state_db.init_db(conn)

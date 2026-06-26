@@ -321,6 +321,11 @@ class ReporterTest(unittest.TestCase):
         self.assertEqual([row["org_label"] for row in report["quota_blockers"]], ["kray"])
         self.assertEqual(report["replica_quota_summary"][0]["status"], "available")
         self.assertEqual(report["replica_quota_summary"][1]["status"], "zero_quota")
+        self.assertEqual(report["capacity_summary"]["quota_known_slots"], 20)
+        self.assertEqual(report["capacity_summary"]["quota_capacity_slots"], 10)
+        self.assertEqual(report["capacity_summary"]["quota_used_slots"], 7)
+        self.assertEqual(report["capacity_summary"]["quota_blocked_slots"], 10)
+        self.assertEqual(report["capacity_summary"]["quota_unknown_slots"], 20)
 
 
 if __name__ == "__main__":

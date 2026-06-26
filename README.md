@@ -329,8 +329,9 @@ positive again, the normal fill/optimize loop can resume. The availability
 probe uses the same quota check, so quota-zero orgs do not consume profile probe
 budget either. Each quota read is also persisted in `org_replica_quotas`;
 `health.py --json` exposes `quota_blockers`, and `reporter.py` prints
-`quota_blockers=N/M`, so recovery from server-side quota zero is visible without
-digging through heartbeat payloads.
+`quota_blockers=N/M` plus `quota_capacity=used/capacity blocked=X unknown=Y`,
+so recovery from server-side quota zero is visible without digging through
+heartbeat payloads.
 
 If the older local monitor is running, the audit can also read balances directly
 from its SQLite DB:

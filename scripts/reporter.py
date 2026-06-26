@@ -268,11 +268,38 @@ def build_report(
         profile_counts[str(target["profile_key"])] = profile_counts.get(str(target["profile_key"]), 0) + 1
     replica_quotas = status.get("org_replica_quotas") or []
     quota_blockers = [row for row in replica_quotas if str(row.get("status") or "") == "zero_quota"]
+    org_slot_counts: dict[str, int] = {}
+    for slot in slot_rows:
+        org_label = str(slot["org_label"])
+        org_slot_counts[org_label] = org_slot_counts.get(org_label, 0) + 1
+    quota_capacity_slots = 0
+    quota_used_slots = 0
+    quota_blocked_slots = 0
+    quota_known_slots = 0
+    for quota in replica_quotas:
+        org_label = str(quota.get("org_label") or "")
+        org_slots = int(org_slot_counts.get(org_label) or 0)
+        quota_value = int(quota.get("quota") or 0)
+        used_value = int(quota.get("used") or 0)
+        quota_known_slots += org_slots
+        quota_capacity_slots += min(org_slots, quota_value)
+        quota_used_slots += min(org_slots, used_value)
+        if str(quota.get("status") or "") == "zero_quota":
+            quota_blocked_slots += org_slots
+    quota_unknown_slots = max(0, len(slot_rows) - quota_known_slots)
+    capacity_summary = {
+        "target_slots": max(config.target_slot_count(), len(slot_rows), len(targets)),
+        "quota_known_slots": quota_known_slots,
+        "quota_capacity_slots": quota_capacity_slots,
+        "quota_used_slots": quota_used_slots,
+        "quota_blocked_slots": quota_blocked_slots,
+        "quota_unknown_slots": quota_unknown_slots,
+    }
     status_counts: dict[str, int] = {}
     for slot in slot_rows:
         key = str(slot.get("observed_status") or "unknown")
         status_counts[key] = status_counts.get(key, 0) + 1
-    target_slots = max(config.target_slot_count(), len(slot_rows), len(targets))
+    target_slots = int(capacity_summary["target_slots"])
     active_pending_statuses = {"running", "creating", "allocating", "deploying"}
     active_pending_slots = sum(count for key, count in status_counts.items() if key in active_pending_statuses)
     slot_live_th = sum(float(slot.get("live_hashrate_th") or 0) for slot in slot_rows)
@@ -395,6 +422,7 @@ def build_report(
         "replica_quotas": replica_quotas,
         "replica_quota_summary": status.get("replica_quota_summary") or [],
         "quota_blockers": quota_blockers,
+        "capacity_summary": capacity_summary,
         "status": status,
         "top_scores": scores,
         "targets": targets,
@@ -444,6 +472,12 @@ def main() -> None:
     if report.get("quota_blockers"):
         total_quota_orgs = len(report.get("replica_quotas") or [])
         print(f"quota_blockers={len(report['quota_blockers'])}/{total_quota_orgs}")
+    capacity = report.get("capacity_summary") or {}
+    if capacity:
+        print(
+            f"quota_capacity={capacity.get('quota_used_slots')}/{capacity.get('quota_capacity_slots')} "
+            f"blocked={capacity.get('quota_blocked_slots')} unknown={capacity.get('quota_unknown_slots')}"
+        )
     print("profile targets:")
     for profile_key, count in sorted(report["profile_counts"].items(), key=lambda item: item[1], reverse=True):
         print(f"  {count:>3} {profile_key}")

@@ -585,6 +585,8 @@ class ReporterTest(unittest.TestCase):
         self.assertAlmostEqual(row["target_profit_day_usd"], 1.5)
         self.assertAlmostEqual(row["target_cost_day_usd"], 4.56)
         self.assertAlmostEqual(row["target_min_balance_24h_usd"], 4.56)
+        self.assertAlmostEqual(row["target_runway_hours"], 0.0)
+        self.assertAlmostEqual(row["target_funding_gap_24h_usd"], 4.56)
 
     def test_capacity_action_lines_include_actionable_orgs(self) -> None:
         actions = {
@@ -594,7 +596,16 @@ class ReporterTest(unittest.TestCase):
                 "zero_balance_zero_quota_slots": 10,
             },
             "top_up_quota_available_orgs": [
-                {"org_label": "kray", "balance_usd": 0.0, "quota": 10, "slots": 10},
+                {
+                    "org_label": "kray",
+                    "balance_usd": 0.0,
+                    "quota": 10,
+                    "slots": 10,
+                    "target_profit_day_usd": 8.7,
+                    "target_cost_day_usd": 24.24,
+                    "target_runway_hours": 0.0,
+                    "target_funding_gap_24h_usd": 24.24,
+                },
                 {"org_label": "kray2", "balance_usd": 0.0, "quota": 10, "slots": 10},
             ],
             "quota_blocked_funded_orgs": [
@@ -612,7 +623,7 @@ class ReporterTest(unittest.TestCase):
             lines,
             [
                 "capacity_actions top_up_slots=20 quota_blocked_funded_slots=20 zero_balance_zero_quota_slots=10",
-                "  add_credit: kray(balance=$0.00,quota=10,slots=10)",
+                "  add_credit: kray(balance=$0.00,quota=10,slots=10,target_profit=$8.70/day,target_cost=$24.24/day,runway=0.00h,gap_24h=$24.24)",
                 "  wait_quota_funded: sal7-3(balance=$8.93,quota=0,slots=10), +1 more",
                 "  deprioritized_zero_balance_zero_quota: alpha1(balance=$0.00,quota=0,slots=10)",
             ],

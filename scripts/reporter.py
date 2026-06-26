@@ -174,6 +174,17 @@ def _target_estimates_by_org(
     return estimates
 
 
+def _funding_fields(balance_usd: float | None, target_estimate: dict[str, Any]) -> dict[str, Any]:
+    cost_day = float(target_estimate.get("target_cost_day_usd") or 0)
+    if cost_day <= 0:
+        return {}
+    balance_value = max(0.0, float(balance_usd or 0.0))
+    return {
+        "target_runway_hours": round((balance_value / cost_day) * 24.0, 2),
+        "target_funding_gap_24h_usd": round(max(0.0, cost_day - balance_value), 2),
+    }
+
+
 def _capacity_actions(
     replica_quotas: list[dict[str, Any]],
     org_slot_counts: dict[str, int],
@@ -195,6 +206,7 @@ def _capacity_actions(
         balance_usd = float(balance["balance_usd"]) if balance is not None else None
         available_slots_if_funded = max(0, min(org_slots, quota_value) - min(org_slots, used_value))
         target_estimate = dict(estimates.get(org_label) or {})
+        funding = _funding_fields(balance_usd, target_estimate)
         if quota_value > 0 and (balance_usd is None or balance_usd <= 0):
             top_up_quota_available_orgs.append(
                 {
@@ -208,6 +220,7 @@ def _capacity_actions(
                     "slots": org_slots,
                     "available_slots_if_funded": available_slots_if_funded,
                     **target_estimate,
+                    **funding,
                 }
             )
         elif quota_value <= 0 and balance_usd is not None and balance_usd > 0:
@@ -221,6 +234,7 @@ def _capacity_actions(
                     "slots": org_slots,
                     "blocked_slots": org_slots,
                     **target_estimate,
+                    **funding,
                 }
             )
         elif quota_value <= 0 and balance_usd is not None and balance_usd <= 0:
@@ -233,6 +247,7 @@ def _capacity_actions(
                     "quota": quota_value,
                     "slots": org_slots,
                     **target_estimate,
+                    **funding,
                 }
             )
     return {
@@ -259,6 +274,10 @@ def _format_capacity_action_item(row: dict[str, Any]) -> str:
         parts.append(f"target_profit=${float(row.get('target_profit_day_usd') or 0):.2f}/day")
     if row.get("target_cost_day_usd") is not None:
         parts.append(f"target_cost=${float(row.get('target_cost_day_usd') or 0):.2f}/day")
+    if row.get("target_runway_hours") is not None:
+        parts.append(f"runway={float(row.get('target_runway_hours') or 0):.2f}h")
+    if row.get("target_funding_gap_24h_usd") is not None:
+        parts.append(f"gap_24h=${float(row.get('target_funding_gap_24h_usd') or 0):.2f}")
     return (
         f"{row.get('org_label')}("
         f"{','.join(parts)}"

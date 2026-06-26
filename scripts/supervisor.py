@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import pathlib
 import shlex
 import subprocess
@@ -32,6 +33,33 @@ def process_plan(
     maintenance_apply: bool = False,
 ) -> list[dict[str, Any]]:
     config = load_config()
+    if os.environ.get("SALAD_PORTAL_BALANCE_ACCOUNTS_JSON") or os.environ.get("SALAD_PORTAL_BALANCE_EMAILS"):
+        portal_balance_cmd = [
+            "python3",
+            str(SCRIPT_DIR / "portal_multi_balances.py"),
+            "--loop",
+            "--interval",
+            "900",
+            "--balance-file",
+            "state/salad_balances.json",
+            "--cwd",
+            str(REPO_ROOT),
+        ]
+    else:
+        portal_balance_cmd = [
+            "python3",
+            str(SCRIPT_DIR / "portal_balances.py"),
+            "--loop",
+            "--interval",
+            "900",
+            "--balance-file",
+            "state/salad_balances.json",
+            "--cwd",
+            str(REPO_ROOT),
+            "--cookie-jar",
+            "state/portal_cookies.txt",
+        ]
+
     plan = [
         {
             "name": "salad-price-oracle",
@@ -71,22 +99,7 @@ def process_plan(
         {
             "name": "salad-portal-balances",
             "heartbeat": "portal_balances",
-            "cmd": _with_db(
-                [
-                    "python3",
-                    str(SCRIPT_DIR / "portal_balances.py"),
-                    "--loop",
-                    "--interval",
-                    "900",
-                    "--balance-file",
-                    "state/salad_balances.json",
-                    "--cwd",
-                    str(REPO_ROOT),
-                    "--cookie-jar",
-                    "state/portal_cookies.txt",
-                ],
-                db_path,
-            ),
+            "cmd": _with_db(portal_balance_cmd, db_path),
         },
     ]
     if include_audit:

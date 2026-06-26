@@ -46,6 +46,8 @@ def process_plan(
 ) -> list[dict[str, Any]]:
     config = load_config()
     portal_balance_interval = str(max(1, int(os.environ.get("PRL_PORTAL_BALANCE_INTERVAL_SECONDS", "60"))))
+    availability_org_parallelism = str(max(1, int(os.environ.get("PRL_AVAILABILITY_ORG_PARALLELISM", "10"))))
+    availability_profile_parallelism = str(max(1, int(os.environ.get("PRL_AVAILABILITY_PROFILE_PARALLELISM", "4"))))
     if has_multi_balance_accounts():
         portal_balance_cmd = [
             "python3",
@@ -92,9 +94,9 @@ def process_plan(
                     "--priorities",
                     "batch,low",
                     "--org-parallelism",
-                    "2",
+                    availability_org_parallelism,
                     "--profile-parallelism",
-                    "4",
+                    availability_profile_parallelism,
                 ],
                 db_path,
             ),

@@ -240,14 +240,14 @@ Run the availability probe beside the monitor so the scheduler has fresh
 per-org capacity hints instead of rotating profitable profiles blindly:
 
 ```bash
-PRL_PEARL_FEE_RATE=0.01 python3 scripts/availability_probe.py --loop --interval 60 --priorities batch,low --org-parallelism 2 --profile-parallelism 4
+PRL_PEARL_FEE_RATE=0.01 python3 scripts/availability_probe.py --loop --interval 60 --priorities batch,low --org-parallelism 10 --profile-parallelism 4
 ```
 
 The probe uses the same API budget limiter as live workers, so it should slow
 itself down instead of exhausting a shared Salad key. It probes organizations
 in parallel only when they use different API key env vars; orgs sharing one key
-are automatically batched apart. The default organization parallelism is 2 and
-can also be set with `PRL_AVAILABILITY_ORG_PARALLELISM`. Inside each
+are automatically batched apart. The supervisor default organization parallelism
+is 10 and can also be set with `PRL_AVAILABILITY_ORG_PARALLELISM`. Inside each
 organization, profile checks run concurrently under the same SQLite API limiter;
 the default profile parallelism is 4 and can be set with
 `PRL_AVAILABILITY_PROFILE_PARALLELISM`. The default availability heartbeat stale

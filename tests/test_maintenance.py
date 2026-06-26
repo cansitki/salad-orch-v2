@@ -69,11 +69,26 @@ class MaintenanceTest(unittest.TestCase):
         self.assertIn("--priorities", probe["cmd"])
         self.assertIn("batch,low", probe["cmd"])
         self.assertIn("--org-parallelism", probe["cmd"])
-        self.assertIn("2", probe["cmd"])
+        self.assertIn("10", probe["cmd"])
         self.assertIn("--profile-parallelism", probe["cmd"])
         self.assertIn("4", probe["cmd"])
         self.assertIn("--interval", probe["cmd"])
         self.assertIn("60", probe["cmd"])
+
+    def test_supervisor_availability_parallelism_can_be_overridden(self) -> None:
+        with mock.patch.dict(
+            "os.environ",
+            {
+                "PRL_AVAILABILITY_ORG_PARALLELISM": "6",
+                "PRL_AVAILABILITY_PROFILE_PARALLELISM": "3",
+            },
+            clear=False,
+        ):
+            plan = supervisor.process_plan(db_path=self.db_path)
+        probe = next(item for item in plan if item["name"] == "salad-orch-v2-availability")
+
+        self.assertEqual(probe["cmd"][probe["cmd"].index("--org-parallelism") + 1], "6")
+        self.assertEqual(probe["cmd"][probe["cmd"].index("--profile-parallelism") + 1], "3")
 
     def test_supervisor_includes_fleet_audit_process(self) -> None:
         plan = supervisor.process_plan(db_path=self.db_path)

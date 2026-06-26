@@ -241,6 +241,37 @@ class GuardDecisionTest(unittest.TestCase):
 
         self.assertEqual([row["slot"] for row in analysis["negative_slots"]], ["real-loss"])
 
+    def test_guard_records_spike_event_for_recent_issue_history(self) -> None:
+        self.make_issue_old("negative")
+        guard.enforce_issues(
+            db_path=self.db_path,
+            decision_price=0.64,
+            apply=False,
+            analysis={
+                "fresh_workers": 3,
+                "running_no_live_billable_slots": [],
+                "negative_slots": [
+                    {
+                        "org": "kray",
+                        "slot": "prl-kray-roi-01",
+                        "gpu": "3090",
+                        "priority": "batch",
+                        "profit_day": -1.0,
+                        "cost_day": 2.16,
+                    }
+                ],
+            },
+        )
+
+        with state_db.connect(self.db_path) as conn:
+            event = conn.execute("SELECT * FROM slot_spike_events").fetchone()
+        self.assertIsNotNone(event)
+        self.assertEqual(event["org_label"], "kray")
+        self.assertEqual(event["slot_name"], "prl-kray-roi-01")
+        self.assertEqual(event["issue_type"], "negative")
+        self.assertEqual(event["profile_key"], "3090:batch:2048")
+        self.assertEqual(event["profit_day"], -1.0)
+
     def test_successful_apply_clears_slot_runtime_failure(self) -> None:
         self.make_issue_old("negative")
         with state_db.connect(self.db_path) as conn:

@@ -403,6 +403,22 @@ def enforce_issues(
             )
             issue_age = issue_age_seconds(issue_row, row)
             current = issue_current_profile_key(conn, row)
+            state_db.record_slot_spike_event(
+                conn,
+                {
+                    "org_label": org_label,
+                    "slot_name": slot_name,
+                    "issue_type": issue_type,
+                    "profile_key": current,
+                    "gpu_key": row.get("gpu"),
+                    "priority": row.get("priority"),
+                    "profit_day": row.get("profit_day"),
+                    "market_profit_day": row.get("market_profit_day"),
+                    "cost_day": row.get("cost_day"),
+                    "th": row.get("th"),
+                    "payload": row,
+                },
+            )
             target = replacement_target(
                 conn,
                 org_label=org_label,
@@ -577,6 +593,7 @@ def run_once(*, db_path: str | None = None, price: float | None = None, apply: b
         state_db.init_db(conn)
         state_db.clear_failure(conn, "guard")
         snapshot_at = utc_now()
+        spike_summary = state_db.recent_spike_summary(conn, limit=10)
         state_db.record_profit_snapshot(
             conn,
             {
@@ -634,6 +651,8 @@ def run_once(*, db_path: str | None = None, price: float | None = None, apply: b
                 "decisions": len(decisions),
                 "apply": apply,
                 "live_workers": len(worker_rows),
+                "unstable_profiles": sum(1 for row in spike_summary["profiles"] if row.get("unstable")),
+                "top_spike_profiles": spike_summary["profiles"][:5],
             },
         )
         state_db.record_event(
@@ -642,11 +661,12 @@ def run_once(*, db_path: str | None = None, price: float | None = None, apply: b
             source="guard",
             level="warning" if analysis["issue_count"] else "info",
             message="guard analyzed current profit/no-hash state",
-            payload={**analysis, "decisions": decisions, "apply": apply},
+            payload={**analysis, "decisions": decisions, "apply": apply, "spike_summary": spike_summary},
         )
         conn.commit()
     analysis["decisions"] = decisions
     analysis["apply"] = apply
+    analysis["spike_summary"] = spike_summary
     return analysis
 
 

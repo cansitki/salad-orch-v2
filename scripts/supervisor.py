@@ -29,6 +29,7 @@ def process_plan(
     apply_workers: bool = False,
     db_path: str | None = None,
     include_audit: bool = True,
+    include_spike_report: bool = True,
     include_maintenance: bool = False,
     maintenance_apply: bool = False,
 ) -> list[dict[str, Any]]:
@@ -123,6 +124,24 @@ def process_plan(
                 ),
             }
         )
+    if include_spike_report:
+        plan.append(
+            {
+                "name": "salad-spike-report",
+                "heartbeat": "spike_report",
+                "cmd": _with_db(
+                    [
+                        "python3",
+                        str(SCRIPT_DIR / "spike_report.py"),
+                        "--heartbeat",
+                        "--loop",
+                        "--interval",
+                        "300",
+                    ],
+                    db_path,
+                ),
+            }
+        )
     if include_maintenance:
         cmd = ["python3", str(SCRIPT_DIR / "maintenance.py"), "--loop", "--interval", "21600"]
         if maintenance_apply:
@@ -163,6 +182,7 @@ def start_tmux_sessions(
     apply_workers: bool = False,
     db_path: str | None = None,
     include_audit: bool = True,
+    include_spike_report: bool = True,
     include_maintenance: bool = False,
     maintenance_apply: bool = False,
 ) -> list[dict[str, Any]]:
@@ -171,6 +191,7 @@ def start_tmux_sessions(
         apply_workers=apply_workers,
         db_path=db_path,
         include_audit=include_audit,
+        include_spike_report=include_spike_report,
         include_maintenance=include_maintenance,
         maintenance_apply=maintenance_apply,
     ):
@@ -209,6 +230,7 @@ def ensure_tmux_sessions(
     apply_workers: bool = False,
     db_path: str | None = None,
     include_audit: bool = True,
+    include_spike_report: bool = True,
     include_maintenance: bool = False,
     maintenance_apply: bool = False,
     restart_stale: bool = True,
@@ -217,6 +239,7 @@ def ensure_tmux_sessions(
         apply_workers=apply_workers,
         db_path=db_path,
         include_audit=include_audit,
+        include_spike_report=include_spike_report,
         include_maintenance=include_maintenance,
         maintenance_apply=maintenance_apply,
     )
@@ -285,6 +308,7 @@ def main() -> None:
     parser.add_argument("--no-restart-stale", action="store_true", help="Only start missing sessions during --ensure.")
     parser.add_argument("--apply-workers", action="store_true", help="Include --apply for org workers when starting tmux.")
     parser.add_argument("--no-audit", action="store_true", help="Do not include fleet_audit.py in tmux process plans.")
+    parser.add_argument("--no-spike-report", action="store_true", help="Do not include spike_report.py in tmux process plans.")
     parser.add_argument("--include-maintenance", action="store_true", help="Include maintenance.py loop in the tmux plan.")
     parser.add_argument("--maintenance-apply", action="store_true", help="Let maintenance.py delete old historical rows.")
     parser.add_argument("--json", action="store_true")
@@ -295,6 +319,7 @@ def main() -> None:
             apply_workers=args.apply_workers,
             db_path=args.db,
             include_audit=not args.no_audit,
+            include_spike_report=not args.no_spike_report,
             include_maintenance=args.include_maintenance,
             maintenance_apply=args.maintenance_apply,
         )
@@ -305,6 +330,7 @@ def main() -> None:
             apply_workers=args.apply_workers,
             db_path=args.db,
             include_audit=not args.no_audit,
+            include_spike_report=not args.no_spike_report,
             include_maintenance=args.include_maintenance,
             maintenance_apply=args.maintenance_apply,
         )
@@ -315,6 +341,7 @@ def main() -> None:
             apply_workers=args.apply_workers,
             db_path=args.db,
             include_audit=not args.no_audit,
+            include_spike_report=not args.no_spike_report,
             include_maintenance=args.include_maintenance,
             maintenance_apply=args.maintenance_apply,
             restart_stale=not args.no_restart_stale,

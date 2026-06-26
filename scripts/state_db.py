@@ -237,6 +237,25 @@ CREATE TABLE IF NOT EXISTS guard_issues (
   PRIMARY KEY (org_label, slot_name, issue_type)
 );
 
+CREATE TABLE IF NOT EXISTS slot_spike_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  at_utc TEXT NOT NULL,
+  org_label TEXT NOT NULL,
+  slot_name TEXT NOT NULL,
+  issue_type TEXT NOT NULL,
+  profile_key TEXT,
+  gpu_key TEXT,
+  priority TEXT,
+  profit_day REAL,
+  market_profit_day REAL,
+  cost_day REAL,
+  th REAL,
+  payload_json TEXT NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS idx_slot_spike_events_at ON slot_spike_events(at_utc);
+CREATE INDEX IF NOT EXISTS idx_slot_spike_events_profile ON slot_spike_events(profile_key, at_utc);
+CREATE INDEX IF NOT EXISTS idx_slot_spike_events_slot ON slot_spike_events(org_label, slot_name, at_utc);
+
 CREATE TABLE IF NOT EXISTS api_rate_limits (
   api_key_env TEXT PRIMARY KEY,
   window_started_utc TEXT NOT NULL,
@@ -700,11 +719,202 @@ def clear_guard_issues(conn: sqlite3.Connection, active_keys: set[tuple[str, str
             )
 
 
+def _float_or_none(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _parse_utc(value: str) -> datetime:
     parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=UTC)
     return parsed
+
+
+def record_slot_spike_event(conn: sqlite3.Connection, row: dict[str, Any]) -> None:
+    conn.execute(
+        """
+        INSERT INTO slot_spike_events(
+          at_utc, org_label, slot_name, issue_type, profile_key, gpu_key,
+          priority, profit_day, market_profit_day, cost_day, th, payload_json
+        )
+        VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            row.get("at_utc") or utc_now(),
+            row["org_label"],
+            row["slot_name"],
+            row["issue_type"],
+            row.get("profile_key"),
+            row.get("gpu_key"),
+            row.get("priority"),
+            _float_or_none(row.get("profit_day")),
+            _float_or_none(row.get("market_profit_day")),
+            _float_or_none(row.get("cost_day")),
+            _float_or_none(row.get("th")),
+            compact_json(safe_public_payload(row.get("payload", {}))),
+        ),
+    )
+
+
+def recent_spike_summary(
+    conn: sqlite3.Connection,
+    *,
+    windows_minutes: tuple[int, ...] = (30, 60),
+    limit: int = 20,
+    now_utc: str | None = None,
+) -> dict[str, Any]:
+    windows = tuple(sorted({int(window) for window in windows_minutes if int(window) > 0}))
+    if not windows:
+        windows = (30, 60)
+    now = _parse_utc(now_utc or utc_now())
+    max_window = max(windows)
+    profile_30_threshold = env_int("PRL_SPIKE_PROFILE_30M_THRESHOLD", 3)
+    profile_60_threshold = env_int("PRL_SPIKE_PROFILE_60M_THRESHOLD", 5)
+    affected_slots_threshold = env_int("PRL_SPIKE_PROFILE_AFFECTED_SLOTS_60M_THRESHOLD", 3)
+    rows = conn.execute(
+        """
+        SELECT *
+        FROM slot_spike_events
+        WHERE julianday(at_utc) >= julianday(?, ?)
+        ORDER BY at_utc ASC, id ASC
+        """,
+        (now.isoformat(timespec="seconds"), f"-{max_window} minutes"),
+    ).fetchall()
+
+    def profile_identity(row: sqlite3.Row) -> str:
+        if row["profile_key"]:
+            return str(row["profile_key"])
+        gpu = str(row["gpu_key"] or "unknown").lower()
+        priority = str(row["priority"] or "unknown").lower()
+        return f"{gpu}:{priority}"
+
+    profiles: dict[str, dict[str, Any]] = {}
+    slots: dict[tuple[str, str, str], dict[str, Any]] = {}
+
+    def apply_common(item: dict[str, Any], row: sqlite3.Row, suffix: str) -> None:
+        item[f"spikes_{suffix}"] = int(item.get(f"spikes_{suffix}") or 0) + 1
+        issue_counts = item.setdefault(f"issue_counts_{suffix}", {})
+        issue = str(row["issue_type"])
+        issue_counts[issue] = int(issue_counts.get(issue) or 0) + 1
+        profit = _float_or_none(row["profit_day"])
+        if profit is not None:
+            current = item.get(f"worst_profit_day_{suffix}")
+            item[f"worst_profit_day_{suffix}"] = profit if current is None else min(float(current), profit)
+            total_key = f"profit_total_{suffix}"
+            sample_key = f"profit_samples_{suffix}"
+            item[total_key] = float(item.get(total_key) or 0.0) + profit
+            item[sample_key] = int(item.get(sample_key) or 0) + 1
+        item["last_seen_utc"] = str(row["at_utc"])
+
+    for row in rows:
+        try:
+            at = _parse_utc(str(row["at_utc"]))
+        except ValueError:
+            continue
+        profile_key = profile_identity(row)
+        profile = profiles.setdefault(
+            profile_key,
+            {
+                "profile_key": profile_key,
+                "gpu_key": row["gpu_key"],
+                "priority": row["priority"],
+                "affected_slots": {window: set() for window in windows},
+                "sample_slots": [],
+                "first_seen_utc": str(row["at_utc"]),
+                "last_seen_utc": str(row["at_utc"]),
+            },
+        )
+        slot_key_text = f"{row['org_label']}/{row['slot_name']}"
+        if slot_key_text not in profile["sample_slots"] and len(profile["sample_slots"]) < 8:
+            profile["sample_slots"].append(slot_key_text)
+        slot = slots.setdefault(
+            (str(row["org_label"]), str(row["slot_name"]), profile_key),
+            {
+                "org_label": row["org_label"],
+                "slot_name": row["slot_name"],
+                "profile_key": profile_key,
+                "gpu_key": row["gpu_key"],
+                "priority": row["priority"],
+                "first_seen_utc": str(row["at_utc"]),
+                "last_seen_utc": str(row["at_utc"]),
+            },
+        )
+        for window in windows:
+            if (now - at).total_seconds() > window * 60:
+                continue
+            suffix = f"{window}m"
+            profile["affected_slots"][window].add(slot_key_text)
+            apply_common(profile, row, suffix)
+            apply_common(slot, row, suffix)
+
+    def finalize(item: dict[str, Any]) -> dict[str, Any]:
+        out = dict(item)
+        profile_parts = str(out.get("profile_key") or "").split(":")
+        if len(profile_parts) >= 2:
+            out["gpu_key"] = out.get("gpu_key") or profile_parts[0]
+            out["priority"] = profile_parts[1]
+        affected = out.pop("affected_slots", None)
+        if affected:
+            for window, values in affected.items():
+                out[f"affected_slots_{window}m"] = len(values)
+        for key in list(out):
+            if key.startswith("profit_total_"):
+                suffix = key.removeprefix("profit_total_")
+                samples = int(out.get(f"profit_samples_{suffix}") or 0)
+                if samples:
+                    out[f"avg_profit_day_{suffix}"] = round(float(out[key]) / samples, 6)
+                del out[key]
+                out.pop(f"profit_samples_{suffix}", None)
+        spikes_30 = int(out.get("spikes_30m") or 0)
+        spikes_60 = int(out.get("spikes_60m") or 0)
+        affected_60 = int(out.get("affected_slots_60m") or 0)
+        out["unstable"] = (
+            spikes_30 >= profile_30_threshold
+            or spikes_60 >= profile_60_threshold
+            or affected_60 >= affected_slots_threshold
+        )
+        out["instability_score"] = spikes_30 * 2 + spikes_60 + affected_60 * 2
+        return out
+
+    profile_rows = [finalize(item) for item in profiles.values()]
+    slot_rows = [finalize(item) for item in slots.values()]
+    profile_rows.sort(
+        key=lambda item: (
+            bool(item.get("unstable")),
+            int(item.get("instability_score") or 0),
+            int(item.get("spikes_60m") or 0),
+            int(item.get("spikes_30m") or 0),
+        ),
+        reverse=True,
+    )
+    slot_rows.sort(
+        key=lambda item: (
+            int(item.get("spikes_60m") or 0),
+            int(item.get("spikes_30m") or 0),
+            float(item.get("worst_profit_day_60m") or 0),
+        ),
+        reverse=True,
+    )
+    if limit > 0:
+        profile_rows = profile_rows[:limit]
+        slot_rows = slot_rows[:limit]
+    return {
+        "generated_at_utc": now.isoformat(timespec="seconds"),
+        "windows_minutes": list(windows),
+        "thresholds": {
+            "profile_30m": profile_30_threshold,
+            "profile_60m": profile_60_threshold,
+            "affected_slots_60m": affected_slots_threshold,
+        },
+        "event_count": len(rows),
+        "profiles": profile_rows,
+        "slots": slot_rows,
+    }
 
 
 def reserve_api_request(

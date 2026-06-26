@@ -124,6 +124,7 @@ The runnable code lives in `scripts/`.
 | `scripts/fleet_scheduler.py` | Central dry-run-safe target assignment across all org slots. |
 | `scripts/org_worker.py` | Per-org worker that consumes scheduler targets; live actions require `--apply`. |
 | `scripts/guard.py` | Guard v2. Analyzes by default; `--apply` retargets/stops no-hash or negative slots after grace, and writes live slot hashrate/worker observations. |
+| `scripts/spike_report.py` | Summarizes recent negative/no-hash spike history over 30/60 minute windows and marks unstable profiles/slots. |
 | `scripts/supervisor.py` | Scheduler control tick and tmux process plan for the new stack. |
 | `scripts/reporter.py` | CLI/JSON status report from the scheduler DB, including live TH, snapshot fallback, and worker freshness. |
 | `scripts/health.py` | Read-only health check for targets, stale heartbeats, guard issues, and runtime failures. |
@@ -335,6 +336,18 @@ since the previous valid balance and marks each org `baseline`, `ok`, or
 
 Monitor DB balances older than `PRL_BALANCE_SOURCE_MAX_AGE_SECONDS` are treated
 as stale and ignored. Default: `7200` seconds.
+
+Recent instability report:
+
+```bash
+python3 scripts/spike_report.py --json
+python3 scripts/spike_report.py --heartbeat --loop --interval 300
+```
+
+The guard records every current negative/no-hash issue into
+`slot_spike_events`. `spike_report.py` aggregates those events over 30 and
+60 minute windows. `profile_scorer.py` also applies a recent-spike penalty, so
+profiles that repeatedly look bad are deprioritized during later scheduling.
 
 Optional DB maintenance process:
 

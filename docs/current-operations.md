@@ -96,6 +96,7 @@ The automation is intentionally plain Python plus shell launchers.
 | `scripts/fleet_audit.py` | Records active GPU snapshots every 5 minutes and hourly org balance-vs-cost audits. |
 | `scripts/portal_balances.py` | Refreshes the private local balance file from Salad Portal using a local cookie jar and optional env login. |
 | `scripts/portal_multi_balances.py` | Refreshes several Salad Portal accounts and merges their org balances into the private balance file. |
+| `scripts/spike_report.py` | Reports 30/60 minute negative/no-hash spike history so repeatedly unstable profiles can be deprioritized. |
 
 ## Runtime Sessions
 
@@ -158,6 +159,7 @@ Check active GPUs and hourly balance-vs-cost audits:
 python3 scripts/fleet_audit.py --loop --interval 300 --balance-interval 3600 --balance-file state/salad_balances.json
 python3 scripts/portal_balances.py --loop --interval 900 --balance-file state/salad_balances.json --cookie-jar state/portal_cookies.txt
 SALAD_PORTAL_BALANCE_EMAILS="account1@example.com,account2@example.com" python3 scripts/portal_multi_balances.py --loop --interval 900 --balance-file state/salad_balances.json
+python3 scripts/spike_report.py --heartbeat --loop --interval 300
 ```
 
 ## Profit Model

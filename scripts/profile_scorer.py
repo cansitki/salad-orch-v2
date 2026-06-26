@@ -10,7 +10,7 @@ from typing import Any
 import profit_model
 import state_db
 from config_loader import load_config
-from fleet_common import json_dumps, utc_now
+from fleet_common import env_bool, env_float, json_dumps, utc_now
 
 
 def _latest_float(row: Any, key: str, fallback: float) -> float:
@@ -179,6 +179,8 @@ def score_profiles(
         sample = state_db.latest_price_sample(conn)
         attempt_stats = state_db.attempt_stats(conn)
         runtime_stats = profile_runtime_stats(conn)
+        spike_summary = state_db.recent_spike_summary(conn, limit=200)
+        spike_stats = {str(row["profile_key"]): row for row in spike_summary.get("profiles") or []}
         availability = state_db.latest_profile_availability(conn)
 
         selected_mode = mode or db_mode
@@ -209,10 +211,22 @@ def score_profiles(
             success = float(stats.get("success", 0))
             failure = float(stats.get("failure", 0))
             runtime = runtime_stats.get(profile.profile_key, {})
+            spikes = spike_stats.get(profile.profile_key, {})
             attempt_no_hash = float(stats.get("no_hash", 0))
             runtime_no_hash = float(runtime.get("no_hash_samples", 0))
             no_hash = attempt_no_hash + runtime_no_hash
             negative = float(runtime.get("negative_samples", 0))
+            recent_spikes_30m = float(spikes.get("spikes_30m") or 0)
+            recent_spikes_60m = float(spikes.get("spikes_60m") or 0)
+            recent_affected_slots_60m = float(spikes.get("affected_slots_60m") or 0)
+            recent_spike_unstable = bool(spikes.get("unstable"))
+            spike_penalty = (
+                recent_spikes_30m * env_float("PRL_SPIKE_SCORE_PENALTY_30M", 14.0)
+                + recent_spikes_60m * env_float("PRL_SPIKE_SCORE_PENALTY_60M", 4.0)
+                + recent_affected_slots_60m * env_float("PRL_SPIKE_SCORE_PENALTY_AFFECTED_SLOT", 8.0)
+            )
+            if recent_spike_unstable:
+                spike_penalty += env_float("PRL_SPIKE_SCORE_UNSTABLE_PENALTY", 80.0)
             capacity_failure = float(stats.get("capacity_failure", 0))
             profit_samples = float(runtime.get("profit_samples", 0))
             live_hash_samples = float(runtime.get("live_hash_samples", 0))
@@ -246,6 +260,8 @@ def score_profiles(
                 pearl_fee_rate=fee,
                 min_profit_day=min_profit,
             )
+            if recent_spike_unstable and env_bool("PRL_SPIKE_BLOCK_UNSTABLE_PROFILES", True):
+                tier = "unstable_recent_spikes"
 
             score = estimate.profit_day * 100
             score += success_rate * 20
@@ -259,6 +275,7 @@ def score_profiles(
             score -= attempt_no_hash * 8.0
             score -= no_hash_sample_rate * 40.0
             score -= negative_sample_rate * 45.0
+            score -= spike_penalty
             score -= capacity_failure * 5.0
             if availability_known and availability_total <= 0:
                 score -= 100.0
@@ -270,6 +287,8 @@ def score_profiles(
                 score -= 500
             if selected_mode == "risk_off" and tier != "safe_base":
                 score -= 500
+            if tier == "unstable_recent_spikes":
+                score -= 1000
 
             reason = {
                 "profit_day": round(estimate.profit_day, 6),
@@ -280,6 +299,12 @@ def score_profiles(
                 "attempt_no_hash": attempt_no_hash,
                 "runtime_no_hash": runtime_no_hash,
                 "negative": negative,
+                "recent_spikes_30m": recent_spikes_30m,
+                "recent_spikes_60m": recent_spikes_60m,
+                "recent_spike_affected_slots_60m": recent_affected_slots_60m,
+                "recent_spike_unstable": recent_spike_unstable,
+                "recent_spike_penalty": round(spike_penalty, 4),
+                "recent_spike_worst_profit_day_60m": spikes.get("worst_profit_day_60m"),
                 "capacity_failure": capacity_failure,
                 "profit_samples": profit_samples,
                 "live_hash_samples": live_hash_samples,
@@ -311,7 +336,12 @@ def score_profiles(
                 "min_safe_price_usd": estimate.min_safe_price_usd,
                 "risk_tier": "blocked_priority" if not priority_allowed else tier,
                 "score": score,
-                "eligible": priority_allowed and estimate.profit_day >= min_profit and (selected_mode != "risk_off" or tier == "safe_base"),
+                "eligible": (
+                    priority_allowed
+                    and estimate.profit_day >= min_profit
+                    and tier != "unstable_recent_spikes"
+                    and (selected_mode != "risk_off" or tier == "safe_base")
+                ),
                 "reason": reason,
                 "scored_at_utc": utc_now(),
             }

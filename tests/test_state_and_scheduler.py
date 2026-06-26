@@ -775,6 +775,90 @@ class StateAndSchedulerTest(unittest.TestCase):
         self.assertEqual(stats["3090:batch:2048"]["no_hash_samples"], 0)
         self.assertEqual(stats["3090:batch:2048"]["time_to_hash_samples"], 0)
 
+    def test_recent_spike_summary_counts_30_and_60_minute_windows(self) -> None:
+        now = datetime.now(UTC).replace(microsecond=0)
+        with state_db.connect(self.db_path) as conn:
+            state_db.init_db(conn)
+            for minutes, slot_name, profit_day in (
+                (5, "prl-kray-roi-01", -0.2),
+                (10, "prl-kray-roi-02", -0.4),
+                (20, "prl-kray-roi-01", -0.8),
+                (45, "prl-kray-roi-03", -0.1),
+                (75, "prl-kray-roi-04", -2.0),
+            ):
+                state_db.record_slot_spike_event(
+                    conn,
+                    {
+                        "at_utc": (now - timedelta(minutes=minutes)).isoformat(timespec="seconds"),
+                        "org_label": "kray",
+                        "slot_name": slot_name,
+                        "issue_type": "negative",
+                        "profile_key": "4070tis:low:2048",
+                        "gpu_key": "4070tis",
+                        "priority": "low",
+                        "profit_day": profit_day,
+                    },
+                )
+            conn.commit()
+            summary = state_db.recent_spike_summary(conn, now_utc=now.isoformat(timespec="seconds"), limit=10)
+
+        profile = summary["profiles"][0]
+        self.assertEqual(profile["profile_key"], "4070tis:low:2048")
+        self.assertEqual(profile["spikes_30m"], 3)
+        self.assertEqual(profile["spikes_60m"], 4)
+        self.assertEqual(profile["affected_slots_60m"], 3)
+        self.assertEqual(profile["worst_profit_day_60m"], -0.8)
+        self.assertTrue(profile["unstable"])
+
+    def test_profile_scorer_penalizes_recent_spike_history(self) -> None:
+        now = datetime.now(UTC).replace(microsecond=0)
+        with state_db.connect(self.db_path) as conn:
+            state_db.init_db(conn)
+            state_db.sync_config(conn, load_config())
+            conn.commit()
+
+        before = profile_scorer.score_profiles(
+            db_path=self.db_path,
+            mode="base_fill",
+            decision_price_usd=0.64,
+            pearl_fee_rate=0.01,
+            write=False,
+        )
+        before_score = {row["profile_key"]: row for row in before}["4070tis:low:2048"]["score"]
+
+        with state_db.connect(self.db_path) as conn:
+            state_db.init_db(conn)
+            for index in range(3):
+                state_db.record_slot_spike_event(
+                    conn,
+                    {
+                        "at_utc": (now - timedelta(minutes=5 + index)).isoformat(timespec="seconds"),
+                        "org_label": "kray",
+                        "slot_name": f"prl-kray-roi-{index + 1:02d}",
+                        "issue_type": "negative",
+                        "profile_key": "4070tis:low:2048",
+                        "gpu_key": "4070tis",
+                        "priority": "low",
+                        "profit_day": -0.3,
+                    },
+                )
+            conn.commit()
+
+        after = profile_scorer.score_profiles(
+            db_path=self.db_path,
+            mode="base_fill",
+            decision_price_usd=0.64,
+            pearl_fee_rate=0.01,
+            write=False,
+        )
+        row = {item["profile_key"]: item for item in after}["4070tis:low:2048"]
+        self.assertEqual(row["reason"]["recent_spikes_30m"], 3.0)
+        self.assertTrue(row["reason"]["recent_spike_unstable"])
+        self.assertGreater(row["reason"]["recent_spike_penalty"], 0)
+        self.assertEqual(row["risk_tier"], "unstable_recent_spikes")
+        self.assertFalse(row["eligible"])
+        self.assertLess(row["score"], before_score)
+
     def test_org_worker_waits_before_retargeting_fresh_pending_mismatch(self) -> None:
         class Watch:
             def slot_state(self, _slot_name):

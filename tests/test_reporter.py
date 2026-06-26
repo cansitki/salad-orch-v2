@@ -194,6 +194,20 @@ class ReporterTest(unittest.TestCase):
         self.assertEqual(report["status_counts"]["deploying"], 1)
         self.assertEqual(report["active_pending_slots"], 3)
 
+    def test_target_slots_uses_db_when_runtime_config_has_more_slots(self) -> None:
+        with state_db.connect(self.db_path) as conn:
+            conn.execute(
+                """
+                INSERT INTO slots(org_label, slot_name, slot_index, observed_status, updated_at_utc)
+                VALUES('extra', 'prl-extra-roi-01', 1, 'zero_quota', '2026-06-24T12:00:00+00:00')
+                """
+            )
+            conn.commit()
+
+        report = reporter.build_report(self.db_path)
+
+        self.assertEqual(report["target_slots"], 41)
+
     def test_profit_scenarios_are_derived_from_latest_fleet_snapshot(self) -> None:
         with state_db.connect(self.db_path) as conn:
             state_db.record_profit_snapshot(

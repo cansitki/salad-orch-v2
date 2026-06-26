@@ -266,6 +266,7 @@ def build_report(
     for slot in slot_rows:
         key = str(slot.get("observed_status") or "unknown")
         status_counts[key] = status_counts.get(key, 0) + 1
+    target_slots = max(config.target_slot_count(), len(slot_rows), len(targets))
     active_pending_statuses = {"running", "creating", "allocating", "deploying"}
     active_pending_slots = sum(count for key, count in status_counts.items() if key in active_pending_statuses)
     slot_live_th = sum(float(slot.get("live_hashrate_th") or 0) for slot in slot_rows)
@@ -330,7 +331,7 @@ def build_report(
         if derived:
             profit_by_price[f"{scenario_price:.2f}"] = derived
     return {
-        "target_slots": config.target_slot_count(),
+        "target_slots": target_slots,
         "refresh_error": refresh_error,
         "assigned_targets": len(targets),
         "active_pending_slots": active_pending_slots,

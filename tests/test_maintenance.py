@@ -58,13 +58,13 @@ class MaintenanceTest(unittest.TestCase):
 
     def test_supervisor_can_include_maintenance_process(self) -> None:
         plan = supervisor.process_plan(include_maintenance=True, maintenance_apply=True, db_path=self.db_path)
-        maintenance_items = [item for item in plan if item["name"] == "salad-maintenance"]
+        maintenance_items = [item for item in plan if item["name"] == "salad-orch-v2-maintenance"]
         self.assertEqual(len(maintenance_items), 1)
         self.assertIn("--apply", maintenance_items[0]["cmd"])
 
     def test_supervisor_availability_probe_includes_low_priority(self) -> None:
         plan = supervisor.process_plan(db_path=self.db_path)
-        probe = next(item for item in plan if item["name"] == "salad-availability-probe")
+        probe = next(item for item in plan if item["name"] == "salad-orch-v2-availability")
 
         self.assertIn("--priorities", probe["cmd"])
         self.assertIn("batch,low", probe["cmd"])
@@ -77,7 +77,7 @@ class MaintenanceTest(unittest.TestCase):
 
     def test_supervisor_includes_fleet_audit_process(self) -> None:
         plan = supervisor.process_plan(db_path=self.db_path)
-        audit = next(item for item in plan if item["name"] == "salad-fleet-audit")
+        audit = next(item for item in plan if item["name"] == "salad-orch-v2-audit")
 
         self.assertEqual(audit["heartbeat"], "fleet_audit")
         self.assertIn("fleet_audit.py", " ".join(audit["cmd"]))
@@ -89,22 +89,30 @@ class MaintenanceTest(unittest.TestCase):
         self.assertIn("state/salad_balances.json", audit["cmd"])
 
     def test_supervisor_includes_portal_balance_process(self) -> None:
-        plan = supervisor.process_plan(db_path=self.db_path)
-        balances = next(item for item in plan if item["name"] == "salad-portal-balances")
+        with mock.patch.object(supervisor, "has_multi_balance_accounts", return_value=True):
+            plan = supervisor.process_plan(db_path=self.db_path)
+        balances = next(item for item in plan if item["name"] == "salad-orch-v2-balances")
 
         self.assertEqual(balances["heartbeat"], "portal_balances")
-        self.assertIn("portal_balances.py", " ".join(balances["cmd"]))
+        self.assertIn("portal_multi_balances.py", " ".join(balances["cmd"]))
         self.assertIn("--interval", balances["cmd"])
         self.assertIn("60", balances["cmd"])
         self.assertIn("--balance-file", balances["cmd"])
         self.assertIn("state/salad_balances.json", balances["cmd"])
+
+    def test_supervisor_can_fallback_to_single_portal_balance_process(self) -> None:
+        with mock.patch.object(supervisor, "has_multi_balance_accounts", return_value=False):
+            plan = supervisor.process_plan(db_path=self.db_path)
+        balances = next(item for item in plan if item["name"] == "salad-orch-v2-balances")
+
+        self.assertIn("portal_balances.py", " ".join(balances["cmd"]))
         self.assertIn("--cookie-jar", balances["cmd"])
         self.assertIn("state/portal_cookies.txt", balances["cmd"])
 
     def test_supervisor_portal_balance_interval_can_be_overridden(self) -> None:
         with mock.patch.dict("os.environ", {"PRL_PORTAL_BALANCE_INTERVAL_SECONDS": "120"}, clear=False):
             plan = supervisor.process_plan(db_path=self.db_path)
-        balances = next(item for item in plan if item["name"] == "salad-portal-balances")
+        balances = next(item for item in plan if item["name"] == "salad-orch-v2-balances")
 
         interval_index = balances["cmd"].index("--interval") + 1
         self.assertEqual(balances["cmd"][interval_index], "120")
@@ -120,7 +128,7 @@ class MaintenanceTest(unittest.TestCase):
 
     def test_supervisor_includes_runtime_monitor_process(self) -> None:
         plan = supervisor.process_plan(db_path=self.db_path)
-        monitor = next(item for item in plan if item["name"] == "salad-runtime-monitor")
+        monitor = next(item for item in plan if item["name"] == "salad-orch-v2-monitor")
 
         self.assertEqual(monitor["heartbeat"], "runtime_monitor")
         self.assertIn("runtime_monitor.py", " ".join(monitor["cmd"]))
@@ -130,7 +138,7 @@ class MaintenanceTest(unittest.TestCase):
 
     def test_supervisor_runtime_monitor_can_apply_all_orgs_when_enabled(self) -> None:
         plan = supervisor.process_plan(runtime_monitor_apply=True, db_path=self.db_path)
-        monitor = next(item for item in plan if item["name"] == "salad-runtime-monitor")
+        monitor = next(item for item in plan if item["name"] == "salad-orch-v2-monitor")
 
         self.assertIn("--apply-all-orgs-pending", monitor["cmd"])
         self.assertIn("--confirm-live-actions", monitor["cmd"])
@@ -138,9 +146,18 @@ class MaintenanceTest(unittest.TestCase):
 
     def test_supervisor_apply_workers_does_not_also_apply_runtime_monitor(self) -> None:
         plan = supervisor.process_plan(apply_workers=True, db_path=self.db_path)
-        monitor = next(item for item in plan if item["name"] == "salad-runtime-monitor")
+        monitor = next(item for item in plan if item["name"] == "salad-orch-v2-monitor")
 
         self.assertNotIn("--apply-all-orgs-pending", monitor["cmd"])
+
+    def test_supervisor_uses_live_stack_session_names(self) -> None:
+        names = {item["name"] for item in supervisor.process_plan(db_path=self.db_path)}
+
+        self.assertIn("salad-orch-v2-price", names)
+        self.assertIn("salad-orch-v2-availability", names)
+        self.assertIn("salad-orch-v2-balances", names)
+        self.assertIn("salad-orch-v2-guard", names)
+        self.assertIn("salad-orch-v2-monitor", names)
 
 
 if __name__ == "__main__":

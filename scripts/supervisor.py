@@ -24,6 +24,15 @@ def _with_db(cmd: list[str], db_path: str | None) -> list[str]:
     return [*cmd, "--db", db_path] if db_path else cmd
 
 
+def has_multi_balance_accounts() -> bool:
+    if os.environ.get("SALAD_PORTAL_BALANCE_ACCOUNTS_JSON") or os.environ.get("SALAD_PORTAL_BALANCE_EMAILS"):
+        return True
+    account_state_dir = pathlib.Path(os.environ.get("PRL_PORTAL_BALANCE_ACCOUNT_STATE_DIR", "state/portal_balance_accounts"))
+    if not account_state_dir.is_absolute():
+        account_state_dir = REPO_ROOT / account_state_dir
+    return any(account_state_dir.glob("*_cookies.txt"))
+
+
 def process_plan(
     *,
     apply_workers: bool = False,
@@ -37,7 +46,7 @@ def process_plan(
 ) -> list[dict[str, Any]]:
     config = load_config()
     portal_balance_interval = str(max(1, int(os.environ.get("PRL_PORTAL_BALANCE_INTERVAL_SECONDS", "60"))))
-    if os.environ.get("SALAD_PORTAL_BALANCE_ACCOUNTS_JSON") or os.environ.get("SALAD_PORTAL_BALANCE_EMAILS"):
+    if has_multi_balance_accounts():
         portal_balance_cmd = [
             "python3",
             str(SCRIPT_DIR / "portal_multi_balances.py"),
@@ -66,12 +75,12 @@ def process_plan(
 
     plan = [
         {
-            "name": "salad-price-oracle",
+            "name": "salad-orch-v2-price",
             "heartbeat": "price_oracle",
             "cmd": _with_db(["python3", str(SCRIPT_DIR / "price_oracle.py"), "--loop", "--interval", "60"], db_path),
         },
         {
-            "name": "salad-availability-probe",
+            "name": "salad-orch-v2-availability",
             "heartbeat": "availability_probe",
             "cmd": _with_db(
                 [
@@ -91,17 +100,17 @@ def process_plan(
             ),
         },
         {
-            "name": "salad-fleet-scheduler",
+            "name": "salad-orch-v2-scheduler",
             "heartbeat": "fleet_scheduler",
             "cmd": _with_db(["python3", str(SCRIPT_DIR / "fleet_scheduler.py"), "--loop", "--interval", "60"], db_path),
         },
         {
-            "name": "salad-guard-shadow",
+            "name": "salad-orch-v2-guard",
             "heartbeat": "guard",
             "cmd": _with_db(["python3", str(SCRIPT_DIR / "guard.py"), "--loop", "--interval", "30"], db_path),
         },
         {
-            "name": "salad-portal-balances",
+            "name": "salad-orch-v2-balances",
             "heartbeat": "portal_balances",
             "cmd": _with_db(portal_balance_cmd, db_path),
         },
@@ -109,7 +118,7 @@ def process_plan(
     if include_audit:
         plan.append(
             {
-                "name": "salad-fleet-audit",
+                "name": "salad-orch-v2-audit",
                 "heartbeat": "fleet_audit",
                 "cmd": _with_db(
                     [
@@ -130,7 +139,7 @@ def process_plan(
     if include_spike_report:
         plan.append(
             {
-                "name": "salad-spike-report",
+                "name": "salad-orch-v2-spike-report",
                 "heartbeat": "spike_report",
                 "cmd": _with_db(
                     [
@@ -151,7 +160,7 @@ def process_plan(
             cmd.append("--apply")
         plan.append(
             {
-                "name": "salad-maintenance",
+                "name": "salad-orch-v2-maintenance",
                 "heartbeat": "maintenance",
                 "cmd": _with_db(cmd, db_path),
             }
@@ -182,7 +191,7 @@ def process_plan(
             cmd.extend(["--require-secrets", "--apply-all-orgs-pending", "--confirm-live-actions"])
         plan.append(
             {
-                "name": "salad-runtime-monitor",
+                "name": "salad-orch-v2-monitor",
                 "heartbeat": "runtime_monitor",
                 "cmd": _with_db(cmd, db_path),
             }
@@ -193,7 +202,7 @@ def process_plan(
             cmd.append("--apply")
         plan.append(
             {
-                "name": f"salad-org-worker-{org.label}",
+                "name": f"salad-orch-v2-worker-{org.label}",
                 "heartbeat": f"org_worker:{org.label}",
                 "cmd": _with_db(cmd, db_path),
             }

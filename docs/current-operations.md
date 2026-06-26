@@ -127,7 +127,9 @@ SALAD_FLEET_CONFIG_PATH=config/fleet.current.json python3 scripts/supervisor.py 
 
 The supervisor clears stale `PRL_ENABLED_ORGS` filters for tmux children. This
 matters because the live fleet should use all enabled orgs from
-`config/fleet.current.json`.
+`config/fleet.current.json`. It uses the live `salad-orch-v2-*` tmux session
+names to avoid duplicate restarts and auto-selects `portal_multi_balances.py`
+when `state/portal_balance_accounts/` contains account cookie jars.
 
 The legacy watcher-first stack is still available when explicitly needed:
 

@@ -276,7 +276,11 @@ runtime monitor. `--runtime-monitor-apply` adds the confirmed live fill monitor
 (`runtime_monitor.py --apply-all-orgs-pending --confirm-live-actions`).
 `--apply-workers` is separate and makes the per-org worker loops live. Each tmux
 session clears stale `PRL_ENABLED_ORGS` and uses `config/fleet.current.json` by
-default, so newly added orgs are not hidden by an old shell filter.
+default, so newly added orgs are not hidden by an old shell filter. The
+supervisor uses the live `salad-orch-v2-*` tmux session names, so `--ensure`
+does not duplicate an already-running stack. If account cookie jars exist under
+`state/portal_balance_accounts/`, it starts `portal_multi_balances.py` instead
+of the single-account balance watcher.
 
 Balance audit input is intentionally private. The standard portal balance
 watcher refreshes this local untracked file from an already-authenticated

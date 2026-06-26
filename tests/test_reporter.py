@@ -506,8 +506,18 @@ class ReporterTest(unittest.TestCase):
             actions["summary"],
             {
                 "top_up_slots": 10,
+                "top_up_target_cost_day_usd": 0,
+                "top_up_target_profit_day_usd": 0,
+                "top_up_funding_gap_24h_usd": 0,
                 "quota_blocked_funded_slots": 10,
+                "quota_blocked_funded_balance_usd": 4.25,
+                "quota_blocked_funded_target_cost_day_usd": 0,
+                "quota_blocked_funded_target_profit_day_usd": 0,
+                "quota_blocked_funded_funding_gap_24h_usd": 0,
                 "zero_balance_zero_quota_slots": 10,
+                "zero_balance_zero_quota_target_cost_day_usd": 0,
+                "zero_balance_zero_quota_target_profit_day_usd": 0,
+                "zero_balance_zero_quota_funding_gap_24h_usd": 0,
             },
         )
 
@@ -587,11 +597,16 @@ class ReporterTest(unittest.TestCase):
         self.assertAlmostEqual(row["target_min_balance_24h_usd"], 4.56)
         self.assertAlmostEqual(row["target_runway_hours"], 0.0)
         self.assertAlmostEqual(row["target_funding_gap_24h_usd"], 4.56)
+        self.assertAlmostEqual(report["capacity_actions"]["summary"]["top_up_target_profit_day_usd"], 1.5)
+        self.assertAlmostEqual(report["capacity_actions"]["summary"]["top_up_target_cost_day_usd"], 4.56)
+        self.assertAlmostEqual(report["capacity_actions"]["summary"]["top_up_funding_gap_24h_usd"], 4.56)
 
     def test_capacity_action_lines_include_actionable_orgs(self) -> None:
         actions = {
             "summary": {
                 "top_up_slots": 20,
+                "top_up_target_profit_day_usd": 17.4,
+                "top_up_funding_gap_24h_usd": 48.48,
                 "quota_blocked_funded_slots": 20,
                 "zero_balance_zero_quota_slots": 10,
             },
@@ -622,7 +637,7 @@ class ReporterTest(unittest.TestCase):
         self.assertEqual(
             lines,
             [
-                "capacity_actions top_up_slots=20 quota_blocked_funded_slots=20 zero_balance_zero_quota_slots=10",
+                "capacity_actions top_up_slots=20 top_up_gap_24h=$48.48 top_up_profit=$17.40/day quota_blocked_funded_slots=20 zero_balance_zero_quota_slots=10",
                 "  add_credit: kray(balance=$0.00,quota=10,slots=10,target_profit=$8.70/day,target_cost=$24.24/day,runway=0.00h,gap_24h=$24.24)",
                 "  wait_quota_funded: sal7-3(balance=$8.93,quota=0,slots=10), +1 more",
                 "  deprioritized_zero_balance_zero_quota: alpha1(balance=$0.00,quota=0,slots=10)",

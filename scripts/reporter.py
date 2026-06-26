@@ -194,6 +194,16 @@ def _capacity_actions(
     quota_blocked_funded_orgs = []
     zero_balance_zero_quota_orgs = []
     estimates = target_estimates or {}
+
+    def totals(rows: list[dict[str, Any]], slot_key: str) -> dict[str, Any]:
+        return {
+            "slots": sum(int(row.get(slot_key) or 0) for row in rows),
+            "target_cost_day_usd": round(sum(float(row.get("target_cost_day_usd") or 0) for row in rows), 4),
+            "target_profit_day_usd": round(sum(float(row.get("target_profit_day_usd") or 0) for row in rows), 4),
+            "funding_gap_24h_usd": round(sum(float(row.get("target_funding_gap_24h_usd") or 0) for row in rows), 2),
+            "balance_usd": round(sum(float(row.get("balance_usd") or 0) for row in rows), 2),
+        }
+
     for quota in replica_quotas:
         org_label = str(quota.get("org_label") or "")
         if not org_label:
@@ -250,14 +260,27 @@ def _capacity_actions(
                     **funding,
                 }
             )
+    top_up_totals = totals(top_up_quota_available_orgs, "available_slots_if_funded")
+    funded_quota_blocked_totals = totals(quota_blocked_funded_orgs, "blocked_slots")
+    zero_balance_zero_quota_totals = totals(zero_balance_zero_quota_orgs, "slots")
     return {
         "top_up_quota_available_orgs": top_up_quota_available_orgs,
         "quota_blocked_funded_orgs": quota_blocked_funded_orgs,
         "zero_balance_zero_quota_orgs": zero_balance_zero_quota_orgs,
         "summary": {
-            "top_up_slots": sum(int(row.get("available_slots_if_funded") or 0) for row in top_up_quota_available_orgs),
-            "quota_blocked_funded_slots": sum(int(row.get("blocked_slots") or 0) for row in quota_blocked_funded_orgs),
-            "zero_balance_zero_quota_slots": sum(int(row.get("slots") or 0) for row in zero_balance_zero_quota_orgs),
+            "top_up_slots": top_up_totals["slots"],
+            "top_up_target_cost_day_usd": top_up_totals["target_cost_day_usd"],
+            "top_up_target_profit_day_usd": top_up_totals["target_profit_day_usd"],
+            "top_up_funding_gap_24h_usd": top_up_totals["funding_gap_24h_usd"],
+            "quota_blocked_funded_slots": funded_quota_blocked_totals["slots"],
+            "quota_blocked_funded_balance_usd": funded_quota_blocked_totals["balance_usd"],
+            "quota_blocked_funded_target_cost_day_usd": funded_quota_blocked_totals["target_cost_day_usd"],
+            "quota_blocked_funded_target_profit_day_usd": funded_quota_blocked_totals["target_profit_day_usd"],
+            "quota_blocked_funded_funding_gap_24h_usd": funded_quota_blocked_totals["funding_gap_24h_usd"],
+            "zero_balance_zero_quota_slots": zero_balance_zero_quota_totals["slots"],
+            "zero_balance_zero_quota_target_cost_day_usd": zero_balance_zero_quota_totals["target_cost_day_usd"],
+            "zero_balance_zero_quota_target_profit_day_usd": zero_balance_zero_quota_totals["target_profit_day_usd"],
+            "zero_balance_zero_quota_funding_gap_24h_usd": zero_balance_zero_quota_totals["funding_gap_24h_usd"],
         },
     }
 
@@ -290,6 +313,8 @@ def capacity_action_lines(capacity_actions: dict[str, Any], *, limit: int = 8) -
     lines = [
         "capacity_actions "
         f"top_up_slots={int(summary.get('top_up_slots') or 0)} "
+        f"top_up_gap_24h=${float(summary.get('top_up_funding_gap_24h_usd') or 0):.2f} "
+        f"top_up_profit=${float(summary.get('top_up_target_profit_day_usd') or 0):.2f}/day "
         f"quota_blocked_funded_slots={int(summary.get('quota_blocked_funded_slots') or 0)} "
         f"zero_balance_zero_quota_slots={int(summary.get('zero_balance_zero_quota_slots') or 0)}"
     ]

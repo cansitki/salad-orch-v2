@@ -122,12 +122,17 @@ def target_rows(conn, org_label: str) -> list[dict[str, Any]]:
                s.live_hashrate_th AS slot_live_hashrate_th,
                s.protected AS slot_protected,
                s.observed_status_since_utc, s.observed_profile_since_utc,
+               observed_score.expected_profit_day AS observed_profile_expected_profit_day,
+               observed_score.risk_tier AS observed_profile_risk_tier,
                COALESCE(lw.live_worker_count, 0) AS live_worker_count,
                COALESCE(lw.live_worker_th, 0) AS live_worker_th,
                COALESCE(ag.active_guard_issues, 0) AS active_guard_issues
         FROM slot_targets t
         JOIN gpu_profiles p ON p.profile_key = t.profile_key
         LEFT JOIN slots s ON s.org_label = t.org_label AND s.slot_name = t.slot_name
+        LEFT JOIN profile_scores observed_score
+          ON observed_score.profile_key = s.observed_profile_key
+         AND observed_score.mode = t.mode
         LEFT JOIN live_workers lw ON lw.org_label = t.org_label AND lw.slot_name = t.slot_name
         LEFT JOIN active_guard ag ON ag.org_label = t.org_label AND ag.slot_name = t.slot_name
         WHERE t.org_label = ?
@@ -503,6 +508,8 @@ def planned_action(
         "reason": reason,
         "target_profile_key": target["profile_key"],
         "current_profile_key": current,
+        "current_expected_profit_day": target.get("observed_profile_expected_profit_day"),
+        "current_risk_tier": target.get("observed_profile_risk_tier"),
         "observed_status": status,
         "protected": counts["running"] > 0 and live_hashing,
         "counts": counts,
@@ -583,6 +590,27 @@ def start_failed_result(watch: Any, slot_name: str, plan: dict[str, Any], origin
     }
 
 
+def stopped_patch_failed_start_existing_allowed(plan: dict[str, Any]) -> bool:
+    if not env_bool("PRL_STOPPED_PATCH_FAIL_START_EXISTING", True):
+        return False
+    if has_active_instances(plan):
+        return False
+    if str(plan.get("observed_status") or "").lower() != "stopped":
+        return False
+    current_profile = str(plan.get("current_profile_key") or "")
+    if not current_profile:
+        return False
+    risk_tier = str(plan.get("current_risk_tier") or "")
+    if risk_tier in {"negative", "marginal", "blocked_priority", "unstable_recent_spikes"}:
+        return False
+    try:
+        expected_profit = float(plan.get("current_expected_profit_day"))
+    except (TypeError, ValueError):
+        return False
+    min_profit = env_float("PRL_STOPPED_EXISTING_MIN_PROFIT_USD_DAY", 0.05)
+    return expected_profit >= min_profit
+
+
 def execute_action(watch: Any, target: dict[str, Any], plan: dict[str, Any], *, apply: bool) -> dict[str, Any]:
     if not apply or plan["action"] == "observe":
         return {"ok": True, "applied": False, **plan}
@@ -599,6 +627,26 @@ def execute_action(watch: Any, target: dict[str, Any], plan: dict[str, Any], *, 
             start_after=not start_after_patch,
         )
         if not ok:
+            if stopped_patch_failed_start_existing_allowed(plan):
+                start_result = watch.start_slot(slot_name, "after_failed_patch:stopped_existing_profitable")
+                if start_result is False:
+                    result = start_failed_result(watch, slot_name, plan, "patch")
+                    result.update(
+                        {
+                            "patch_failed": True,
+                            "existing_profile_fallback": True,
+                        }
+                    )
+                    return result
+                return {
+                    "ok": True,
+                    "applied": True,
+                    **plan,
+                    "action": "start_existing_after_patch_failed",
+                    "original_action": "patch",
+                    "patch_failed": True,
+                    "existing_profile_fallback": True,
+                }
             if env_bool("PRL_PENDING_PATCH_FAIL_RESTART", False) and is_pending_patch_plan(plan):
                 restart_reason = "patch_failed_pending"
                 watch.request("POST", f"/organizations/{watch.ORG}/projects/{watch.PROJECT}/containers/{slot_name}/stop")

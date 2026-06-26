@@ -1501,6 +1501,106 @@ class StateAndSchedulerTest(unittest.TestCase):
         self.assertEqual(result["original_action"], "patch")
         self.assertEqual(result["error"], "http_400:no_credits_available")
 
+    def test_org_worker_starts_profitable_existing_profile_when_stopped_patch_fails(self) -> None:
+        class Watch:
+            class Candidate:
+                def __init__(self, label, priority, gpu_keys, memory):
+                    self.label = label
+                    self.priority = priority
+                    self.gpu_keys = gpu_keys
+                    self.memory = memory
+
+            def __init__(self):
+                self.starts = []
+
+            def patch_slot(self, _slot_name, _candidate, _reason, *, start_after=True):
+                return False
+
+            def start_slot(self, slot_name, reason):
+                self.starts.append((slot_name, reason))
+                return True
+
+        watch = Watch()
+        result = org_worker.execute_action(
+            watch,
+            {
+                "slot_name": "prl-kray3-roi-01",
+                "label": "RTX 4090 batch",
+                "priority": "batch",
+                "gpu_key": "4090",
+                "memory_mb": 2048,
+            },
+            {
+                "slot_name": "prl-kray3-roi-01",
+                "action": "patch",
+                "reason": "profile_mismatch:4080:batch:2048",
+                "target_profile_key": "4090:batch:2048",
+                "current_profile_key": "4080:batch:2048",
+                "current_expected_profit_day": 1.2,
+                "current_risk_tier": "safe_base",
+                "observed_status": "stopped",
+                "protected": False,
+                "counts": {"allocating": 0, "creating": 0, "running": 0, "stopping": 0},
+                "instance_count": 0,
+            },
+            apply=True,
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["applied"])
+        self.assertTrue(result["patch_failed"])
+        self.assertTrue(result["existing_profile_fallback"])
+        self.assertEqual(result["action"], "start_existing_after_patch_failed")
+        self.assertEqual(watch.starts, [("prl-kray3-roi-01", "after_failed_patch:stopped_existing_profitable")])
+
+    def test_org_worker_does_not_start_unstable_existing_profile_when_stopped_patch_fails(self) -> None:
+        class Watch:
+            class Candidate:
+                def __init__(self, label, priority, gpu_keys, memory):
+                    self.label = label
+                    self.priority = priority
+                    self.gpu_keys = gpu_keys
+                    self.memory = memory
+
+            def __init__(self):
+                self.starts = []
+
+            def patch_slot(self, _slot_name, _candidate, _reason, *, start_after=True):
+                return False
+
+            def start_slot(self, slot_name, reason):
+                self.starts.append((slot_name, reason))
+                return True
+
+        watch = Watch()
+        result = org_worker.execute_action(
+            watch,
+            {
+                "slot_name": "prl-kray3-roi-01",
+                "label": "RTX 4090 batch",
+                "priority": "batch",
+                "gpu_key": "4090",
+                "memory_mb": 2048,
+            },
+            {
+                "slot_name": "prl-kray3-roi-01",
+                "action": "patch",
+                "reason": "profile_mismatch:4070tis:low:4096",
+                "target_profile_key": "4090:batch:2048",
+                "current_profile_key": "4070tis:low:4096",
+                "current_expected_profit_day": 0.12,
+                "current_risk_tier": "unstable_recent_spikes",
+                "observed_status": "stopped",
+                "protected": False,
+                "counts": {"allocating": 0, "creating": 0, "running": 0, "stopping": 0},
+                "instance_count": 0,
+            },
+            apply=True,
+        )
+
+        self.assertEqual(result["action"], "cooldown_failed_patch")
+        self.assertEqual(watch.starts, [])
+
     def test_org_worker_cooldowns_stale_pending_same_profile(self) -> None:
         class Watch:
             def slot_state(self, _slot_name):

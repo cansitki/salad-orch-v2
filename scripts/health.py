@@ -9,6 +9,9 @@ import state_db
 from fleet_common import json_dumps
 
 
+OPTIONAL_STALE_HEARTBEATS = {"reporter"}
+
+
 def age_seconds(value: str | None) -> float | None:
     if not value:
         return None
@@ -64,6 +67,8 @@ def build_health(db_path: str | None = None) -> dict[str, Any]:
 
     stale_heartbeats = []
     for row in heartbeat_rows:
+        if str(row.get("process_name") or "") in OPTIONAL_STALE_HEARTBEATS:
+            continue
         age = age_seconds(row.get("at_utc"))
         stale_after = int(row.get("stale_after_seconds") or 0)
         if age is not None and stale_after and age > stale_after:

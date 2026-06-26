@@ -10,7 +10,7 @@ from typing import Any
 import guard
 import state_db
 from config_loader import load_config
-from fleet_common import json_dumps
+from fleet_common import env_int, json_dumps
 
 
 def _age_seconds(at_utc: str | None) -> float | None:
@@ -32,6 +32,12 @@ def _payload(row: Any) -> dict[str, Any]:
         return json.loads(row["payload_json"] or "{}")
     except (TypeError, json.JSONDecodeError):
         return {}
+
+
+def _pending_status_age_seconds(slot: dict[str, Any]) -> tuple[float | None, str]:
+    if slot.get("observed_status_since_utc"):
+        return _age_seconds(slot.get("observed_status_since_utc")), "observed_status_since_utc"
+    return _age_seconds(slot.get("updated_at_utc")), "updated_at_utc"
 
 
 def _float_or_none(value: Any) -> float | None:
@@ -290,17 +296,35 @@ def build_report(
         live_hashing_gpus = snapshot_live_hashing_gpus
         live_th_source = "profit_snapshots"
     latest_payload = _payload(latest_profit)
+    mature_pending_after_seconds = env_int(
+        "PRL_REPORT_MATURE_PENDING_AFTER_SECONDS",
+        env_int("PRL_PENDING_STATUS_RETARGET_AFTER_SECONDS", 300),
+    )
+    pending_statuses = {"creating", "allocating", "deploying"}
+    mature_pending_slots = [
+        {
+            "org_label": slot["org_label"],
+            "slot_name": slot["slot_name"],
+            "observed_status": slot.get("observed_status"),
+            "age_seconds": round(age, 1),
+            "age_source": age_source,
+        }
+        for slot in slot_rows
+        if slot.get("observed_status") in pending_statuses
+        for age, age_source in [_pending_status_age_seconds(slot)]
+        if age is not None and age >= mature_pending_after_seconds
+    ]
     stuck_slots = [
         {
             "org_label": slot["org_label"],
             "slot_name": slot["slot_name"],
             "observed_status": slot.get("observed_status"),
             "age_seconds": round(age, 1),
-            "age_source": "observed_status_since_utc" if slot.get("observed_status_since_utc") else "updated_at_utc",
+            "age_source": age_source,
         }
         for slot in slot_rows
-        if (slot.get("observed_status") in {"creating", "allocating"})
-        for age in [_age_seconds(slot.get("observed_status_since_utc") or slot.get("updated_at_utc"))]
+        if slot.get("observed_status") in pending_statuses
+        for age, age_source in [_pending_status_age_seconds(slot)]
         if age is not None and age > 600
     ]
     heartbeat_status = []
@@ -350,6 +374,8 @@ def build_report(
         "status_counts": status_counts,
         "running_no_live_billable_slots": latest_payload.get("running_no_live_billable_slots") or [],
         "negative_slots": latest_payload.get("negative_slots") or [],
+        "mature_pending_after_seconds": mature_pending_after_seconds,
+        "mature_pending_slots": mature_pending_slots,
         "stuck_slots": stuck_slots,
         "profile_counts": profile_counts,
         "latest_profit": dict(latest_profit) if latest_profit else None,
@@ -411,7 +437,9 @@ def main() -> None:
         print(f"profit_at_0.70=${float(report['profit_at_0_70'].get('profit_day') or 0):.3f}/day")
     print(
         f"no_hash={len(report['running_no_live_billable_slots'])} "
-        f"negative={len(report['negative_slots'])} stuck={len(report['stuck_slots'])}"
+        f"negative={len(report['negative_slots'])} "
+        f"mature_pending={len(report['mature_pending_slots'])} "
+        f"stuck={len(report['stuck_slots'])}"
     )
     if report.get("quota_blockers"):
         total_quota_orgs = len(report.get("replica_quotas") or [])

@@ -220,6 +220,33 @@ class ReporterTest(unittest.TestCase):
         self.assertEqual(report["stuck_slots"][0]["slot_name"], "prl-kray-roi-01")
         self.assertEqual(report["stuck_slots"][0]["age_source"], "observed_status_since_utc")
 
+    def test_mature_pending_uses_operational_pending_threshold(self) -> None:
+        now = datetime.now(UTC).replace(microsecond=0)
+        with state_db.connect(self.db_path) as conn:
+            conn.execute(
+                """
+                UPDATE slots
+                SET observed_status='deploying',
+                    observed_profile_key='3090:batch:2048',
+                    observed_status_since_utc=?,
+                    updated_at_utc=?
+                WHERE org_label='kray' AND slot_name='prl-kray-roi-01'
+                """,
+                (
+                    (now - timedelta(minutes=6)).isoformat(timespec="seconds"),
+                    now.isoformat(timespec="seconds"),
+                ),
+            )
+            conn.commit()
+
+        report = reporter.build_report(self.db_path)
+
+        self.assertEqual(report["mature_pending_after_seconds"], 300)
+        self.assertEqual(len(report["mature_pending_slots"]), 1)
+        self.assertEqual(report["mature_pending_slots"][0]["slot_name"], "prl-kray-roi-01")
+        self.assertEqual(report["mature_pending_slots"][0]["observed_status"], "deploying")
+        self.assertEqual(report["stuck_slots"], [])
+
     def test_target_slots_uses_db_when_runtime_config_has_more_slots(self) -> None:
         with state_db.connect(self.db_path) as conn:
             conn.execute(

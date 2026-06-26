@@ -498,6 +498,186 @@ class AvailabilityProbeTest(unittest.TestCase):
         self.assertEqual(quota["status"], "zero_quota")
         self.assertEqual(quota["quota"], 0)
 
+    def test_quota_restored_positive_balance_orgs_requires_fresh_positive_balance(self) -> None:
+        pathlib.Path(os.environ["PRL_BALANCE_FILE"]).write_text(
+            json.dumps({"kray": 1.25, "kry1": 0.0}),
+            encoding="utf-8",
+        )
+
+        restored = availability_probe.quota_restored_positive_balance_orgs(
+            [
+                {
+                    "org_label": "kray",
+                    "quota_transition": {"restored": True},
+                },
+                {
+                    "org_label": "kry1",
+                    "quota_transition": {"restored": True},
+                },
+                {
+                    "org_label": "kray2",
+                    "quota_transition": {"restored": False},
+                },
+                {
+                    "org_label": "kray",
+                    "quota_transition": {"restored": True},
+                },
+            ]
+        )
+
+        self.assertEqual(restored, ["kray"])
+
+    def test_wake_rollout_on_quota_restore_can_be_disabled(self) -> None:
+        with mock.patch.dict(os.environ, {"PRL_AVAILABILITY_WAKE_ROLLOUT_ON_QUOTA_RESTORE": "0"}, clear=False):
+            payload = availability_probe.wake_rollout_on_quota_restore(
+                db_path=self.db_path,
+                restored_orgs=["kray"],
+            )
+
+        self.assertIsNone(payload)
+
+    def test_wake_rollout_on_quota_restore_runs_existing_runtime_monitor_gates(self) -> None:
+        monitor_payload = {
+            "ok": True,
+            "action": "all-orgs-pending",
+            "shadow": {
+                "ok": True,
+                "health": "healthy",
+                "live_hashing_gpus": 0,
+                "no_hash": 0,
+                "negative": 0,
+                "stuck": 0,
+            },
+            "action_result": {"ok": True, "stage": "all-orgs"},
+        }
+        with (
+            mock.patch.dict(
+                os.environ,
+                {
+                    "PRL_AVAILABILITY_QUOTA_RESTORE_WAKE_FEE": "0.01",
+                    "PRL_AVAILABILITY_QUOTA_RESTORE_WAKE_WORKER_PARALLELISM": "7",
+                },
+                clear=False,
+            ),
+            mock.patch("runtime_monitor.run_monitor_tick", return_value=monitor_payload) as monitor_mock,
+        ):
+            payload = availability_probe.wake_rollout_on_quota_restore(
+                db_path=self.db_path,
+                restored_orgs=["kray"],
+            )
+
+        monitor_mock.assert_called_once()
+        kwargs = monitor_mock.call_args.kwargs
+        self.assertEqual(kwargs["db_path"], self.db_path)
+        self.assertEqual(kwargs["fee"], 0.01)
+        self.assertTrue(kwargs["require_secrets"])
+        self.assertTrue(kwargs["apply_all_orgs_pending"])
+        self.assertTrue(kwargs["confirm_live_actions"])
+        self.assertTrue(kwargs["guard_actionable_only"])
+        self.assertTrue(kwargs["skip_shadow_workers"])
+        self.assertEqual(kwargs["worker_parallelism"], 7)
+        self.assertEqual(
+            payload,
+            {
+                "ok": True,
+                "action": "all-orgs-pending",
+                "quota_restored_positive_balance_orgs": ["kray"],
+                "shadow_ok": True,
+                "shadow_health": "healthy",
+                "action_ok": True,
+                "action_stage": "all-orgs",
+                "live_hashing_gpus": 0,
+                "no_hash": 0,
+                "negative": 0,
+                "stuck": 0,
+            },
+        )
+
+    def test_run_once_wakes_rollout_after_quota_restore_with_positive_balance(self) -> None:
+        config = FleetConfig(
+            organizations=(
+                OrgConfig(
+                    label="kray",
+                    slug="kray",
+                    api_key_env="SALAD_API_KEY_2",
+                    slot_prefix="prl-kray-roi",
+                ),
+            )
+        )
+        profile = profit_model.Profile(
+            profile_key="4090:batch:2048",
+            gpu_key="4090",
+            gpu_id="gpu-4090",
+            priority="batch",
+            label="RTX 4090 batch",
+            memory_mb=2048,
+            expected_th=230.0,
+            static_hourly_usd=0.16,
+        )
+        pathlib.Path(os.environ["PRL_BALANCE_FILE"]).write_text(json.dumps({"kray": 1.25}), encoding="utf-8")
+        with state_db.connect(self.db_path) as conn:
+            state_db.init_db(conn)
+            state_db.upsert_org_replica_quota(
+                conn,
+                {
+                    "org_label": "kray",
+                    "quota": 0,
+                    "used": 0,
+                    "available": 0,
+                    "status": "zero_quota",
+                    "reason": "container_replicas_quota_zero",
+                    "source": "test",
+                    "checked_at_utc": datetime.now(UTC).isoformat(timespec="seconds"),
+                },
+            )
+            conn.commit()
+
+        class QuotaRestoredWatch(FakeWatch):
+            ORG = "kray"
+
+            def request(self, method: str, path: str, _payload=None, **_kwargs):
+                self.request_call = (method, path)
+                return {
+                    "container_groups_quotas": {
+                        "container_replicas_quota": 10,
+                        "container_replicas_used": 0,
+                    },
+                    "update_time": "2026-06-26T21:30:00+00:00",
+                }
+
+        watch = QuotaRestoredWatch()
+        wake_payload = {"ok": True, "action": "all-orgs-pending"}
+        with (
+            mock.patch.object(availability_probe, "load_config", return_value=config),
+            mock.patch.object(availability_probe.profit_model, "load_profiles", return_value=[profile]),
+            mock.patch.object(availability_probe, "load_watch_module", return_value=watch),
+            mock.patch.object(availability_probe, "install_rate_limited_request"),
+            mock.patch.object(
+                availability_probe,
+                "wake_rollout_on_quota_restore",
+                return_value=wake_payload,
+            ) as wake_mock,
+        ):
+            payload = availability_probe.run_once(db_path=self.db_path, profile_limit=1, org_parallelism=1)
+
+        self.assertEqual(payload["probed"], 1)
+        self.assertEqual(payload["quota_restored_positive_balance_orgs"], ["kray"])
+        self.assertEqual(payload["quota_restore_rollout_wake"], wake_payload)
+        wake_mock.assert_called_once_with(db_path=self.db_path, restored_orgs=["kray"])
+        self.assertEqual(watch.request_call, ("GET", "/organizations/kray/quotas"))
+        with state_db.connect(self.db_path) as conn:
+            availability = conn.execute(
+                "SELECT available_count FROM profile_availability WHERE org_label='kray'"
+            ).fetchone()
+            quota = conn.execute("SELECT * FROM org_replica_quotas WHERE org_label='kray'").fetchone()
+            heartbeat = conn.execute(
+                "SELECT payload_json FROM heartbeats WHERE process_name='availability_probe'"
+            ).fetchone()
+        self.assertEqual(availability["available_count"], 1)
+        self.assertEqual(quota["quota"], 10)
+        self.assertEqual(quota["available"], 10)
+        self.assertIn("quota_restore_rollout_wake", heartbeat["payload_json"])
+
     def test_probe_org_profiles_uses_profile_parallelism(self) -> None:
         org = OrgConfig(
             label="test",

@@ -16,7 +16,7 @@ from typing import Any
 import profit_model
 import state_db
 from config_loader import OrgConfig, load_config
-from fleet_common import env_bool, env_int, json_dumps, utc_now
+from fleet_common import env_bool, env_float, env_int, json_dumps, utc_now
 from org_worker import (
     clear_no_credits_cooldown_row,
     explicit_positive_balance_restore,
@@ -69,10 +69,11 @@ def _probe_org_profiles(
     watch = load_watch_module(org)
     install_rate_limited_request(watch, org, db_path=db_path)
     quota_status = replica_quota_status(watch)
+    quota_transition = None
     if quota_status is not None:
         with state_db.connect(db_path) as conn:
             state_db.init_db(conn)
-            record_replica_quota_status(
+            quota_transition = record_replica_quota_status(
                 conn,
                 org_label=org.label,
                 quota_status=quota_status,
@@ -91,6 +92,7 @@ def _probe_org_profiles(
                 "checked_at_utc": utc_now(),
                 "skip_reason": "zero_replica_quota",
                 "zero_replica_quota_skip": replica_quota_skip,
+                "quota_transition": quota_transition,
             }
         ]
 
@@ -112,6 +114,7 @@ def _probe_org_profiles(
             "ok": ok,
             "error": error,
             "checked_at_utc": checked_at,
+            "quota_transition": quota_transition,
         }
 
     if profile_parallelism <= 1 or len(profiles) <= 1:
@@ -144,7 +147,7 @@ def _refresh_quota_only_org(org: OrgConfig, *, db_path: str | None) -> dict[str,
         }
     with state_db.connect(db_path) as conn:
         state_db.init_db(conn)
-        record_replica_quota_status(
+        quota_transition = record_replica_quota_status(
             conn,
             org_label=org.label,
             quota_status=quota_status,
@@ -155,12 +158,88 @@ def _refresh_quota_only_org(org: OrgConfig, *, db_path: str | None) -> dict[str,
         "org_label": org.label,
         "ok": True,
         "checked_at_utc": checked_at,
+        "quota_transition": quota_transition,
         **quota_status,
     }
 
 
 def _refresh_quota_only_orgs(orgs: list[OrgConfig], *, db_path: str | None) -> list[dict[str, Any]]:
     return [_refresh_quota_only_org(org, db_path=db_path) for org in orgs]
+
+
+def quota_restored_positive_balance_orgs(rows: list[dict[str, Any]]) -> list[str]:
+    restored = []
+    seen: set[str] = set()
+    for row in rows:
+        org_label = str(row.get("org_label") or "")
+        if not org_label or org_label in seen:
+            continue
+        transition = row.get("quota_transition") or {}
+        if not isinstance(transition, dict) or not transition.get("restored"):
+            continue
+        if explicit_positive_balance_restore(org_label) is None:
+            continue
+        seen.add(org_label)
+        restored.append(org_label)
+    return restored
+
+
+def wake_rollout_on_quota_restore(
+    *,
+    db_path: str | None,
+    restored_orgs: list[str],
+) -> dict[str, Any] | None:
+    if not restored_orgs or not env_bool("PRL_AVAILABILITY_WAKE_ROLLOUT_ON_QUOTA_RESTORE", True):
+        return None
+    try:
+        import runtime_monitor
+
+        payload = runtime_monitor.run_monitor_tick(
+            db_path=db_path,
+            fee=env_float("PRL_AVAILABILITY_QUOTA_RESTORE_WAKE_FEE", 0.01),
+            require_secrets=env_bool("PRL_AVAILABILITY_QUOTA_RESTORE_WAKE_REQUIRE_SECRETS", True),
+            apply_all_orgs_pending=True,
+            guard_on_issues=True,
+            guard_due=True,
+            guard_actionable_only=True,
+            confirm_live_actions=True,
+            pending_retarget_after_seconds=env_int(
+                "PRL_AVAILABILITY_QUOTA_RESTORE_WAKE_PENDING_RETARGET_SECONDS",
+                60,
+            ),
+            pending_status_retarget_after_seconds=env_int(
+                "PRL_AVAILABILITY_QUOTA_RESTORE_WAKE_PENDING_STATUS_SECONDS",
+                180,
+            ),
+            runner_timeout_seconds=env_float(
+                "PRL_AVAILABILITY_QUOTA_RESTORE_WAKE_RUNNER_TIMEOUT_SECONDS",
+                420.0,
+            ),
+            worker_parallelism=env_int("PRL_AVAILABILITY_QUOTA_RESTORE_WAKE_WORKER_PARALLELISM", 25),
+            skip_shadow_workers=env_bool("PRL_AVAILABILITY_QUOTA_RESTORE_WAKE_SKIP_SHADOW_WORKERS", True),
+        )
+    except Exception as exc:
+        return {
+            "ok": False,
+            "error_type": type(exc).__name__,
+            "error": str(exc)[:240],
+            "quota_restored_positive_balance_orgs": restored_orgs,
+        }
+    shadow = payload.get("shadow") or {}
+    action_result = payload.get("action_result") or {}
+    return {
+        "ok": bool(payload.get("ok")),
+        "action": payload.get("action"),
+        "quota_restored_positive_balance_orgs": restored_orgs,
+        "shadow_ok": shadow.get("ok"),
+        "shadow_health": shadow.get("health"),
+        "action_ok": action_result.get("ok") if action_result else None,
+        "action_stage": action_result.get("stage") if action_result else None,
+        "live_hashing_gpus": shadow.get("live_hashing_gpus"),
+        "no_hash": shadow.get("no_hash"),
+        "negative": shadow.get("negative"),
+        "stuck": shadow.get("stuck"),
+    }
 
 
 def _probe_org_process(task: dict[str, Any], result_queue: Any) -> None:
@@ -368,6 +447,9 @@ def run_once(
         org_parallelism=selected_org_parallelism,
         profile_parallelism=selected_profile_parallelism,
     )
+    quota_restored_orgs = quota_restored_positive_balance_orgs(
+        [*zero_balance_quota_refreshes, *org_rows]
+    )
     skipped_zero_replica_quota = []
     filtered_org_rows = []
     for row in org_rows:
@@ -458,6 +540,11 @@ def run_once(
         if row["ok"] and row.get("available_count") is not None:
             by_profile[row["profile_key"]] = by_profile.get(row["profile_key"], 0) + int(row["available_count"] or 0)
 
+    quota_restore_rollout_wake = wake_rollout_on_quota_restore(
+        db_path=db_path,
+        restored_orgs=quota_restored_orgs,
+    )
+
     with state_db.connect(db_path) as conn:
         state_db.init_db(conn)
         state_db.write_heartbeat(
@@ -475,6 +562,8 @@ def run_once(
                 "skipped_no_credits_orgs": skipped_no_credits,
                 "cleared_no_credits_cooldowns": cleared_no_credits_cooldowns,
                 "skipped_zero_replica_quota_orgs": skipped_zero_replica_quota,
+                "quota_restored_positive_balance_orgs": quota_restored_orgs,
+                "quota_restore_rollout_wake": quota_restore_rollout_wake,
             },
         )
         state_db.record_event(
@@ -490,6 +579,8 @@ def run_once(
                 "skipped_no_credits_orgs": skipped_no_credits,
                 "cleared_no_credits_cooldowns": cleared_no_credits_cooldowns,
                 "skipped_zero_replica_quota_orgs": skipped_zero_replica_quota,
+                "quota_restored_positive_balance_orgs": quota_restored_orgs,
+                "quota_restore_rollout_wake": quota_restore_rollout_wake,
             },
         )
         conn.commit()
@@ -504,6 +595,8 @@ def run_once(
         "skipped_no_credits_orgs": skipped_no_credits,
         "cleared_no_credits_cooldowns": cleared_no_credits_cooldowns,
         "skipped_zero_replica_quota_orgs": skipped_zero_replica_quota,
+        "quota_restored_positive_balance_orgs": quota_restored_orgs,
+        "quota_restore_rollout_wake": quota_restore_rollout_wake,
         "by_profile": by_profile,
         "results": results,
     }

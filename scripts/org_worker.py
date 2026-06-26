@@ -418,7 +418,7 @@ def record_replica_quota_status(
     org_label: str,
     quota_status: dict[str, Any],
     source: str,
-) -> None:
+) -> dict[str, Any]:
     row = {
         "org_label": org_label,
         "source": source,
@@ -435,11 +435,19 @@ def record_replica_quota_status(
         },
     }
     previous = state_db.upsert_org_replica_quota(conn, row)
-    if previous is None:
-        return
-    previous_quota = int(previous.get("quota") or 0)
+    previous_quota = int(previous.get("quota") or 0) if previous is not None else None
     current_quota = int(row.get("quota") or 0)
-    if previous_quota <= 0 < current_quota:
+    restored = previous_quota is not None and previous_quota <= 0 < current_quota
+    blocked = previous_quota is not None and previous_quota > 0 and current_quota <= 0
+    transition = {
+        "previous": previous,
+        "current": row,
+        "restored": restored,
+        "blocked": blocked,
+    }
+    if previous is None:
+        return transition
+    if restored:
         state_db.record_event(
             conn,
             "org_replica_quota_restored",
@@ -447,7 +455,7 @@ def record_replica_quota_status(
             message="Salad replica quota became available for an organization",
             payload=row,
         )
-    elif previous_quota > 0 and current_quota <= 0:
+    elif blocked:
         state_db.record_event(
             conn,
             "org_replica_quota_blocked",
@@ -455,6 +463,7 @@ def record_replica_quota_status(
             message="Salad replica quota dropped to zero for an organization",
             payload=row,
         )
+    return transition
 
 
 def zero_replica_quota_skip_result(target: dict[str, Any], skip: dict[str, Any]) -> dict[str, Any]:

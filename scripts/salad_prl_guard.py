@@ -6,6 +6,7 @@ import csv
 import json
 import os
 import pathlib
+import signal
 import sys
 import time
 from datetime import UTC, datetime
@@ -33,6 +34,7 @@ PRICE_BAND_USD = float(os.environ.get("PRL_PRICE_BAND_USD", "0.02"))
 DECISION_PRICE_CAP_USD = float(os.environ.get("PRL_DECISION_PRICE_CAP_USD", "0.63"))
 FIXED_DECISION_PRICE_USD = float(os.environ.get("PRL_FIXED_DECISION_PRICE_USD", "0.62"))
 POLL_SECONDS = int(os.environ.get("PRL_NOHASH_POLL_SECONDS", "20"))
+TICK_TIMEOUT_SECONDS = int(os.environ.get("PRL_GUARD_TICK_TIMEOUT_SECONDS", "180"))
 NO_HASH_GRACE_SECONDS = int(os.environ.get("PRL_NOHASH_GRACE_SECONDS", "900"))
 FORCE_NO_HASH_GRACE_SECONDS = int(os.environ.get("PRL_NOHASH_FORCE_GRACE_SECONDS", "900"))
 NEGATIVE_PROFIT_GRACE_SECONDS = int(os.environ.get("PRL_NOHASH_NEGATIVE_GRACE_SECONDS", "900"))
@@ -64,6 +66,14 @@ ENABLED_ORGS = tuple(
     if org.strip()
 )
 DEFAULT_API_KEY_ENV = os.environ.get("PRL_WATCH_DEFAULT_API_KEY_ENV", "SALAD_API_KEY")
+
+
+class GuardTickTimeout(TimeoutError):
+    pass
+
+
+def _raise_tick_timeout(_signum: int, _frame: Any) -> None:
+    raise GuardTickTimeout(f"guard tick exceeded {TICK_TIMEOUT_SECONDS}s")
 OBSERVATION_STORES: dict[str, dict[tuple[str, str], float]] = {
     "no_hash": SEEN_SINCE,
     "negative": NEGATIVE_SLOT_SEEN_SINCE,
@@ -1393,6 +1403,7 @@ def main() -> int:
     log(
         "started",
         poll_seconds=POLL_SECONDS,
+        tick_timeout_seconds=TICK_TIMEOUT_SECONDS,
         no_hash_grace_seconds=NO_HASH_GRACE_SECONDS,
         fallback_prl_price=FALLBACK_PRL_PRICE,
         price_band_usd=PRICE_BAND_USD,
@@ -1412,11 +1423,18 @@ def main() -> int:
         stuck_non_live_tick_budget_seconds=STUCK_NON_LIVE_TICK_BUDGET_SECONDS,
         enabled_orgs=ENABLED_ORGS,
     )
+    signal.signal(signal.SIGALRM, _raise_tick_timeout)
     while True:
         try:
+            if TICK_TIMEOUT_SECONDS > 0:
+                signal.setitimer(signal.ITIMER_REAL, TICK_TIMEOUT_SECONDS)
             tick()
+        except GuardTickTimeout as exc:
+            log("tick_timeout", timeout_seconds=TICK_TIMEOUT_SECONDS, detail=str(exc)[:180])
         except Exception as exc:
             log("tick_failed", error=type(exc).__name__, detail=str(exc)[:180])
+        finally:
+            signal.setitimer(signal.ITIMER_REAL, 0)
         time.sleep(POLL_SECONDS)
 
 

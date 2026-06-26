@@ -285,14 +285,15 @@ def load_config() -> FleetConfig:
         or read_json_env("SALAD_FLEET_CONFIG_JSON")
     )
 
-    if config_payload:
+    loaded_full_config = bool(config_payload)
+    if loaded_full_config:
         org_payload = config_payload.get("organizations") or []
         organizations = tuple(_org_from_dict(item) for item in org_payload)
     else:
         organizations = _load_orgs_from_env()
 
     extra_orgs = _extra_orgs_from_env()
-    if extra_orgs:
+    if extra_orgs and not loaded_full_config:
         organizations = (*organizations, *extra_orgs)
     organizations = _apply_slot_name_overrides(organizations)
 

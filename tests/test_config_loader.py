@@ -156,6 +156,43 @@ class ConfigLoaderTest(unittest.TestCase):
         self.assertEqual(config.target_slot_count(), 10)
         self.assertEqual([org.label for org in config.enabled_orgs()], ["path-org"])
 
+    def test_full_config_path_ignores_extra_orgs_env(self) -> None:
+        payload = {
+            "organizations": [
+                {
+                    "label": "path-org",
+                    "slug": "path-org",
+                    "api_key_env": "SALAD_API_KEY_PATH",
+                    "slot_prefix": "prl-path-org-roi",
+                    "slots": 10,
+                }
+            ]
+        }
+        extra = [
+            {
+                "label": "extra-org",
+                "slug": "extra-org",
+                "api_key_env": "SALAD_API_KEY_EXTRA",
+                "slot_prefix": "prl-extra-org-roi",
+                "slots": 10,
+            }
+        ]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_path = pathlib.Path(tmpdir) / "fleet.json"
+            config_path.write_text(json.dumps(payload), encoding="utf-8")
+            with patch.object(config_loader, "load_env_file", lambda: None), patch.dict(
+                config_loader.os.environ,
+                {
+                    "SALAD_FLEET_CONFIG_PATH": str(config_path),
+                    "SALAD_FLEET_EXTRA_ORGS_JSON": json.dumps(extra),
+                },
+                clear=True,
+            ):
+                config = config_loader.load_config()
+
+        self.assertEqual(config.target_slot_count(), 10)
+        self.assertEqual([org.label for org in config.enabled_orgs()], ["path-org"])
+
     def test_validate_config_catches_duplicate_slot_prefix(self) -> None:
         orgs = (
             config_loader.OrgConfig(

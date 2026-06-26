@@ -319,6 +319,14 @@ keeps API-key-visible orgs such as `kry1` active even when the current Portal
 account cannot read their balance. The availability probe uses the same rule so
 unfunded orgs do not consume shared Salad API-key budget.
 
+Balance is not the only gate. `org_worker.py` also checks Salad's public
+`/organizations/<org>/quotas` endpoint before live actions. If Salad reports
+`container_replicas_quota=0`, the worker records `skip_zero_replica_quota`,
+marks the slots as `zero_quota`, and does not attempt create/patch/start for
+that org. This avoids burning API calls when an org has remaining credits but
+Salad has disabled GPU replicas for that organization. Once the quota becomes
+positive again, the normal fill/optimize loop can resume.
+
 If the older local monitor is running, the audit can also read balances directly
 from its SQLite DB:
 

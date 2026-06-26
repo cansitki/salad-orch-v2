@@ -387,6 +387,63 @@ class StateAndSchedulerTest(unittest.TestCase):
         self.assertEqual(slot_summary["count"], 10)
         self.assertEqual(slot_summary["th"], 0)
 
+    def test_org_worker_skips_live_actions_for_zero_replica_quota(self) -> None:
+        fleet_scheduler.schedule_once(db_path=self.db_path, price=0.64, fee=0.01, dry_run=False)
+
+        class FakeWatch:
+            ORG = "kray"
+
+            def __init__(self) -> None:
+                self.calls: list[tuple[str, str]] = []
+
+            def request(self, method: str, path: str, _payload=None, **_kwargs):
+                self.calls.append((method, path))
+                assert method == "GET"
+                assert path == "/organizations/kray/quotas"
+                return {
+                    "container_groups_quotas": {
+                        "container_replicas_quota": 0,
+                        "container_replicas_used": 0,
+                    },
+                    "update_time": "2026-06-26T14:50:00+00:00",
+                }
+
+        fake_watch = FakeWatch()
+        with (
+            patch("org_worker.load_watch_module", return_value=fake_watch),
+            patch("org_worker.install_rate_limited_request"),
+        ):
+            payload = org_worker.run_once(
+                org_label="kray",
+                db_path=self.db_path,
+                apply=True,
+                schedule_if_empty=False,
+                heartbeat_stale_after_seconds=0,
+            )
+
+        self.assertEqual(payload["action_counts"], {"skip_zero_replica_quota": 10})
+        self.assertEqual(payload["targets"], 10)
+        self.assertEqual(fake_watch.calls, [("GET", "/organizations/kray/quotas")])
+        self.assertTrue(all(result["action"] == "skip_zero_replica_quota" for result in payload["results"]))
+        with state_db.connect(self.db_path) as conn:
+            attempts = conn.execute(
+                "SELECT COUNT(*) FROM attempts WHERE org_label='kray' AND action='skip_zero_replica_quota'"
+            ).fetchone()[0]
+            heartbeat = conn.execute(
+                "SELECT payload_json FROM heartbeats WHERE process_name = 'org_worker:kray'"
+            ).fetchone()
+            slot_summary = conn.execute(
+                """
+                SELECT COUNT(*) AS count, SUM(live_hashrate_th) AS th
+                FROM slots
+                WHERE org_label='kray' AND observed_status='zero_quota'
+                """
+            ).fetchone()
+        self.assertEqual(attempts, 10)
+        self.assertIn("zero_replica_quota_skip", heartbeat["payload_json"])
+        self.assertEqual(slot_summary["count"], 10)
+        self.assertEqual(slot_summary["th"], 0)
+
     def test_zero_balance_skip_requires_explicit_fresh_org_balance(self) -> None:
         balance_file = pathlib.Path(self.tmpdir.name) / "balances.json"
         balance_file.write_text(json.dumps({"kray3": 0.0}), encoding="utf-8")

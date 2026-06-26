@@ -170,6 +170,23 @@ does not cap cooldown scanning; `PRL_SPIKE_COOLDOWN_SCAN_LIMIT` defaults to
 1000. Use `PRL_SPIKE_AUTO_COOLDOWN_PROFILES=0` or `--no-auto-cooldown` to keep
 reporting without applying cooldowns.
 
+Check Salad replica quota when funded orgs refuse to start:
+
+```bash
+python3 - <<'PY'
+import os, sys
+sys.path.insert(0, "scripts")
+from config_loader import load_config
+print([org.label for org in load_config().enabled_orgs()])
+PY
+```
+
+`org_worker.py` calls Salad's `/organizations/<org>/quotas` endpoint before
+live start/patch/create actions. If `container_replicas_quota=0`, the worker
+records `skip_zero_replica_quota` attempts and marks slots as `zero_quota`.
+That means the org may still have credit, but Salad currently allows zero GPU
+replicas there; there is no profitable fill action until the quota is raised.
+
 ## Profit Model
 
 The snapshot uses:

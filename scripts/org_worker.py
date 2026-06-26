@@ -351,6 +351,54 @@ def zero_balance_skip_result(target: dict[str, Any], skip: dict[str, Any]) -> di
     }
 
 
+def zero_replica_quota_skip(watch: Any) -> dict[str, Any] | None:
+    if not env_bool("PRL_SKIP_ZERO_REPLICA_QUOTA_ORGS", True):
+        return None
+    try:
+        payload = watch.request("GET", f"/organizations/{watch.ORG}/quotas")
+    except Exception:
+        return None
+    quotas = (payload.get("container_groups_quotas") or {}) if isinstance(payload, dict) else {}
+    raw_quota = quotas.get("container_replicas_quota")
+    if raw_quota is None:
+        return None
+    try:
+        quota = int(raw_quota)
+        used = int(quotas.get("container_replicas_used") or 0)
+    except (TypeError, ValueError):
+        return None
+    if quota > 0:
+        return None
+    return {
+        "quota": quota,
+        "used": used,
+        "reason": "container_replicas_quota_zero",
+        "quota_update_time": payload.get("update_time"),
+        "quota_create_time": payload.get("create_time"),
+    }
+
+
+def zero_replica_quota_skip_result(target: dict[str, Any], skip: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "slot_name": str(target["slot_name"]),
+        "action": "skip_zero_replica_quota",
+        "reason": str(skip.get("reason") or "container_replicas_quota_zero"),
+        "target_profile_key": target["profile_key"],
+        "current_profile_key": target.get("slot_observed_profile_key"),
+        "observed_status": target.get("slot_observed_status") or "zero_quota",
+        "protected": False,
+        "counts": {"running": 0, "creating": 0, "allocating": 0, "stopping": 0},
+        "instance_count": 0,
+        "pending_instance_ids": [],
+        "running_instance_ids": [],
+        "ok": True,
+        "applied": False,
+        "replica_quota": skip.get("quota"),
+        "replica_quota_used": skip.get("used"),
+        "quota_update_time": skip.get("quota_update_time"),
+    }
+
+
 def no_credits_cooldown_seconds() -> int:
     return env_int(
         "PRL_NO_CREDITS_ORG_COOLDOWN_SECONDS",
@@ -979,6 +1027,97 @@ def run_once(
 
     watch = load_watch_module(org, decision_price=decision_price, min_profit_day=min_profit)
     install_rate_limited_request(watch, org, db_path=db_path)
+    zero_quota_skip = zero_replica_quota_skip(watch) if apply else None
+    if zero_quota_skip is not None:
+        results = [
+            (
+                skipped_live_hashing_result(target)
+                if should_skip_live_hashing_target(target, apply=apply, allow_live_retarget=allow_live_retarget)
+                else zero_replica_quota_skip_result(target, zero_quota_skip)
+            )
+            for target in targets
+        ]
+        action_counts: dict[str, int] = {}
+        for result in results:
+            action_counts[str(result["action"])] = action_counts.get(str(result["action"]), 0) + 1
+        with state_db.connect(db_path) as conn:
+            state_db.init_db(conn)
+            for target, result in zip(targets, results, strict=False):
+                state_db.record_attempt(
+                    conn,
+                    {
+                        "at_utc": utc_now(),
+                        "org_label": org_label,
+                        "slot_name": str(target["slot_name"]),
+                        "action": str(result["action"]),
+                        "profile_key": str(target["profile_key"]),
+                        "ok": True,
+                        "duration_ms": 0,
+                        "error": None,
+                        "payload": result,
+                    },
+                )
+                if str(result["action"]) == "skip_live_hashing":
+                    observed_status_value = result.get("observed_status") or target.get("slot_observed_status")
+                    live_hashrate_th = float(target.get("live_worker_th") or target.get("slot_live_hashrate_th") or 0)
+                    protected = True
+                else:
+                    observed_status_value = "zero_quota"
+                    live_hashrate_th = 0
+                    protected = False
+                state_db.update_slot_observation(
+                    conn,
+                    {
+                        "org_label": org_label,
+                        "slot_name": str(target["slot_name"]),
+                        "observed_profile_key": result.get("current_profile_key") or str(target["profile_key"]),
+                        "observed_status": observed_status_value,
+                        "live_hashrate_th": live_hashrate_th,
+                        "protected": protected,
+                        "reset_observed_age": True,
+                    },
+                )
+            state_db.write_heartbeat(
+                conn,
+                f"org_worker:{org_label}",
+                stale_after_seconds=heartbeat_stale_after_seconds,
+                payload={
+                    "apply": apply,
+                    "allow_live_retarget": allow_live_retarget,
+                    "allow_pending_retarget": allow_pending_retarget,
+                    "pending_retarget_after_seconds": pending_retarget_after_seconds,
+                    "pending_status_retarget_after_seconds": pending_status_retarget_after_seconds,
+                    "targets": len(targets),
+                    "actions": action_counts,
+                    "zero_replica_quota_skip": zero_quota_skip,
+                },
+            )
+            state_db.record_event(
+                conn,
+                "org_worker_zero_replica_quota_skip",
+                source=f"org_worker:{org_label}",
+                message="org worker skipped live actions for zero Salad replica quota",
+                payload={
+                    "apply": apply,
+                    "targets": len(targets),
+                    "actions": action_counts,
+                    "zero_replica_quota_skip": zero_quota_skip,
+                },
+            )
+            conn.commit()
+        return {
+            "org": org_label,
+            "apply": apply,
+            "allow_live_retarget": allow_live_retarget,
+            "allow_pending_retarget": allow_pending_retarget,
+            "pending_retarget_after_seconds": pending_retarget_after_seconds,
+            "pending_status_retarget_after_seconds": pending_status_retarget_after_seconds,
+            "targets": len(targets),
+            "action_counts": action_counts,
+            "zero_replica_quota_skip": zero_quota_skip,
+            "results": results,
+        }
+
     results: list[dict[str, Any]] = []
     attempt_rows: list[dict[str, Any]] = []
     observation_rows: list[dict[str, Any]] = []

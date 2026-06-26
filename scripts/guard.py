@@ -22,6 +22,7 @@ SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
 LEGACY_GUARD = SCRIPT_DIR / "salad_prl_guard.py"
 DEFAULT_NO_HASH_GRACE_SECONDS = 60
 DEFAULT_NEGATIVE_GRACE_SECONDS = 90
+DEFAULT_RETARGET_COOLDOWN_SECONDS = 120
 
 
 def age_seconds(at_utc: str | None) -> float:
@@ -203,14 +204,11 @@ def guard_patch_cooldown_seconds() -> int:
 
 
 def guard_retarget_cooldown_seconds() -> int:
-    raw = os.environ.get(
-        "PRL_GUARD_RETARGET_COOLDOWN_SECONDS",
-        os.environ.get("PRL_PENDING_PROFILE_COOLDOWN_SECONDS", "600"),
-    )
+    raw = os.environ.get("PRL_GUARD_RETARGET_COOLDOWN_SECONDS", str(DEFAULT_RETARGET_COOLDOWN_SECONDS))
     try:
         value = int(raw)
     except (TypeError, ValueError):
-        value = 600
+        value = DEFAULT_RETARGET_COOLDOWN_SECONDS
     return max(60, value)
 
 

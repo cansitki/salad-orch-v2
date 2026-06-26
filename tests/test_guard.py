@@ -474,6 +474,10 @@ class GuardDecisionTest(unittest.TestCase):
         self.assertEqual(retry_decisions[0]["last_guard_action"], "guard_retarget")
         self.assertEqual(apply_mock.call_count, 1)
 
+    def test_guard_retarget_cooldown_default_is_shorter_than_pending_profile_cooldown(self) -> None:
+        with patch.dict("os.environ", {"PRL_PENDING_PROFILE_COOLDOWN_SECONDS": "600"}, clear=True):
+            self.assertEqual(guard.guard_retarget_cooldown_seconds(), 120)
+
     def test_guard_applies_once_when_same_slot_has_multiple_issues(self) -> None:
         self.make_issue_old("no_hash")
         self.make_issue_old("negative")

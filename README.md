@@ -802,7 +802,10 @@ hashing GPU just because it is not ideal.
 `scripts/guard.py` is the new guard path. By default it records decisions only.
 Passing `--apply` is required before it patches, reallocates, or stops anything.
 It persists guard issues in SQLite so a no-hash or negative slot must remain bad
-past the grace window before action is taken.
+past the grace window before action is taken. Successful guard retargets have
+their own short retry cooldown, `PRL_GUARD_RETARGET_COOLDOWN_SECONDS`
+(default `120`), so a bad retarget does not inherit the longer pending-profile
+search cooldown.
 
 ### Profit Snapshot
 
@@ -1031,6 +1034,9 @@ The guard should show:
 PRL_FIXED_DECISION_PRICE_USD=0.64
 PRL_NEGATIVE_SLOT_PROFIT_DAY=0
 PRL_NEGATIVE_SLOT_GRACE_SECONDS=90
+PRL_GUARD_NOHASH_GRACE_SECONDS=60
+PRL_GUARD_NEGATIVE_GRACE_SECONDS=120
+PRL_GUARD_RETARGET_COOLDOWN_SECONDS=120
 PRL_UNDERPERFORM_GRACE_SECONDS=999999
 PRL_NOHASH_GRACE_SECONDS=60
 ```

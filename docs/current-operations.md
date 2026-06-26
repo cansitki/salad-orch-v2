@@ -170,6 +170,12 @@ does not cap cooldown scanning; `PRL_SPIKE_COOLDOWN_SCAN_LIMIT` defaults to
 1000. Use `PRL_SPIKE_AUTO_COOLDOWN_PROFILES=0` or `--no-auto-cooldown` to keep
 reporting without applying cooldowns.
 
+Guard v2 uses a separate short retry cooldown for successful no-hash/negative
+retargets: `PRL_GUARD_RETARGET_COOLDOWN_SECONDS` defaults to `120`. Keep this
+shorter than `PRL_PENDING_PROFILE_COOLDOWN_SECONDS` so a retarget that
+immediately lands on another bad GPU can be corrected without waiting through
+the longer search cooldown.
+
 Check Salad replica quota when funded orgs refuse to start:
 
 ```bash

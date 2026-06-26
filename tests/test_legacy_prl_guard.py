@@ -240,6 +240,29 @@ class LegacyPrlGuardTest(unittest.TestCase):
 
         self.assertEqual(reallocated, [])
 
+    def test_low_fresh_pool_sample_preserves_negative_observation_age(self) -> None:
+        slot = "prl-kray-roi-01"
+        first_seen = time.time() - 240.0
+        self.guard.NEGATIVE_SLOT_SEEN_SINCE[("kray", slot)] = first_seen
+        self.guard.snapshot.build_snapshot = lambda _price: {
+            "fresh_workers": 0,
+            "running_no_live_billable_slots": [],
+            "stale_current_workers": [],
+            "stuck_non_live_slots": [],
+            "org_discrepancies": [{"org": "kray", "active_salad_slots": 10}],
+            "slots": [],
+            "totals": {"profit_day": -10.0},
+        }
+        reallocated: list[tuple[str, str, str]] = []
+        self.guard.reallocate_slot = lambda org, slot_name, reason, retarget=True, **_kwargs: reallocated.append(
+            (org, slot_name, reason)
+        )
+
+        self.guard.tick()
+
+        self.assertEqual(reallocated, [])
+        self.assertEqual(self.guard.NEGATIVE_SLOT_SEEN_SINCE[("kray", slot)], first_seen)
+
     def test_no_hash_reallocation_writes_specific_log_event(self) -> None:
         slot = "prl-kray-roi-01"
         self.guard.SEEN_SINCE[("kray", slot)] = time.time() - 7200.0

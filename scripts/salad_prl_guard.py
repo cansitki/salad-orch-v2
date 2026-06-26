@@ -1089,9 +1089,10 @@ def tick() -> None:
         negative_rows.append({**row, "org": org})
 
     negative_keys = {(str(item.get("org")), str(item.get("slot"))) for item in negative_rows}
-    for key in list(NEGATIVE_SLOT_SEEN_SINCE):
-        if key not in negative_keys:
-            NEGATIVE_SLOT_SEEN_SINCE.pop(key, None)
+    if not low_fresh_pool_sample:
+        for key in list(NEGATIVE_SLOT_SEEN_SINCE):
+            if key not in negative_keys:
+                NEGATIVE_SLOT_SEEN_SINCE.pop(key, None)
 
     for item in negative_rows:
         org = str(item.get("org") or "")

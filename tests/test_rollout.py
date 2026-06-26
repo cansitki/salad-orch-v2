@@ -303,6 +303,13 @@ class RolloutTest(unittest.TestCase):
             "running_no_live_billable_slots": [],
             "negative_slots": [],
             "stuck_slots": [],
+            "capacity_actions": {
+                "summary": {
+                    "top_up_slots": 20,
+                    "quota_blocked_funded_slots": 200,
+                    "zero_balance_zero_quota_slots": 30,
+                }
+            },
         }
         health_payload = {
             "health": "healthy",
@@ -364,6 +371,14 @@ class RolloutTest(unittest.TestCase):
         self.assertEqual(len(payload["workers"]), 2)
         self.assertEqual(payload["workers"][0]["action_counts"], {"cooldown_pending": 1})
         self.assertEqual(payload["workers"][1]["action_counts"], {"patch": 1})
+        self.assertEqual(
+            payload["report"]["capacity_action_summary"],
+            {
+                "top_up_slots": 20,
+                "quota_blocked_funded_slots": 200,
+                "zero_balance_zero_quota_slots": 30,
+            },
+        )
 
     def test_scheduler_replacement_target_triggers_same_cycle_second_worker_pass(self) -> None:
         initial_scheduler_payload = {

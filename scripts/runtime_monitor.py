@@ -167,6 +167,7 @@ def _failure_summary_with_db_fallback(stage: str, exc: BaseException, db_path: s
             "no_hash": len(report_payload.get("running_no_live_billable_slots") or []),
             "negative": len(report_payload.get("negative_slots") or []),
             "stuck": len(report_payload.get("stuck_slots") or []),
+            "capacity_action_summary": (report_payload.get("capacity_actions") or {}).get("summary"),
             "fallback_source": "db",
         }
     )
@@ -190,6 +191,7 @@ def _summarize_rollout(payload: dict[str, Any]) -> dict[str, Any]:
         "no_hash": report.get("no_hash"),
         "negative": report.get("negative"),
         "stuck": report.get("stuck"),
+        "capacity_action_summary": report.get("capacity_action_summary"),
         "failed_gates": [item.get("gate") for item in gates.get("failed") or []],
         "warning_gates": [item.get("gate") for item in gates.get("warnings") or []],
         "error": payload.get("error"),
@@ -503,6 +505,15 @@ def _print_tick(payload: dict[str, Any]) -> None:
         print(f"shadow_fallback={shadow['fallback_source']}", flush=True)
     if shadow.get("fallback_error"):
         print(f"shadow_fallback_error={shadow['fallback_error']}", flush=True)
+    if shadow.get("capacity_action_summary"):
+        capacity = shadow["capacity_action_summary"]
+        print(
+            "capacity "
+            f"top_up_slots={int(capacity.get('top_up_slots') or 0)} "
+            f"quota_blocked_funded_slots={int(capacity.get('quota_blocked_funded_slots') or 0)} "
+            f"zero_balance_zero_quota_slots={int(capacity.get('zero_balance_zero_quota_slots') or 0)}",
+            flush=True,
+        )
     if payload.get("guard_probe"):
         probe = payload["guard_probe"]
         if probe.get("ok"):

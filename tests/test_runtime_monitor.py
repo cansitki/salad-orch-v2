@@ -28,6 +28,11 @@ def rollout_payload(*, stage: str, ok: bool = True) -> dict:
             "no_hash": 1,
             "negative": 0,
             "stuck": 0,
+            "capacity_action_summary": {
+                "top_up_slots": 20,
+                "quota_blocked_funded_slots": 200,
+                "zero_balance_zero_quota_slots": 30,
+            },
         },
         "health": {"health": "healthy"},
         "shadow_compare": {"ok": ok},
@@ -46,6 +51,18 @@ def rollout_payload_without_issues(*, stage: str, ok: bool = True) -> dict:
 
 
 class RuntimeMonitorTest(unittest.TestCase):
+    def test_rollout_summary_includes_capacity_action_summary(self) -> None:
+        summary = runtime_monitor._summarize_rollout(rollout_payload(stage="shadow"))
+
+        self.assertEqual(
+            summary["capacity_action_summary"],
+            {
+                "top_up_slots": 20,
+                "quota_blocked_funded_slots": 200,
+                "zero_balance_zero_quota_slots": 30,
+            },
+        )
+
     def test_guard_due_skips_initial_fill_ticks(self) -> None:
         self.assertFalse(runtime_monitor._guard_due(0, 3))
         self.assertFalse(runtime_monitor._guard_due(1, 3))
@@ -648,6 +665,13 @@ class RuntimeMonitorTest(unittest.TestCase):
                     "running_no_live_billable_slots": [{}],
                     "negative_slots": [],
                     "stuck_slots": [{}, {}],
+                    "capacity_actions": {
+                        "summary": {
+                            "top_up_slots": 20,
+                            "quota_blocked_funded_slots": 200,
+                            "zero_balance_zero_quota_slots": 30,
+                        }
+                    },
                 },
             ) as report_mock,
             patch(
@@ -665,6 +689,14 @@ class RuntimeMonitorTest(unittest.TestCase):
         self.assertEqual(payload["shadow"]["live_hashing_gpus"], 12)
         self.assertEqual(payload["shadow"]["no_hash"], 1)
         self.assertEqual(payload["shadow"]["stuck"], 2)
+        self.assertEqual(
+            payload["shadow"]["capacity_action_summary"],
+            {
+                "top_up_slots": 20,
+                "quota_blocked_funded_slots": 200,
+                "zero_balance_zero_quota_slots": 30,
+            },
+        )
         self.assertEqual(payload["shadow"]["fallback_source"], "db")
         report_mock.assert_called_once_with("/tmp/fleet.db")
         health_mock.assert_called_once_with("/tmp/fleet.db")

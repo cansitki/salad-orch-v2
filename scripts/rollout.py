@@ -647,6 +647,7 @@ def run_rollout(
             "no_hash": len(report_payload.get("running_no_live_billable_slots") or []),
             "negative": len(report_payload.get("negative_slots") or []),
             "stuck": len(report_payload.get("stuck_slots") or []),
+            "capacity_action_summary": (report_payload.get("capacity_actions") or {}).get("summary"),
             "refresh_error": report_payload.get("refresh_error"),
         },
         "health": {

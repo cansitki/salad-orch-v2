@@ -325,6 +325,33 @@ class ReporterTest(unittest.TestCase):
         self.assertEqual(report["capacity_summary"]["quota_capacity_slots"], 10)
         self.assertEqual(report["capacity_summary"]["quota_used_slots"], 7)
         self.assertEqual(report["capacity_summary"]["quota_blocked_slots"], 10)
+        self.assertEqual(report["capacity_summary"]["balance_blocked_slots"], 0)
+        self.assertEqual(report["capacity_summary"]["quota_unknown_slots"], 20)
+
+    def test_zero_balance_slots_are_not_counted_as_unknown_quota(self) -> None:
+        with state_db.connect(self.db_path) as conn:
+            state_db.upsert_org_replica_quota(
+                conn,
+                {
+                    "org_label": "kray",
+                    "quota": 10,
+                    "used": 10,
+                    "available": 0,
+                    "status": "available",
+                    "reason": "container_replicas_quota_available",
+                    "source": "test",
+                },
+            )
+            conn.execute("UPDATE slots SET observed_status='zero_balance' WHERE org_label='kry1'")
+            conn.commit()
+
+        report = reporter.build_report(self.db_path)
+
+        self.assertEqual(report["capacity_summary"]["quota_known_slots"], 10)
+        self.assertEqual(report["capacity_summary"]["quota_capacity_slots"], 10)
+        self.assertEqual(report["capacity_summary"]["quota_used_slots"], 10)
+        self.assertEqual(report["capacity_summary"]["quota_blocked_slots"], 0)
+        self.assertEqual(report["capacity_summary"]["balance_blocked_slots"], 10)
         self.assertEqual(report["capacity_summary"]["quota_unknown_slots"], 20)
 
 

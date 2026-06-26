@@ -272,27 +272,36 @@ def build_report(
     for slot in slot_rows:
         org_label = str(slot["org_label"])
         org_slot_counts[org_label] = org_slot_counts.get(org_label, 0) + 1
+    balance_blocked_slots = sum(1 for slot in slot_rows if str(slot.get("observed_status") or "") == "zero_balance")
     quota_capacity_slots = 0
     quota_used_slots = 0
     quota_blocked_slots = 0
     quota_known_slots = 0
+    quota_known_orgs: set[str] = set()
     for quota in replica_quotas:
         org_label = str(quota.get("org_label") or "")
         org_slots = int(org_slot_counts.get(org_label) or 0)
         quota_value = int(quota.get("quota") or 0)
         used_value = int(quota.get("used") or 0)
+        quota_known_orgs.add(org_label)
         quota_known_slots += org_slots
         quota_capacity_slots += min(org_slots, quota_value)
         quota_used_slots += min(org_slots, used_value)
         if str(quota.get("status") or "") == "zero_quota":
             quota_blocked_slots += org_slots
-    quota_unknown_slots = max(0, len(slot_rows) - quota_known_slots)
+    quota_unknown_slots = sum(
+        1
+        for slot in slot_rows
+        if str(slot.get("org_label") or "") not in quota_known_orgs
+        and str(slot.get("observed_status") or "") != "zero_balance"
+    )
     capacity_summary = {
         "target_slots": max(config.target_slot_count(), len(slot_rows), len(targets)),
         "quota_known_slots": quota_known_slots,
         "quota_capacity_slots": quota_capacity_slots,
         "quota_used_slots": quota_used_slots,
         "quota_blocked_slots": quota_blocked_slots,
+        "balance_blocked_slots": balance_blocked_slots,
         "quota_unknown_slots": quota_unknown_slots,
     }
     status_counts: dict[str, int] = {}
@@ -476,7 +485,9 @@ def main() -> None:
     if capacity:
         print(
             f"quota_capacity={capacity.get('quota_used_slots')}/{capacity.get('quota_capacity_slots')} "
-            f"blocked={capacity.get('quota_blocked_slots')} unknown={capacity.get('quota_unknown_slots')}"
+            f"blocked={capacity.get('quota_blocked_slots')} "
+            f"balance_blocked={capacity.get('balance_blocked_slots')} "
+            f"unknown={capacity.get('quota_unknown_slots')}"
         )
     print("profile targets:")
     for profile_key, count in sorted(report["profile_counts"].items(), key=lambda item: item[1], reverse=True):

@@ -3,10 +3,79 @@ from __future__ import annotations
 
 import argparse
 import time
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import state_db
-from fleet_common import json_dumps
+from config_loader import load_config
+from fleet_common import env_bool, env_int, json_dumps, utc_now
+
+
+def _parse_utc(value: str | None) -> datetime:
+    if not value:
+        return datetime.now(UTC)
+    parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed
+
+
+def _is_exact_profile_key(profile_key: str) -> bool:
+    return profile_key.count(":") >= 2
+
+
+def apply_unstable_profile_cooldowns(
+    conn,
+    summary: dict[str, Any],
+    *,
+    cooldown_seconds: int | None = None,
+    now_utc: str | None = None,
+) -> list[dict[str, Any]]:
+    seconds = cooldown_seconds if cooldown_seconds is not None else env_int("PRL_SPIKE_PROFILE_COOLDOWN_SECONDS", 3600)
+    if seconds <= 0:
+        return []
+    now = _parse_utc(now_utc or utc_now())
+    sleep_until = (now + timedelta(seconds=max(60, seconds))).isoformat(timespec="seconds")
+    orgs = load_config().enabled_orgs()
+    applied: list[dict[str, Any]] = []
+    for profile in summary.get("profiles") or []:
+        if not profile.get("unstable") or not profile.get("profile_key"):
+            continue
+        profile_key = str(profile["profile_key"])
+        if not _is_exact_profile_key(profile_key):
+            continue
+        attempts = max(
+            int(profile.get("spikes_30m") or 0),
+            int(profile.get("spikes_60m") or 0),
+            int(profile.get("affected_slots_60m") or 0),
+        )
+        for org in orgs:
+            state_db.record_search_state(
+                conn,
+                {
+                    "org_label": org.label,
+                    "slot_name": "*",
+                    "profile_key": profile_key,
+                    "no_gpu_since_utc": profile.get("first_seen_utc") or now.isoformat(timespec="seconds"),
+                    "sleep_until_utc": sleep_until,
+                    "attempts": attempts,
+                    "reason": "unstable_recent_spikes",
+                    "updated_at_utc": now.isoformat(timespec="seconds"),
+                },
+            )
+            applied.append(
+                {
+                    "org_label": org.label,
+                    "slot_name": "*",
+                    "profile_key": profile_key,
+                    "sleep_until_utc": sleep_until,
+                    "spikes_30m": int(profile.get("spikes_30m") or 0),
+                    "spikes_60m": int(profile.get("spikes_60m") or 0),
+                    "affected_slots_60m": int(profile.get("affected_slots_60m") or 0),
+                    "instability_score": int(profile.get("instability_score") or 0),
+                }
+            )
+    return applied
 
 
 def report_once(
@@ -15,10 +84,35 @@ def report_once(
     windows_minutes: tuple[int, ...] = (30, 60),
     limit: int = 20,
     write_heartbeat: bool = False,
+    apply_cooldowns: bool | None = None,
+    cooldown_seconds: int | None = None,
 ) -> dict[str, Any]:
     with state_db.connect(db_path) as conn:
         state_db.init_db(conn)
         summary = state_db.recent_spike_summary(conn, windows_minutes=windows_minutes, limit=limit)
+        should_apply_cooldowns = write_heartbeat and (
+            env_bool("PRL_SPIKE_AUTO_COOLDOWN_PROFILES", True)
+            if apply_cooldowns is None
+            else apply_cooldowns
+        )
+        cooldown_summary = summary
+        if should_apply_cooldowns and limit > 0:
+            cooldown_scan_limit = max(limit, env_int("PRL_SPIKE_COOLDOWN_SCAN_LIMIT", 1000))
+            if cooldown_scan_limit != limit:
+                cooldown_summary = state_db.recent_spike_summary(
+                    conn,
+                    windows_minutes=windows_minutes,
+                    limit=cooldown_scan_limit,
+                )
+        cooldowns = (
+            apply_unstable_profile_cooldowns(conn, cooldown_summary, cooldown_seconds=cooldown_seconds)
+            if should_apply_cooldowns
+            else []
+        )
+        if cooldowns:
+            summary["cooldowns"] = cooldowns
+            summary["cooldown_profile_count"] = len({row["profile_key"] for row in cooldowns})
+            summary["cooldown_org_profile_count"] = len(cooldowns)
         if write_heartbeat:
             state_db.write_heartbeat(
                 conn,
@@ -26,6 +120,8 @@ def report_once(
                 payload={
                     "event_count": summary["event_count"],
                     "unstable_profiles": sum(1 for row in summary["profiles"] if row.get("unstable")),
+                    "cooldown_profiles": summary.get("cooldown_profile_count", 0),
+                    "cooldown_org_profiles": summary.get("cooldown_org_profile_count", 0),
                     "top_profiles": summary["profiles"][:5],
                 },
             )
@@ -81,6 +177,8 @@ def main() -> None:
     parser.add_argument("--windows", type=parse_windows, default=(30, 60), help="Comma-separated minute windows.")
     parser.add_argument("--limit", type=int, default=20)
     parser.add_argument("--heartbeat", action="store_true", help="Persist a spike_report heartbeat and event.")
+    parser.add_argument("--no-auto-cooldown", action="store_true", help="Do not cooldown unstable profiles.")
+    parser.add_argument("--cooldown-seconds", type=int, default=None, help="Override unstable profile cooldown length.")
     parser.add_argument("--loop", action="store_true")
     parser.add_argument("--interval", type=int, default=300)
     parser.add_argument("--json", action="store_true")
@@ -92,6 +190,8 @@ def main() -> None:
             windows_minutes=args.windows,
             limit=args.limit,
             write_heartbeat=args.heartbeat,
+            apply_cooldowns=False if args.no_auto_cooldown else None,
+            cooldown_seconds=args.cooldown_seconds,
         )
         if args.json:
             print(json_dumps(summary), flush=True)

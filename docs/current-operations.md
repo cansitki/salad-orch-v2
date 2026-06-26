@@ -96,7 +96,7 @@ The automation is intentionally plain Python plus shell launchers.
 | `scripts/fleet_audit.py` | Records active GPU snapshots every 5 minutes and hourly org balance-vs-cost audits. |
 | `scripts/portal_balances.py` | Refreshes the private local balance file from Salad Portal using a local cookie jar and optional env login. |
 | `scripts/portal_multi_balances.py` | Refreshes several Salad Portal accounts and merges their org balances into the private balance file. |
-| `scripts/spike_report.py` | Reports 30/60 minute negative/no-hash spike history so repeatedly unstable profiles can be deprioritized. |
+| `scripts/spike_report.py` | Reports 30/60 minute negative/no-hash spike history and cooldowns repeatedly unstable profiles. |
 
 ## Runtime Sessions
 
@@ -161,6 +161,14 @@ python3 scripts/portal_balances.py --loop --interval 900 --balance-file state/sa
 SALAD_PORTAL_BALANCE_EMAILS="account1@example.com,account2@example.com" python3 scripts/portal_multi_balances.py --loop --interval 900 --balance-file state/salad_balances.json
 python3 scripts/spike_report.py --heartbeat --loop --interval 300
 ```
+
+`spike_report.py` reads guard-written `slot_spike_events`. With `--heartbeat`,
+profiles marked unstable also get temporary wildcard cooldown rows for every
+enabled org (`org/*/profile`). Defaults: 3 spikes in 30m, 5 spikes in 60m, or
+3 affected slots in 60m triggers a 3600 second cooldown. The display `--limit`
+does not cap cooldown scanning; `PRL_SPIKE_COOLDOWN_SCAN_LIMIT` defaults to
+1000. Use `PRL_SPIKE_AUTO_COOLDOWN_PROFILES=0` or `--no-auto-cooldown` to keep
+reporting without applying cooldowns.
 
 ## Profit Model
 

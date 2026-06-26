@@ -254,11 +254,30 @@ class AvailabilityProbeTest(unittest.TestCase):
         balance_file.write_text(json.dumps({"kray": 0.0}), encoding="utf-8")
         original_balance_file = os.environ.get("PRL_BALANCE_FILE")
         os.environ["PRL_BALANCE_FILE"] = str(balance_file)
+
+        class QuotaOnlyWatch(FakeWatch):
+            ORG = "kray"
+
+            def request(self, method: str, path: str, _payload=None, **_kwargs):
+                self.request_call = (method, path)
+                return {
+                    "container_groups_quotas": {
+                        "container_replicas_quota": 10,
+                        "container_replicas_used": 2,
+                    },
+                    "update_time": "2026-06-26T21:30:00+00:00",
+                }
+
+            def candidate_availability(self, _slot_name, _candidate):
+                raise AssertionError("zero balance org should not probe profile availability")
+
+        quota_watch = QuotaOnlyWatch()
+        profile_watch = FakeWatch()
         try:
             with (
                 mock.patch.object(availability_probe, "load_config", return_value=config),
                 mock.patch.object(availability_probe.profit_model, "load_profiles", return_value=[profile]),
-                mock.patch.object(availability_probe, "load_watch_module", return_value=FakeWatch()) as load_watch,
+                mock.patch.object(availability_probe, "load_watch_module", side_effect=[quota_watch, profile_watch]) as load_watch,
                 mock.patch.object(availability_probe, "install_rate_limited_request"),
             ):
                 payload = availability_probe.run_once(db_path=self.db_path, profile_limit=1)
@@ -271,7 +290,21 @@ class AvailabilityProbeTest(unittest.TestCase):
         self.assertEqual(payload["probed"], 1)
         self.assertEqual(payload["results"][0]["org_label"], "kry1")
         self.assertEqual([item["org_label"] for item in payload["skipped_zero_balance_orgs"]], ["kray"])
-        load_watch.assert_called_once_with(config.organizations[1])
+        self.assertEqual([item["org_label"] for item in payload["zero_balance_quota_refreshes"]], ["kray"])
+        self.assertEqual(payload["zero_balance_quota_refreshes"][0]["quota"], 10)
+        self.assertEqual(payload["zero_balance_quota_refreshes"][0]["used"], 2)
+        self.assertEqual(quota_watch.request_call, ("GET", "/organizations/kray/quotas"))
+        self.assertEqual(load_watch.call_args_list, [mock.call(config.organizations[0]), mock.call(config.organizations[1])])
+        with state_db.connect(self.db_path) as conn:
+            availability_orgs = [
+                row["org_label"]
+                for row in conn.execute("SELECT DISTINCT org_label FROM profile_availability ORDER BY org_label")
+            ]
+            quota = conn.execute("SELECT * FROM org_replica_quotas WHERE org_label='kray'").fetchone()
+        self.assertEqual(availability_orgs, ["kry1"])
+        self.assertEqual(quota["quota"], 10)
+        self.assertEqual(quota["used"], 2)
+        self.assertEqual(quota["source"], "availability_probe_zero_balance")
 
     def test_run_once_skips_active_no_credits_orgs(self) -> None:
         config = FleetConfig(

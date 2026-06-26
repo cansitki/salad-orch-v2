@@ -16,7 +16,7 @@ from typing import Any
 import profit_model
 import state_db
 from config_loader import OrgConfig, load_config
-from fleet_common import env_int, json_dumps, utc_now
+from fleet_common import env_bool, env_int, json_dumps, utc_now
 from org_worker import (
     clear_no_credits_cooldown_row,
     explicit_positive_balance_restore,
@@ -120,6 +120,47 @@ def _probe_org_profiles(
     max_workers = min(profile_parallelism, len(profiles))
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
         return list(executor.map(probe_profile, profiles))
+
+
+def _refresh_quota_only_org(org: OrgConfig, *, db_path: str | None) -> dict[str, Any]:
+    checked_at = utc_now()
+    try:
+        watch = load_watch_module(org)
+        install_rate_limited_request(watch, org, db_path=db_path)
+        quota_status = replica_quota_status(watch)
+    except Exception as exc:
+        return {
+            "org_label": org.label,
+            "ok": False,
+            "error": type(exc).__name__,
+            "checked_at_utc": checked_at,
+        }
+    if quota_status is None:
+        return {
+            "org_label": org.label,
+            "ok": False,
+            "error": "quota_status_unavailable",
+            "checked_at_utc": checked_at,
+        }
+    with state_db.connect(db_path) as conn:
+        state_db.init_db(conn)
+        record_replica_quota_status(
+            conn,
+            org_label=org.label,
+            quota_status=quota_status,
+            source="availability_probe_zero_balance",
+        )
+        conn.commit()
+    return {
+        "org_label": org.label,
+        "ok": True,
+        "checked_at_utc": checked_at,
+        **quota_status,
+    }
+
+
+def _refresh_quota_only_orgs(orgs: list[OrgConfig], *, db_path: str | None) -> list[dict[str, Any]]:
+    return [_refresh_quota_only_org(org, db_path=db_path) for org in orgs]
 
 
 def _probe_org_process(task: dict[str, Any], result_queue: Any) -> None:
@@ -255,6 +296,12 @@ def run_once(
         if (skip := explicit_zero_balance_skip(org.label)) is not None
     ]
     skipped_zero_balance_labels = {str(skip["org_label"]) for skip in skipped_zero_balance}
+    zero_balance_quota_refreshes = []
+    if env_bool("PRL_AVAILABILITY_REFRESH_ZERO_BALANCE_QUOTA", True):
+        zero_balance_quota_refreshes = _refresh_quota_only_orgs(
+            [org for org in enabled_orgs if org.label in skipped_zero_balance_labels],
+            db_path=db_path,
+        )
 
     with state_db.connect(db_path) as conn:
         state_db.init_db(conn)
@@ -307,6 +354,7 @@ def run_once(
                 "org_parallelism": selected_org_parallelism,
                 "profile_parallelism": selected_profile_parallelism,
                 "skipped_zero_balance_orgs": skipped_zero_balance,
+                "zero_balance_quota_refreshes": zero_balance_quota_refreshes,
                 "skipped_no_credits_orgs": skipped_no_credits,
                 "cleared_no_credits_cooldowns": cleared_no_credits_cooldowns,
             },
@@ -423,6 +471,7 @@ def run_once(
                 "org_parallelism": selected_org_parallelism,
                 "profile_parallelism": selected_profile_parallelism,
                 "skipped_zero_balance_orgs": skipped_zero_balance,
+                "zero_balance_quota_refreshes": zero_balance_quota_refreshes,
                 "skipped_no_credits_orgs": skipped_no_credits,
                 "cleared_no_credits_cooldowns": cleared_no_credits_cooldowns,
                 "skipped_zero_replica_quota_orgs": skipped_zero_replica_quota,
@@ -437,6 +486,7 @@ def run_once(
                 "probed": len(results),
                 "profiles": by_profile,
                 "skipped_zero_balance_orgs": skipped_zero_balance,
+                "zero_balance_quota_refreshes": zero_balance_quota_refreshes,
                 "skipped_no_credits_orgs": skipped_no_credits,
                 "cleared_no_credits_cooldowns": cleared_no_credits_cooldowns,
                 "skipped_zero_replica_quota_orgs": skipped_zero_replica_quota,
@@ -450,6 +500,7 @@ def run_once(
         "org_parallelism": selected_org_parallelism,
         "profile_parallelism": selected_profile_parallelism,
         "skipped_zero_balance_orgs": skipped_zero_balance,
+        "zero_balance_quota_refreshes": zero_balance_quota_refreshes,
         "skipped_no_credits_orgs": skipped_no_credits,
         "cleared_no_credits_cooldowns": cleared_no_credits_cooldowns,
         "skipped_zero_replica_quota_orgs": skipped_zero_replica_quota,

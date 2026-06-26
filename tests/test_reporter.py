@@ -4,6 +4,7 @@ import pathlib
 import sys
 import tempfile
 import unittest
+from datetime import UTC, datetime, timedelta
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -193,6 +194,31 @@ class ReporterTest(unittest.TestCase):
 
         self.assertEqual(report["status_counts"]["deploying"], 1)
         self.assertEqual(report["active_pending_slots"], 3)
+
+    def test_stuck_slots_use_observed_status_age_not_refresh_age(self) -> None:
+        now = datetime.now(UTC).replace(microsecond=0)
+        with state_db.connect(self.db_path) as conn:
+            conn.execute(
+                """
+                UPDATE slots
+                SET observed_status='allocating',
+                    observed_profile_key='3090:batch:2048',
+                    observed_status_since_utc=?,
+                    updated_at_utc=?
+                WHERE org_label='kray' AND slot_name='prl-kray-roi-01'
+                """,
+                (
+                    (now - timedelta(minutes=12)).isoformat(timespec="seconds"),
+                    now.isoformat(timespec="seconds"),
+                ),
+            )
+            conn.commit()
+
+        report = reporter.build_report(self.db_path)
+
+        self.assertEqual(len(report["stuck_slots"]), 1)
+        self.assertEqual(report["stuck_slots"][0]["slot_name"], "prl-kray-roi-01")
+        self.assertEqual(report["stuck_slots"][0]["age_source"], "observed_status_since_utc")
 
     def test_target_slots_uses_db_when_runtime_config_has_more_slots(self) -> None:
         with state_db.connect(self.db_path) as conn:

@@ -296,10 +296,11 @@ def build_report(
             "slot_name": slot["slot_name"],
             "observed_status": slot.get("observed_status"),
             "age_seconds": round(age, 1),
+            "age_source": "observed_status_since_utc" if slot.get("observed_status_since_utc") else "updated_at_utc",
         }
         for slot in slot_rows
         if (slot.get("observed_status") in {"creating", "allocating"})
-        for age in [_age_seconds(slot.get("updated_at_utc"))]
+        for age in [_age_seconds(slot.get("observed_status_since_utc") or slot.get("updated_at_utc"))]
         if age is not None and age > 600
     ]
     heartbeat_status = []

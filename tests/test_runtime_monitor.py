@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import json
 import os
 import pathlib
 import sys
+import tempfile
 import time
 import unittest
 from unittest.mock import patch
@@ -12,6 +14,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
 import runtime_monitor
+import state_db
 
 
 def rollout_payload(*, stage: str, ok: bool = True) -> dict:
@@ -62,6 +65,30 @@ class RuntimeMonitorTest(unittest.TestCase):
                 "zero_balance_zero_quota_slots": 30,
             },
         )
+
+    def test_runtime_monitor_heartbeat_includes_capacity_action_summary(self) -> None:
+        payload = runtime_monitor.run_monitor_tick(
+            runner=lambda **kwargs: rollout_payload(stage=kwargs["stage"]),
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = str(pathlib.Path(tmpdir) / "fleet.db")
+            runtime_monitor.write_monitor_heartbeat(db_path, payload, stale_after_seconds=123)
+
+            with state_db.connect(db_path) as conn:
+                row = conn.execute(
+                    "SELECT * FROM heartbeats WHERE process_name = 'runtime_monitor'"
+                ).fetchone()
+
+        self.assertIsNotNone(row)
+        assert row is not None
+        heartbeat_payload = json.loads(row["payload_json"])
+        self.assertEqual(row["status"], "ok")
+        self.assertEqual(row["stale_after_seconds"], 123)
+        self.assertEqual(heartbeat_payload["action"], "none")
+        self.assertEqual(heartbeat_payload["targets"], 40)
+        self.assertEqual(heartbeat_payload["target_slots"], 40)
+        self.assertEqual(heartbeat_payload["capacity_action_summary"]["top_up_slots"], 20)
 
     def test_guard_due_skips_initial_fill_ticks(self) -> None:
         self.assertFalse(runtime_monitor._guard_due(0, 3))

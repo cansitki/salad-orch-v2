@@ -14,7 +14,8 @@ import health as health_status
 import guard as guard_status
 import reporter
 import rollout
-from fleet_common import json_dumps, utc_now
+import state_db
+from fleet_common import env_int, json_dumps, utc_now
 
 
 RolloutRunner = Callable[..., dict[str, Any]]
@@ -485,6 +486,43 @@ def run_monitor_tick(
     }
 
 
+def _runtime_monitor_heartbeat_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    shadow = payload.get("shadow") or {}
+    action_result = payload.get("action_result") or {}
+    guard_probe = payload.get("guard_probe") or {}
+    return {
+        "ok": bool(payload.get("ok")),
+        "action": payload.get("action"),
+        "shadow_ok": shadow.get("ok"),
+        "health": shadow.get("health"),
+        "targets": shadow.get("targets"),
+        "target_slots": shadow.get("target_slots"),
+        "live_hashing_gpus": shadow.get("live_hashing_gpus"),
+        "no_hash": shadow.get("no_hash"),
+        "negative": shadow.get("negative"),
+        "stuck": shadow.get("stuck"),
+        "capacity_action_summary": shadow.get("capacity_action_summary"),
+        "action_ok": action_result.get("ok") if action_result else None,
+        "action_stage": action_result.get("stage") if action_result else None,
+        "guard_probe_ok": guard_probe.get("ok") if guard_probe else None,
+        "guard_probe_actionable": guard_probe.get("actionable") if guard_probe else None,
+        "skipped_live_action": bool(payload.get("skipped_live_action")),
+    }
+
+
+def write_monitor_heartbeat(db_path: str | None, payload: dict[str, Any], *, stale_after_seconds: int) -> None:
+    with state_db.connect(db_path) as conn:
+        state_db.init_db(conn)
+        state_db.write_heartbeat(
+            conn,
+            "runtime_monitor",
+            status="ok" if payload.get("ok") else "degraded",
+            stale_after_seconds=stale_after_seconds,
+            payload=_runtime_monitor_heartbeat_payload(payload),
+        )
+        conn.commit()
+
+
 def _print_tick(payload: dict[str, Any]) -> None:
     shadow = payload["shadow"]
     print(
@@ -598,6 +636,7 @@ def main() -> None:
     parser.add_argument("--interval", type=int, default=120)
     parser.add_argument("--max-ticks", type=int, default=0)
     parser.add_argument("--runner-timeout-seconds", type=float, default=90)
+    parser.add_argument("--heartbeat-stale-after-seconds", type=int, default=None)
     parser.add_argument(
         "--soft-runner-timeout",
         action="store_true",
@@ -632,6 +671,13 @@ def main() -> None:
             worker_parallelism=args.worker_parallelism,
             skip_shadow_workers=args.skip_shadow_workers,
         )
+        heartbeat_stale_after_seconds = args.heartbeat_stale_after_seconds
+        if heartbeat_stale_after_seconds is None:
+            heartbeat_stale_after_seconds = env_int(
+                "PRL_RUNTIME_MONITOR_STALE_AFTER_SECONDS",
+                max(180, args.interval * 3),
+            )
+        write_monitor_heartbeat(args.db, payload, stale_after_seconds=heartbeat_stale_after_seconds)
         if args.json:
             print(json_dumps(payload))
         else:

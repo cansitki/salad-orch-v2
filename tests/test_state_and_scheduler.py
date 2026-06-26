@@ -810,6 +810,34 @@ class StateAndSchedulerTest(unittest.TestCase):
         self.assertEqual(profile["worst_profit_day_60m"], -0.8)
         self.assertTrue(profile["unstable"])
 
+    def test_recent_spike_summary_deduplicates_repeated_guard_loop_events(self) -> None:
+        now = datetime.now(UTC).replace(microsecond=0)
+        bucket_start = now - timedelta(minutes=5)
+        with state_db.connect(self.db_path) as conn:
+            state_db.init_db(conn)
+            for seconds, profit_day in ((0, -0.2), (30, -0.4), (60, -0.6)):
+                state_db.record_slot_spike_event(
+                    conn,
+                    {
+                        "at_utc": (bucket_start + timedelta(seconds=seconds)).isoformat(timespec="seconds"),
+                        "org_label": "kray",
+                        "slot_name": "prl-kray-roi-01",
+                        "issue_type": "negative",
+                        "profile_key": "4070tis:low:2048",
+                        "gpu_key": "4070tis",
+                        "priority": "low",
+                        "profit_day": profit_day,
+                    },
+                )
+            conn.commit()
+            summary = state_db.recent_spike_summary(conn, now_utc=now.isoformat(timespec="seconds"), limit=10)
+
+        self.assertEqual(summary["event_count"], 3)
+        profile = summary["profiles"][0]
+        self.assertEqual(profile["spikes_30m"], 1)
+        self.assertEqual(profile["spikes_60m"], 1)
+        self.assertEqual(profile["affected_slots_60m"], 1)
+
     def test_profile_scorer_penalizes_recent_spike_history(self) -> None:
         now = datetime.now(UTC).replace(microsecond=0)
         with state_db.connect(self.db_path) as conn:

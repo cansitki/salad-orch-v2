@@ -776,6 +776,7 @@ def recent_spike_summary(
     profile_30_threshold = env_int("PRL_SPIKE_PROFILE_30M_THRESHOLD", 3)
     profile_60_threshold = env_int("PRL_SPIKE_PROFILE_60M_THRESHOLD", 5)
     affected_slots_threshold = env_int("PRL_SPIKE_PROFILE_AFFECTED_SLOTS_60M_THRESHOLD", 3)
+    bucket_seconds = max(60, env_int("PRL_SPIKE_SUMMARY_BUCKET_SECONDS", 300))
     rows = conn.execute(
         """
         SELECT *
@@ -795,6 +796,8 @@ def recent_spike_summary(
 
     profiles: dict[str, dict[str, Any]] = {}
     slots: dict[tuple[str, str, str], dict[str, Any]] = {}
+    seen_profile_buckets: set[tuple[str, str, str, str, int]] = set()
+    seen_slot_buckets: set[tuple[str, str, str, str, str, int]] = set()
 
     def apply_common(item: dict[str, Any], row: sqlite3.Row, suffix: str) -> None:
         item[f"spikes_{suffix}"] = int(item.get(f"spikes_{suffix}") or 0) + 1
@@ -849,8 +852,16 @@ def recent_spike_summary(
                 continue
             suffix = f"{window}m"
             profile["affected_slots"][window].add(slot_key_text)
-            apply_common(profile, row, suffix)
-            apply_common(slot, row, suffix)
+            bucket = int(at.timestamp() // bucket_seconds)
+            issue = str(row["issue_type"])
+            profile_bucket_key = (profile_key, slot_key_text, issue, suffix, bucket)
+            slot_bucket_key = (str(row["org_label"]), str(row["slot_name"]), profile_key, issue, suffix, bucket)
+            if profile_bucket_key not in seen_profile_buckets:
+                seen_profile_buckets.add(profile_bucket_key)
+                apply_common(profile, row, suffix)
+            if slot_bucket_key not in seen_slot_buckets:
+                seen_slot_buckets.add(slot_bucket_key)
+                apply_common(slot, row, suffix)
 
     def finalize(item: dict[str, Any]) -> dict[str, Any]:
         out = dict(item)
@@ -910,6 +921,7 @@ def recent_spike_summary(
             "profile_30m": profile_30_threshold,
             "profile_60m": profile_60_threshold,
             "affected_slots_60m": affected_slots_threshold,
+            "bucket_seconds": bucket_seconds,
         },
         "event_count": len(rows),
         "profiles": profile_rows,

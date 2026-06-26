@@ -30,6 +30,14 @@ class PortalMultiBalancesTest(unittest.TestCase):
     def tearDown(self) -> None:
         self.tmpdir.cleanup()
 
+    def test_default_interval_prefers_fast_refill_detection(self) -> None:
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(portal_multi_balances.default_interval_seconds(), 60)
+
+    def test_default_interval_can_be_overridden(self) -> None:
+        with mock.patch.dict(os.environ, {"PRL_PORTAL_BALANCE_INTERVAL_SECONDS": "120"}, clear=True):
+            self.assertEqual(portal_multi_balances.default_interval_seconds(), 120)
+
     def test_load_accounts_from_email_csv(self) -> None:
         accounts = portal_multi_balances.load_accounts(emails="a@example.com, b@example.com")
 

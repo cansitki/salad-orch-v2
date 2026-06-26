@@ -278,7 +278,7 @@ watcher refreshes this local untracked file from an already-authenticated
 
 ```bash
 python3 scripts/portal_balances.py --once --balance-file state/salad_balances.json --cookie-jar state/portal_cookies.txt
-python3 scripts/portal_balances.py --loop --interval 900 --balance-file state/salad_balances.json --cookie-jar state/portal_cookies.txt
+python3 scripts/portal_balances.py --loop --interval 60 --balance-file state/salad_balances.json --cookie-jar state/portal_cookies.txt
 ```
 
 For fleets funded through several Portal accounts, use the multi-account merger.
@@ -287,7 +287,7 @@ per-account cookies/balance caches under `state/portal_balance_accounts/`:
 
 ```bash
 SALAD_PORTAL_BALANCE_EMAILS="account1@example.com,account2@example.com" \
-  python3 scripts/portal_multi_balances.py --loop --interval 900 --balance-file state/salad_balances.json
+  python3 scripts/portal_multi_balances.py --loop --interval 60 --balance-file state/salad_balances.json
 ```
 
 The file contains only public org labels and numeric USD balances:

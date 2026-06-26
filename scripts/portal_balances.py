@@ -27,6 +27,10 @@ DEFAULT_PORTAL_EMAIL_ENV = "SALAD_PORTAL_EMAIL"
 DEFAULT_PORTAL_PASSWORD_ENV = "SALAD_PORTAL_PASSWORD"
 
 
+def default_interval_seconds() -> int:
+    return max(1, int(os.environ.get("PRL_PORTAL_BALANCE_INTERVAL_SECONDS", "60")))
+
+
 class PortalBalanceError(RuntimeError):
     pass
 
@@ -465,7 +469,7 @@ def main() -> None:
     parser.add_argument("--force-login", action="store_true")
     parser.add_argument("--once", action="store_true")
     parser.add_argument("--loop", action="store_true")
-    parser.add_argument("--interval", type=int, default=900)
+    parser.add_argument("--interval", type=int, default=default_interval_seconds())
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
     portal_email = os.environ.get(args.portal_email_env)

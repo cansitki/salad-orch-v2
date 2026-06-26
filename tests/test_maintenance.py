@@ -4,6 +4,7 @@ import pathlib
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -94,11 +95,19 @@ class MaintenanceTest(unittest.TestCase):
         self.assertEqual(balances["heartbeat"], "portal_balances")
         self.assertIn("portal_balances.py", " ".join(balances["cmd"]))
         self.assertIn("--interval", balances["cmd"])
-        self.assertIn("900", balances["cmd"])
+        self.assertIn("60", balances["cmd"])
         self.assertIn("--balance-file", balances["cmd"])
         self.assertIn("state/salad_balances.json", balances["cmd"])
         self.assertIn("--cookie-jar", balances["cmd"])
         self.assertIn("state/portal_cookies.txt", balances["cmd"])
+
+    def test_supervisor_portal_balance_interval_can_be_overridden(self) -> None:
+        with mock.patch.dict("os.environ", {"PRL_PORTAL_BALANCE_INTERVAL_SECONDS": "120"}, clear=False):
+            plan = supervisor.process_plan(db_path=self.db_path)
+        balances = next(item for item in plan if item["name"] == "salad-portal-balances")
+
+        interval_index = balances["cmd"].index("--interval") + 1
+        self.assertEqual(balances["cmd"][interval_index], "120")
 
     def test_supervisor_tmux_sessions_load_dotenv(self) -> None:
         command = supervisor.tmux_command("salad-test", ["python3", "scripts/price_oracle.py", "--loop"])

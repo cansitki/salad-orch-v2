@@ -34,13 +34,14 @@ def process_plan(
     maintenance_apply: bool = False,
 ) -> list[dict[str, Any]]:
     config = load_config()
+    portal_balance_interval = str(max(1, int(os.environ.get("PRL_PORTAL_BALANCE_INTERVAL_SECONDS", "60"))))
     if os.environ.get("SALAD_PORTAL_BALANCE_ACCOUNTS_JSON") or os.environ.get("SALAD_PORTAL_BALANCE_EMAILS"):
         portal_balance_cmd = [
             "python3",
             str(SCRIPT_DIR / "portal_multi_balances.py"),
             "--loop",
             "--interval",
-            "900",
+            portal_balance_interval,
             "--balance-file",
             "state/salad_balances.json",
             "--cwd",
@@ -52,7 +53,7 @@ def process_plan(
             str(SCRIPT_DIR / "portal_balances.py"),
             "--loop",
             "--interval",
-            "900",
+            portal_balance_interval,
             "--balance-file",
             "state/salad_balances.json",
             "--cwd",

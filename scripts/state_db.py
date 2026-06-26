@@ -616,6 +616,25 @@ def latest_profile_availability(conn: sqlite3.Connection, max_age_seconds: int |
 
 
 def record_search_state(conn: sqlite3.Connection, row: dict[str, Any]) -> None:
+    existing = conn.execute(
+        """
+        SELECT reason, sleep_until_utc
+        FROM search_cooldowns
+        WHERE org_label = ? AND slot_name = ? AND profile_key = ?
+        """,
+        (row["org_label"], row["slot_name"], row["profile_key"]),
+    ).fetchone()
+    if existing and str(existing["reason"] or "") == "unstable_recent_spikes":
+        try:
+            existing_until = _parse_utc(str(existing["sleep_until_utc"]))
+        except (TypeError, ValueError):
+            existing_until = None
+        if (
+            existing_until is not None
+            and existing_until > datetime.now(UTC)
+            and str(row.get("reason") or "") != "unstable_recent_spikes"
+        ):
+            return
     conn.execute(
         """
         INSERT INTO search_cooldowns(

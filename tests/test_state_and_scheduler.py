@@ -416,6 +416,50 @@ class StateAndSchedulerTest(unittest.TestCase):
         self.assertIsNotNone(cooldown)
         self.assertEqual(cooldown["reason"], "http_400:no_credits_available")
 
+    def test_active_unstable_spike_cooldown_is_not_overwritten_by_other_reasons(self) -> None:
+        profile_key = "5090:batch:2048"
+        sleep_until = (datetime.now(UTC) + timedelta(hours=1)).isoformat(timespec="seconds")
+        with state_db.connect(self.db_path) as conn:
+            state_db.init_db(conn)
+            state_db.record_search_state(
+                conn,
+                {
+                    "org_label": "kray",
+                    "slot_name": "*",
+                    "profile_key": profile_key,
+                    "no_gpu_since_utc": datetime.now(UTC).isoformat(timespec="seconds"),
+                    "sleep_until_utc": sleep_until,
+                    "attempts": 3,
+                    "reason": "unstable_recent_spikes",
+                    "updated_at_utc": datetime.now(UTC).isoformat(timespec="seconds"),
+                },
+            )
+            state_db.record_search_state(
+                conn,
+                {
+                    "org_label": "kray",
+                    "slot_name": "*",
+                    "profile_key": profile_key,
+                    "no_gpu_since_utc": None,
+                    "sleep_until_utc": None,
+                    "attempts": 0,
+                    "reason": "availability_restored",
+                    "updated_at_utc": datetime.now(UTC).isoformat(timespec="seconds"),
+                },
+            )
+            row = conn.execute(
+                """
+                SELECT reason, sleep_until_utc, attempts
+                FROM search_cooldowns
+                WHERE org_label='kray' AND slot_name='*' AND profile_key=?
+                """,
+                (profile_key,),
+            ).fetchone()
+
+        self.assertEqual(row["reason"], "unstable_recent_spikes")
+        self.assertEqual(row["sleep_until_utc"], sleep_until)
+        self.assertEqual(row["attempts"], 3)
+
     def test_org_worker_skips_active_no_credits_cooldown_without_loading_watch(self) -> None:
         original_skip = os.environ.get("PRL_SKIP_ZERO_BALANCE_ORGS")
         os.environ["PRL_SKIP_ZERO_BALANCE_ORGS"] = "0"
@@ -812,7 +856,8 @@ class StateAndSchedulerTest(unittest.TestCase):
 
     def test_recent_spike_summary_deduplicates_repeated_guard_loop_events(self) -> None:
         now = datetime.now(UTC).replace(microsecond=0)
-        bucket_start = now - timedelta(minutes=5)
+        bucket_epoch = int(now.timestamp() // 300) * 300 - 300
+        bucket_start = datetime.fromtimestamp(bucket_epoch + 10, UTC)
         with state_db.connect(self.db_path) as conn:
             state_db.init_db(conn)
             for seconds, profit_day in ((0, -0.2), (30, -0.4), (60, -0.6)):

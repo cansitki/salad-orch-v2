@@ -65,7 +65,47 @@ def account_from_payload(payload: str | dict[str, Any]) -> PortalAccount:
     )
 
 
-def load_accounts(*, accounts_json: str | None = None, emails: str | None = None) -> list[PortalAccount]:
+def email_from_account_label(label: str) -> str | None:
+    parts = [part for part in label.split("_") if part]
+    if len(parts) < 3:
+        return None
+    domain = ".".join(parts[-2:])
+    local = "_".join(parts[:-2])
+    if not local or not domain:
+        return None
+    return f"{local}@{domain}"
+
+
+def discover_accounts_from_state_dir(state_dir: pathlib.Path = DEFAULT_ACCOUNT_STATE_DIR) -> list[PortalAccount]:
+    if not state_dir.exists():
+        return []
+    accounts: list[PortalAccount] = []
+    seen: set[str] = set()
+    for cookie_jar in sorted(state_dir.glob("*_cookies.txt")):
+        label = cookie_jar.name[: -len("_cookies.txt")]
+        if not label or label in seen:
+            continue
+        email = email_from_account_label(label)
+        if not email:
+            continue
+        seen.add(label)
+        accounts.append(
+            PortalAccount(
+                label=label,
+                email=email,
+                cookie_jar=cookie_jar,
+                balance_file=default_account_balance_file(label, state_dir),
+            )
+        )
+    return accounts
+
+
+def load_accounts(
+    *,
+    accounts_json: str | None = None,
+    emails: str | None = None,
+    account_state_dir: pathlib.Path = DEFAULT_ACCOUNT_STATE_DIR,
+) -> list[PortalAccount]:
     raw_json = accounts_json or os.environ.get("SALAD_PORTAL_BALANCE_ACCOUNTS_JSON")
     if raw_json:
         payload = json.loads(raw_json)
@@ -75,6 +115,9 @@ def load_accounts(*, accounts_json: str | None = None, emails: str | None = None
     raw_emails = emails or os.environ.get("SALAD_PORTAL_BALANCE_EMAILS")
     if raw_emails:
         return [account_from_payload(email) for email in raw_emails.split(",") if email.strip()]
+    discovered_accounts = discover_accounts_from_state_dir(account_state_dir)
+    if discovered_accounts:
+        return discovered_accounts
     fallback_email = os.environ.get("SALAD_PORTAL_EMAIL")
     return [account_from_payload(fallback_email)] if fallback_email else []
 
@@ -245,7 +288,7 @@ def run_once(
     force_login: bool = False,
     preserve_existing_on_failure: bool = True,
 ) -> dict[str, Any]:
-    accounts = load_accounts(accounts_json=accounts_json, emails=emails)
+    accounts = load_accounts(accounts_json=accounts_json, emails=emails, account_state_dir=account_state_dir)
     if not accounts:
         raise portal_balances.PortalBalanceError("no portal balance accounts configured")
     account_state_dir.mkdir(parents=True, exist_ok=True)

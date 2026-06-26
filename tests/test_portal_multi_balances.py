@@ -44,6 +44,36 @@ class PortalMultiBalancesTest(unittest.TestCase):
         self.assertEqual([account.label for account in accounts], ["a_example_com", "b_example_com"])
         self.assertEqual([account.email for account in accounts], ["a@example.com", "b@example.com"])
 
+    def test_load_accounts_discovers_cookie_jars_before_single_email_fallback(self) -> None:
+        state_dir = self.tmp_path / "accounts"
+        state_dir.mkdir()
+        (state_dir / "bcansitki_gmail_com_cookies.txt").write_text("", encoding="utf-8")
+        (state_dir / "sal2_loot_md_cookies.txt").write_text("", encoding="utf-8")
+
+        with mock.patch.dict(
+            os.environ,
+            {"SALAD_PORTAL_EMAIL": "single@example.com"},
+            clear=True,
+        ):
+            accounts = portal_multi_balances.load_accounts(account_state_dir=state_dir)
+
+        self.assertEqual([account.label for account in accounts], ["bcansitki_gmail_com", "sal2_loot_md"])
+        self.assertEqual([account.email for account in accounts], ["bcansitki@gmail.com", "sal2@loot.md"])
+        self.assertEqual(accounts[0].cookie_jar, state_dir / "bcansitki_gmail_com_cookies.txt")
+        self.assertEqual(accounts[0].balance_file, state_dir / "bcansitki_gmail_com_balances.json")
+
+    def test_load_accounts_explicit_email_csv_overrides_cookie_discovery(self) -> None:
+        state_dir = self.tmp_path / "accounts"
+        state_dir.mkdir()
+        (state_dir / "bcansitki_gmail_com_cookies.txt").write_text("", encoding="utf-8")
+
+        accounts = portal_multi_balances.load_accounts(
+            emails="explicit@example.com",
+            account_state_dir=state_dir,
+        )
+
+        self.assertEqual([account.email for account in accounts], ["explicit@example.com"])
+
     def test_restored_positive_balance_orgs_detects_zero_to_positive(self) -> None:
         restored = portal_multi_balances.restored_positive_balance_orgs(
             {"kray": 0.0, "kray2": 1.0, "kry1": 0.01},

@@ -24,6 +24,16 @@ DEFAULT_BALANCE_FILE = pathlib.Path("state/salad_balances.json")
 NO_CREDITS_ERROR_TEXT = "no_credits_available"
 
 
+def parse_slot_filter(values: list[str] | None) -> set[str] | None:
+    slots: set[str] = set()
+    for value in values or []:
+        for item in str(value).split(","):
+            slot_name = item.strip()
+            if slot_name:
+                slots.add(slot_name)
+    return slots or None
+
+
 def load_watch_module(org: OrgConfig, *, decision_price: float, min_profit_day: float) -> Any:
     env = {
         **org.watch_env(),
@@ -999,6 +1009,7 @@ def run_once(
     pending_status_retarget_after_seconds: int | None = None,
     allow_running_nohash_retarget: bool | None = None,
     heartbeat_stale_after_seconds: int | None = None,
+    slot_filter: set[str] | None = None,
 ) -> dict[str, Any]:
     config = load_config()
     orgs = {org.label: org for org in config.enabled_orgs()}
@@ -1016,6 +1027,8 @@ def run_once(
         decision_price = float(risk["decision_price_usd"]) if risk else config.risk.decision_price_for_mode()
         min_profit = config.risk.min_profit_for_mode()
         targets = target_rows(conn, org_label)
+        if slot_filter:
+            targets = [target for target in targets if str(target["slot_name"]) in slot_filter]
         conn.commit()
 
     pending_retarget_after_seconds = max(0, int(pending_retarget_after_seconds))
@@ -1504,8 +1517,15 @@ def main() -> None:
     parser.add_argument("--once", action="store_true")
     parser.add_argument("--loop", action="store_true")
     parser.add_argument("--interval", type=int, default=30)
+    parser.add_argument(
+        "--slot",
+        action="append",
+        default=[],
+        help="Limit this pass to one slot. Can be repeated or comma-separated.",
+    )
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
+    slot_filter = parse_slot_filter(args.slot)
 
     def emit(payload: dict[str, Any]) -> None:
         if args.json:
@@ -1525,6 +1545,7 @@ def main() -> None:
                     allow_running_nohash_retarget=args.allow_running_nohash_retarget,
                     pending_retarget_after_seconds=args.pending_retarget_after_seconds,
                     pending_status_retarget_after_seconds=args.pending_status_retarget_after_seconds,
+                    slot_filter=slot_filter,
                 )
             )
             time.sleep(args.interval)
@@ -1539,6 +1560,7 @@ def main() -> None:
                 allow_running_nohash_retarget=args.allow_running_nohash_retarget,
                 pending_retarget_after_seconds=args.pending_retarget_after_seconds,
                 pending_status_retarget_after_seconds=args.pending_status_retarget_after_seconds,
+                slot_filter=slot_filter,
             )
         )
 

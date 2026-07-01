@@ -330,6 +330,64 @@ class StateAndSchedulerTest(unittest.TestCase):
             ],
         )
 
+    def test_org_worker_run_once_can_filter_targets_by_slot(self) -> None:
+        with state_db.connect(self.db_path) as conn:
+            state_db.init_db(conn)
+            state_db.sync_config(conn, load_config())
+            state_db.upsert_gpu_profiles(conn, profit_model.load_profiles())
+            for slot_name in ("prl-kray-roi-01", "prl-kray-roi-02"):
+                state_db.set_slot_target(
+                    conn,
+                    {
+                        "org_label": "kray",
+                        "slot_name": slot_name,
+                        "profile_key": "4090:batch:2048",
+                        "mode": "base_fill",
+                        "decision_price_usd": 0.64,
+                        "expected_profit_day": 1.0,
+                        "protected": False,
+                        "reason": "test",
+                        "assigned_at_utc": "2026-06-24T12:00:00+00:00",
+                    },
+                )
+            conn.commit()
+
+        class FakeWatch:
+            ORG = "kray"
+            PROJECT = "default"
+            GPU = {"4090": "gpu-rtx-4090"}
+
+            def slot_state(self, _slot_name):
+                return None, []
+
+        with (
+            patch("org_worker.load_watch_module", return_value=FakeWatch()),
+            patch("org_worker.install_rate_limited_request"),
+        ):
+            payload = org_worker.run_once(
+                org_label="kray",
+                db_path=self.db_path,
+                apply=False,
+                schedule_if_empty=False,
+                slot_filter={"prl-kray-roi-02"},
+            )
+
+        self.assertEqual(payload["targets"], 1)
+        self.assertEqual(payload["action_counts"], {"create": 1})
+        self.assertEqual(payload["results"][0]["slot_name"], "prl-kray-roi-02")
+        with state_db.connect(self.db_path) as conn:
+            attempts = conn.execute(
+                """
+                SELECT slot_name, action
+                FROM attempts
+                ORDER BY id
+                """
+            ).fetchall()
+        self.assertEqual(
+            [(row["slot_name"], row["action"]) for row in attempts],
+            [("prl-kray-roi-02", "dry_run_create")],
+        )
+
     def test_org_worker_skips_live_actions_for_explicit_zero_balance(self) -> None:
         fleet_scheduler.schedule_once(db_path=self.db_path, price=0.64, fee=0.01, dry_run=False)
         balance_file = pathlib.Path(self.tmpdir.name) / "balances.json"

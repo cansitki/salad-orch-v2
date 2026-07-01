@@ -274,10 +274,10 @@ def worker_instance_id(worker_name: str) -> str | None:
 
 
 def worker_named_slot(worker_name: str, accounts: list[tuple[str, str, str, list[str]]]) -> str | None:
-    for _label, _org, _key_env, slots in accounts:
-        for slot in slots:
-            if slot in worker_name:
-                return slot
+    slots = [slot for _label, _org, _key_env, account_slots in accounts for slot in account_slots]
+    for slot in sorted(slots, key=len, reverse=True):
+        if slot in worker_name:
+            return slot
     return None
 
 

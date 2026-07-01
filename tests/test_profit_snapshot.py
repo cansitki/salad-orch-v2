@@ -76,6 +76,23 @@ class ProfitSnapshotTest(unittest.TestCase):
             ],
         )
 
+    def test_worker_named_slot_prefers_longest_slot_match(self) -> None:
+        accounts = [
+            (
+                "kray",
+                "kray",
+                "SALAD_API_KEY",
+                [f"prl-kray-roi-{index:02d}" for index in range(1, 12)] + ["prl-kray-roi-119"],
+            )
+        ]
+
+        named_slot = salad_prl_profit_snapshot.worker_named_slot(
+            "kray-prl-kray-roi-119-pearlfortune-instance",
+            accounts,
+        )
+
+        self.assertEqual(named_slot, "prl-kray-roi-119")
+
     def test_pool_prl_per_th_day_applies_reward_calibration(self) -> None:
         payloads = {
             "https://pearlfortune.org/api/v1/stats/pool-fee-rate": {"data": {"pool_fee_rate": 0.01}},

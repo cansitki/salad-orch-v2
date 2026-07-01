@@ -2,13 +2,16 @@ from __future__ import annotations
 
 import pathlib
 import sys
+import tempfile
 import unittest
+from datetime import UTC, datetime, timedelta
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
 import fast_fill_targets
+import state_db
 
 
 def container(status: str, **counts: int) -> dict:
@@ -61,6 +64,62 @@ class FastFillTargetSelectionTest(unittest.TestCase):
             [fast_fill_targets._active_without_hash_target(row) for row in rows],
             [True, True, False, False],
         )
+
+    def test_recent_guard_stop_cooldown_skips_actionable_target(self) -> None:
+        targets = [
+            target("recent-stop"),
+            target("normal"),
+        ]
+        cooldowns = {"recent-stop": {"age_seconds": 30.0, "remaining_seconds": 570.0}}
+
+        actionable, skipped = fast_fill_targets._split_actionable_targets(
+            targets,
+            touch_active=False,
+            actionable_limit=0,
+            guard_stop_cooldowns=cooldowns,
+        )
+
+        self.assertEqual([item["slot_name"] for item in actionable], ["normal"])
+        self.assertEqual(skipped[0]["slot_name"], "recent-stop")
+        self.assertEqual(skipped[0]["action"], "skip_recent_guard_stop")
+        self.assertEqual(skipped[0]["cooldown_remaining_seconds"], 570.0)
+
+    def test_recent_guard_stop_cooldowns_reads_attempts_window(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = str(pathlib.Path(tmpdir) / "fleet.db")
+            with state_db.connect(db_path) as conn:
+                state_db.init_db(conn)
+                state_db.record_attempt(
+                    conn,
+                    {
+                        "at_utc": (datetime.now(UTC) - timedelta(seconds=60)).isoformat(timespec="seconds"),
+                        "org_label": "kray",
+                        "slot_name": "recent-stop",
+                        "action": "guard_stop",
+                        "ok": True,
+                    },
+                )
+                state_db.record_attempt(
+                    conn,
+                    {
+                        "at_utc": (datetime.now(UTC) - timedelta(seconds=3600)).isoformat(timespec="seconds"),
+                        "org_label": "kray",
+                        "slot_name": "old-stop",
+                        "action": "guard_stop",
+                        "ok": True,
+                    },
+                )
+                conn.commit()
+
+            cooldowns = fast_fill_targets._recent_guard_stop_cooldowns(
+                db_path,
+                "kray",
+                cooldown_seconds=600,
+            )
+
+        self.assertIn("recent-stop", cooldowns)
+        self.assertNotIn("old-stop", cooldowns)
+        self.assertGreater(cooldowns["recent-stop"]["remaining_seconds"], 0)
 
 
 if __name__ == "__main__":

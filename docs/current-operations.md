@@ -291,6 +291,7 @@ while true; do
   SALAD_FLEET_CONFIG_PATH=config/fleet.kray-only-150.json \
   PRL_FLEET_CONFIG_PATH=config/fleet.kray-only-150.json \
   PRL_ENABLED_ORGS=kray \
+  PRL_FAST_FILL_GUARD_STOP_COOLDOWN_SECONDS=900 \
   python3 scripts/fast_fill_targets.py \
     --org kray \
     --workers 4 \
@@ -306,6 +307,11 @@ done
 '"'"'
 '
 ```
+
+`PRL_FAST_FILL_GUARD_STOP_COOLDOWN_SECONDS` prevents safe-fill from
+immediately restarting a slot that guard just stopped for no-hash/stuck
+behavior. Keep it above the guard loop interval during profit-protect mode so a
+bad slot does not burn cost in a stop/start loop.
 
 Profit reports should keep two numbers separate:
 

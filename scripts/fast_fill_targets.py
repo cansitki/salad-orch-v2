@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import argparse
 import concurrent.futures
+import os
 import time
+from datetime import UTC, datetime
 from typing import Any
 
 import requests
@@ -311,6 +313,21 @@ def _deferred_actionable_result(target: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _skip_guard_stop_cooldown_result(target: dict[str, Any], cooldown: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "slot_name": str(target["slot_name"]),
+        "profile_key": str(target.get("profile_key") or ""),
+        "action": "skip_recent_guard_stop",
+        "ok": True,
+        "created": False,
+        "patched": False,
+        "started": False,
+        "guard_stop_age_seconds": cooldown.get("age_seconds"),
+        "cooldown_remaining_seconds": cooldown.get("remaining_seconds"),
+        "duration_ms": 0,
+    }
+
+
 def _active_without_hash_target(target: dict[str, Any]) -> bool:
     existing_info = _status_info(target.get("_existing_container"))
     if not existing_info["active_or_pending"]:
@@ -326,7 +343,15 @@ def _active_without_hash_target(target: dict[str, Any]) -> bool:
     return live_worker_count <= 0 and live_worker_th <= 0.0
 
 
-def _target_is_actionable(target: dict[str, Any], *, touch_active: bool) -> bool:
+def _target_is_actionable(
+    target: dict[str, Any],
+    *,
+    touch_active: bool,
+    guard_stop_cooldowns: dict[str, dict[str, Any]] | None = None,
+) -> bool:
+    guard_stop_cooldowns = guard_stop_cooldowns or {}
+    if str(target["slot_name"]) in guard_stop_cooldowns:
+        return False
     existing_info = _status_info(target.get("_existing_container"))
     return not (existing_info["exists"] and existing_info["active_or_pending"] and not touch_active)
 
@@ -336,10 +361,16 @@ def _split_actionable_targets(
     *,
     touch_active: bool,
     actionable_limit: int,
+    guard_stop_cooldowns: dict[str, dict[str, Any]] | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    guard_stop_cooldowns = guard_stop_cooldowns or {}
     actionable: list[dict[str, Any]] = []
     skipped: list[dict[str, Any]] = []
     for target in targets:
+        cooldown = guard_stop_cooldowns.get(str(target["slot_name"]))
+        if cooldown is not None:
+            skipped.append(_skip_guard_stop_cooldown_result(target, cooldown))
+            continue
         if not _target_is_actionable(target, touch_active=touch_active):
             skipped.append(_skip_active_result(target))
             continue
@@ -348,6 +379,65 @@ def _split_actionable_targets(
             continue
         actionable.append(target)
     return actionable, skipped
+
+
+def _parse_utc(value: Any) -> datetime | None:
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
+
+
+def _recent_guard_stop_cooldowns(
+    db_path: str | None,
+    org_label: str,
+    *,
+    cooldown_seconds: int,
+) -> dict[str, dict[str, Any]]:
+    if cooldown_seconds <= 0:
+        return {}
+    now = datetime.now(UTC)
+    cooldowns: dict[str, dict[str, Any]] = {}
+    with state_db.connect(db_path) as conn:
+        state_db.init_db(conn)
+        rows = conn.execute(
+            """
+            SELECT slot_name, at_utc
+            FROM attempts
+            WHERE org_label = ?
+              AND action = 'guard_stop'
+              AND ok = 1
+            ORDER BY at_utc DESC, id DESC
+            """,
+            (org_label,),
+        ).fetchall()
+    for row in rows:
+        slot_name = str(row["slot_name"] or "")
+        if not slot_name or slot_name in cooldowns:
+            continue
+        at = _parse_utc(row["at_utc"])
+        if at is None:
+            continue
+        age = max(0.0, (now - at).total_seconds())
+        if age >= cooldown_seconds:
+            continue
+        cooldowns[slot_name] = {
+            "age_seconds": round(age, 1),
+            "remaining_seconds": round(cooldown_seconds - age, 1),
+        }
+    return cooldowns
+
+
+def guard_stop_cooldown_seconds() -> int:
+    raw = os.environ.get("PRL_FAST_FILL_GUARD_STOP_COOLDOWN_SECONDS", "0")
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        value = 0
+    return max(0, value)
 
 
 def _record_results(
@@ -448,6 +538,11 @@ def fast_fill_org(
     )
     for target in targets:
         target["_existing_container"] = existing_by_name.get(str(target["slot_name"]))
+    guard_stop_cooldowns = _recent_guard_stop_cooldowns(
+        db_path,
+        org_label,
+        cooldown_seconds=guard_stop_cooldown_seconds(),
+    )
     zero_worker_active_count = sum(1 for target in targets if _active_without_hash_target(target))
     if max_zero_worker_active >= 0 and zero_worker_active_count >= max_zero_worker_active:
         payload = {
@@ -468,6 +563,7 @@ def fast_fill_org(
         targets,
         touch_active=touch_active,
         actionable_limit=actionable_limit,
+        guard_stop_cooldowns=guard_stop_cooldowns,
     )
     results: list[dict[str, Any]] = []
     max_workers = max(1, int(workers))
@@ -497,6 +593,7 @@ def fast_fill_org(
             "zero_worker_active_count": zero_worker_active_count,
             "max_zero_worker_active": max_zero_worker_active,
             "actionable_limit": actionable_limit,
+            "guard_stop_cooldown_count": len(guard_stop_cooldowns),
         },
     )
     return {
@@ -506,6 +603,7 @@ def fast_fill_org(
         "deferred_target_count": sum(1 for item in skipped_results if item.get("action") == "defer_actionable_limit"),
         "zero_worker_active_count": zero_worker_active_count,
         "max_zero_worker_active": max_zero_worker_active,
+        "guard_stop_cooldown_count": len(guard_stop_cooldowns),
         "workers": max_workers,
         "ok": sum(1 for item in results if item.get("ok")),
         "failed": sum(1 for item in results if not item.get("ok")),

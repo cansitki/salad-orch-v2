@@ -876,8 +876,10 @@ def build_snapshot(price: float) -> dict[str, Any]:
                 "state_age_seconds": round(age, 1) if age is not None else None,
                 "requested_gpus": gpu_names(resources.get("gpu_classes") or []),
             }
+            if age is None:
+                stuck_item["state_age_missing"] = True
             stuck_after = EMPTY_STUCK_NON_LIVE_SECONDS if empty_pending else STUCK_NON_LIVE_SECONDS
-            if age is not None and age >= stuck_after:
+            if age is None or age >= stuck_after:
                 stuck_non_live.append(stuck_item)
         if running > 0 and slot not in known_slots and age is not None and age >= RUNNING_NO_LIVE_GRACE_SECONDS:
             cost_day = 24 * fallback_hourly(group, public_org, catalogs) * running

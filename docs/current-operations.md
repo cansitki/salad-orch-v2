@@ -214,6 +214,9 @@ while true; do
   PRL_FLEET_CONFIG_PATH=config/fleet.kray-only-150.json \
   PRL_ENABLED_ORGS=kray \
   PRL_GUARD_ENABLED_ISSUES=no_hash,underperform,stuck_no_live \
+  PRL_NOHASH_GRACE_SECONDS=120 \
+  PRL_EMPTY_STUCK_NON_LIVE_SECONDS=300 \
+  PRL_STUCK_NON_LIVE_SECONDS=600 \
   PRL_GUARD_REPLACEMENT_MODE=base_fill \
   PRL_GUARD_REPLACEMENT_MIN_PROFIT_USD_DAY=0 \
   PRL_GUARD_ALLOW_NEGATIVE_REPLACEMENTS=1 \
@@ -221,8 +224,8 @@ while true; do
   PRL_GUARD_UNDERPERFORM_RATIO=0.85 \
   PRL_GUARD_UNDERPERFORM_MIN_DEFICIT_TH=10 \
   PRL_GUARD_UNDERPERFORM_GRACE_SECONDS=120 \
-  PRL_GUARD_MAX_ACTIONS_PER_RUN=8 \
-  PRL_GUARD_RETARGET_COOLDOWN_SECONDS=600 \
+  PRL_GUARD_MAX_ACTIONS_PER_RUN=16 \
+  PRL_GUARD_RETARGET_COOLDOWN_SECONDS=420 \
   python3 scripts/guard.py --once --apply --db state/fleet_scheduler.db --price "$PRICE" --json \
     2>> state/logs/guard-stuck.err |
     python3 -c "import sys,json; print(json.dumps(json.load(sys.stdin), sort_keys=True), flush=True)" \
@@ -237,8 +240,12 @@ Safety points:
 
 - The loop uses the live PRL price from `price_history`, not the risk-off
   decision price, so replacement ranking follows current market reality.
-- It applies at most 8 live actions per tick and waits 600 seconds before
-  touching the same slot again.
+- Snapshot issue detection is deliberately faster than the default: running
+  no-hash slots are eligible after 120 seconds, empty pending/deploying slots
+  after 300 seconds, and other stuck non-live slots after 600 seconds.
+- It applies at most 16 live actions per tick and waits 420 seconds before
+  touching the same slot again. This keeps bad billable slots from burning too
+  long while still avoiding whole-fleet churn.
 - `stuck_no_live` does not stop a slot when no replacement target exists; it
   waits instead. This avoids mass emptying slots when Salad availability is
   thin.

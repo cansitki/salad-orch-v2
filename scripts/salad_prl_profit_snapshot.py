@@ -654,11 +654,16 @@ def build_snapshot(price: float) -> dict[str, Any]:
     market_price = market_prl_price_usd()
 
     catalogs: dict[str, dict[str, dict[str, float]]] = {}
+    catalog_errors: list[dict[str, str]] = []
     groups: dict[str, tuple[str, str, dict[str, Any]]] = {}
     group_instance_ids: dict[str, set[str]] = {}
     for label, org, key_env, slots in accounts:
         api_key = os.environ[key_env]
-        catalogs[label] = price_catalog(org, api_key)
+        try:
+            catalogs[label] = price_catalog(org, api_key)
+        except Exception as exc:
+            catalogs[label] = {}
+            catalog_errors.append({"org": label, "error_type": type(exc).__name__})
 
     def fetch_slot(label: str, org: str, key_env: str, slot: str) -> tuple[str, str, str, dict[str, Any], set[str]] | None:
         api_key = os.environ[key_env]
@@ -963,6 +968,7 @@ def build_snapshot(price: float) -> dict[str, Any]:
         "fresh_workers": len(workers),
         "pool_worker_count": len(pool_workers),
         "pool_stale_worker_count": sum(1 for worker in pool_workers if worker.get("stale")),
+        "catalog_errors": catalog_errors,
         "stale_current_workers": [
             {
                 "worker": row["worker"],

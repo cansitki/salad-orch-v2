@@ -3464,6 +3464,74 @@ class StateAndSchedulerTest(unittest.TestCase):
         self.assertEqual(targets[0]["profile_key"], "available:batch:2048")
         self.assertNotIn("availability_probe_fallback", targets[0]["reason"])
 
+    def test_scheduler_can_include_unstable_profiles_when_explicitly_allowed(self) -> None:
+        config = config_loader.FleetConfig(
+            organizations=(
+                config_loader.OrgConfig(
+                    label="kray",
+                    slug="kray",
+                    api_key_env="SALAD_API_KEY_TEST",
+                    slot_prefix="prl-kray-roi",
+                    slots=1,
+                ),
+            )
+        )
+        scores = [
+            {
+                "profile_key": "safer:batch:2048",
+                "gpu_key": "safer",
+                "priority": "batch",
+                "memory_mb": 2048,
+                "expected_profit_day": -0.20,
+                "break_even_price_usd": 0.70,
+                "score": 100.0,
+                "risk_tier": "safe_base",
+                "eligible": True,
+                "reason": {"priority_allowed": True, "min_profit_day": -999.0},
+            },
+            {
+                "profile_key": "least-loss:batch:2048",
+                "gpu_key": "least-loss",
+                "priority": "batch",
+                "memory_mb": 2048,
+                "expected_profit_day": -0.05,
+                "break_even_price_usd": 0.62,
+                "score": -1000.0,
+                "risk_tier": "unstable_recent_spikes",
+                "eligible": False,
+                "reason": {"priority_allowed": True, "min_profit_day": -999.0},
+            },
+        ]
+
+        default_targets = fleet_scheduler.build_targets(
+            config,
+            scores,
+            mode="base_fill",
+            decision_price_usd=0.46,
+            width=2,
+        )
+        self.assertEqual(len(default_targets), 1)
+        self.assertEqual(default_targets[0]["profile_key"], "safer:batch:2048")
+
+        with patch.dict(
+            "os.environ",
+            {
+                "PRL_SCHEDULER_ALLOW_UNSTABLE_PROFILES": "1",
+                "PRL_SCHEDULER_RANK_BY_PROFIT": "1",
+            },
+            clear=False,
+        ):
+            targets = fleet_scheduler.build_targets(
+                config,
+                scores,
+                mode="base_fill",
+                decision_price_usd=0.46,
+                width=2,
+            )
+
+        self.assertEqual(len(targets), 1)
+        self.assertEqual(targets[0]["profile_key"], "least-loss:batch:2048")
+
     def test_scheduler_prefers_best_reported_available_profile_before_diversifying(self) -> None:
         config = config_loader.FleetConfig(
             organizations=(

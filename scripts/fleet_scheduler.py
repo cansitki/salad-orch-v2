@@ -9,7 +9,7 @@ from typing import Any
 import profile_scorer
 import state_db
 from config_loader import FleetConfig, load_config
-from fleet_common import env_int, json_dumps, utc_now
+from fleet_common import env_bool, env_int, json_dumps, utc_now
 
 
 def _scheduler_mode(config: FleetConfig, db_mode: str | None) -> str:
@@ -20,8 +20,26 @@ def _scheduler_mode(config: FleetConfig, db_mode: str | None) -> str:
     return "base_fill"
 
 
+def _profile_allowed_by_scheduler(row: dict[str, Any]) -> bool:
+    if row.get("eligible"):
+        return True
+    if not env_bool("PRL_SCHEDULER_ALLOW_UNSTABLE_PROFILES", False):
+        return False
+    if str(row.get("risk_tier") or "") != "unstable_recent_spikes":
+        return False
+    reason = row.get("reason") if isinstance(row.get("reason"), dict) else {}
+    if reason.get("priority_allowed") is False:
+        return False
+    try:
+        min_profit_day = float(reason.get("min_profit_day", 0.0))
+        expected_profit_day = float(row.get("expected_profit_day") or 0.0)
+    except (TypeError, ValueError):
+        return False
+    return expected_profit_day >= min_profit_day
+
+
 def _eligible_profiles(scores: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    eligible = [row for row in scores if row.get("eligible")]
+    eligible = [row for row in scores if _profile_allowed_by_scheduler(row)]
     if env_int("PRL_SCHEDULER_RANK_BY_PROFIT", 0):
         eligible.sort(
             key=lambda item: (

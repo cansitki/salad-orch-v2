@@ -196,9 +196,10 @@ while true; do
   SALAD_FLEET_CONFIG_PATH=config/fleet.kray-only-150.json \
   PRL_FLEET_CONFIG_PATH=config/fleet.kray-only-150.json \
   PRL_ENABLED_ORGS=kray \
-  PRL_FILL_MIN_PROFIT_USD_DAY=-0.10 \
-  PRL_OPTIMIZE_MIN_PROFIT_USD_DAY=-0.10 \
+  PRL_FILL_MIN_PROFIT_USD_DAY=0.00 \
+  PRL_OPTIMIZE_MIN_PROFIT_USD_DAY=0.00 \
   PRL_GUARD_ENABLED_ISSUES=no_hash,underperform,stuck_no_live,negative \
+  PRL_GUARD_STOP_WITHOUT_TARGET_ISSUES=no_hash,stuck_no_live,negative \
   PRL_GUARD_NOHASH_GRACE_SECONDS=120 \
   PRL_EMPTY_STUCK_NON_LIVE_SECONDS=300 \
   PRL_STUCK_NON_LIVE_SECONDS=600 \
@@ -207,9 +208,10 @@ while true; do
   PRL_GUARD_NEGATIVE_PRICE_STABILITY_REQUIRE_HISTORY=1 \
   PRL_GUARD_NEGATIVE_PRICE_STABILITY_WINDOW_MINUTES=60 \
   PRL_GUARD_NEGATIVE_PRICE_STABILITY_MAX_RANGE_USD=0.03 \
+  PRL_GUARD_NEGATIVE_BYPASS_STABILITY_IF_WINDOW_MAX_UNPROFITABLE=1 \
   PRL_GUARD_REPLACEMENT_MODE=base_fill \
-  PRL_GUARD_REPLACEMENT_MIN_PROFIT_USD_DAY=-0.10 \
-  PRL_GUARD_ALLOW_NEGATIVE_REPLACEMENTS=1 \
+  PRL_GUARD_REPLACEMENT_MIN_PROFIT_USD_DAY=0.00 \
+  PRL_GUARD_ALLOW_NEGATIVE_REPLACEMENTS=0 \
   PRL_GUARD_ALLOW_UNSTABLE_REPLACEMENTS=1 \
   PRL_GUARD_UNDERPERFORM_RATIO=0.85 \
   PRL_GUARD_UNDERPERFORM_MIN_DEFICIT_TH=10 \
@@ -239,10 +241,11 @@ Safety points:
 - `stuck_no_live` does not stop a slot when no replacement target exists; it
   waits instead. This avoids mass emptying slots when Salad availability is
   thin.
-- `negative` is enabled, but requires all of these before action: one-hour
-  grace, at least $0.05/day loss, and a real 60-minute price-history window
-  whose PRL range is at most $0.03. That prevents killing hashing GPUs for
-  short PRL price moves while still pruning slots that stay unprofitable.
+- `negative` is enabled, but normally requires all of these before action:
+  one-hour grace, at least $0.05/day loss, and a real 60-minute price-history
+  window whose PRL range is at most $0.03. The kray profit-protect override can
+  bypass the stability wait only when the slot is still estimated unprofitable
+  at the maximum PRL price seen in that 60-minute window.
 
 For the same scarce-GPU, below-breakeven fill mode, keep the central scheduler
 aligned with the guard by ranking target profiles by live expected profit and
@@ -257,8 +260,8 @@ while true; do
   PRICE=$(sqlite3 state/fleet_scheduler.db "select selected_price_usd from price_history where selected_price_usd is not null order by sampled_at_utc desc, id desc limit 1")
   PRL_SCHEDULER_ALLOW_UNSTABLE_PROFILES=1 \
   PRL_SCHEDULER_RANK_BY_PROFIT=1 \
-  PRL_FILL_MIN_PROFIT_USD_DAY=-0.10 \
-  PRL_OPTIMIZE_MIN_PROFIT_USD_DAY=-0.10 \
+  PRL_FILL_MIN_PROFIT_USD_DAY=0.00 \
+  PRL_OPTIMIZE_MIN_PROFIT_USD_DAY=0.00 \
   SALAD_FLEET_CONFIG_PATH=config/fleet.kray-only-150.json \
   PRL_FLEET_CONFIG_PATH=config/fleet.kray-only-150.json \
   PRL_ENABLED_ORGS=kray \
@@ -269,10 +272,11 @@ done
 '
 ```
 
-This mode is intentionally for fill/credit-burn periods where every target may
-be negative at current price. Without `PRL_SCHEDULER_ALLOW_UNSTABLE_PROFILES=1`,
-the scheduler can prefer a "safe" but more expensive GPU profile over a recently
-unstable profile with materially lower expected loss.
+This mode is intentionally for profit-protect operation: it can keep trying
+scarce profiles, but it should not schedule a new expected-negative target.
+Without `PRL_SCHEDULER_ALLOW_UNSTABLE_PROFILES=1`, the scheduler can prefer a
+"safe" but less profitable GPU profile over a recently unstable profile with
+better expected profit.
 
 Apply scheduler targets with a gated fast-fill loop. This loop limits actual
 create/patch/start actions after skipping already-active containers, and pauses
@@ -291,7 +295,7 @@ while true; do
     --org kray \
     --workers 4 \
     --price "$PRICE" \
-    --min-profit -0.10 \
+    --min-profit 0.00 \
     --patch-existing \
     --actionable-limit 8 \
     --max-zero-worker-active 12 \

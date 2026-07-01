@@ -103,6 +103,15 @@ def negative_price_stability_required() -> bool:
     return env_bool("PRL_GUARD_NEGATIVE_PRICE_STABILITY_REQUIRE_HISTORY", False)
 
 
+def negative_window_max_bypass_enabled() -> bool:
+    return env_bool("PRL_GUARD_NEGATIVE_BYPASS_STABILITY_IF_WINDOW_MAX_UNPROFITABLE", False)
+
+
+def negative_window_max_min_loss_usd_day() -> float:
+    default_loss = env_float("PRL_GUARD_NEGATIVE_MIN_LOSS_USD_DAY", 0.0)
+    return max(0.0, env_float("PRL_GUARD_NEGATIVE_WINDOW_MAX_MIN_LOSS_USD_DAY", default_loss))
+
+
 def guard_replacement_min_profit(config: Any) -> float:
     if os.environ.get("PRL_GUARD_REPLACEMENT_MIN_PROFIT_USD_DAY") is not None:
         return env_float("PRL_GUARD_REPLACEMENT_MIN_PROFIT_USD_DAY", 0.0)
@@ -622,6 +631,48 @@ def negative_price_stability(conn: Any) -> tuple[bool, dict[str, Any]]:
     return True, payload
 
 
+def negative_window_max_still_unprofitable(
+    row: dict[str, Any],
+    *,
+    decision_price: float,
+    price_stability: dict[str, Any],
+) -> tuple[bool, dict[str, Any]]:
+    if not negative_window_max_bypass_enabled():
+        return False, {"enabled": False}
+    try:
+        current_price = float(decision_price)
+        window_max_price = float(price_stability.get("max") or 0)
+        cost_day = float(row.get("cost_day") or 0)
+        current_profit_day = float(row.get("profit_day") or row.get("market_profit_day") or 0)
+    except (TypeError, ValueError):
+        return False, {"enabled": True, "reason": "invalid_negative_profit_inputs"}
+    if current_price <= 0 or window_max_price <= 0:
+        return False, {"enabled": True, "reason": "missing_price"}
+    revenue_day = row.get("revenue_day")
+    try:
+        current_revenue_day = float(revenue_day) if revenue_day is not None else cost_day + current_profit_day
+    except (TypeError, ValueError):
+        current_revenue_day = cost_day + current_profit_day
+    if current_revenue_day <= 0:
+        return False, {"enabled": True, "reason": "missing_revenue"}
+    prl_day = current_revenue_day / current_price
+    window_max_profit_day = (prl_day * window_max_price) - cost_day
+    min_loss = negative_window_max_min_loss_usd_day()
+    payload = {
+        "enabled": True,
+        "current_price_usd": round(current_price, 6),
+        "window_max_price_usd": round(window_max_price, 6),
+        "estimated_prl_day": round(prl_day, 6),
+        "estimated_profit_at_window_max_usd_day": round(window_max_profit_day, 6),
+        "min_loss_usd_day": min_loss,
+    }
+    if window_max_profit_day < -min_loss:
+        payload["reason"] = "window_max_still_unprofitable"
+        return True, payload
+    payload["reason"] = "window_max_could_recover"
+    return False, payload
+
+
 def enforce_issues(
     *,
     db_path: str | None,
@@ -746,6 +797,16 @@ def enforce_issues(
             if issue_type == "negative":
                 price_stable, price_stability = negative_price_stability(conn)
                 decision["price_stability"] = price_stability
+                if not price_stable:
+                    bypass_stability, bypass_payload = negative_window_max_still_unprofitable(
+                        row,
+                        decision_price=decision_price,
+                        price_stability=price_stability,
+                    )
+                    decision["window_max_unprofitable"] = bypass_payload
+                    if bypass_stability:
+                        price_stable = True
+                        price_stability["bypass_reason"] = bypass_payload["reason"]
             if issue_age >= float(issue["grace_seconds"]):
                 slot_key = (org_label, slot_name)
                 cooldown_seconds = guard_retarget_cooldown_seconds()

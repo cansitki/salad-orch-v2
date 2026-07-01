@@ -540,6 +540,49 @@ class GuardDecisionTest(unittest.TestCase):
         self.assertEqual(decisions[0]["reason"], "price_range_above_threshold")
         self.assertGreater(decisions[0]["price_stability"]["range"], 0.03)
 
+    def test_guard_negative_can_bypass_unstable_price_when_window_max_is_still_unprofitable(self) -> None:
+        self.make_issue_old("negative")
+        self.add_price_sample(minutes_ago=59, price=0.41)
+        self.add_price_sample(minutes_ago=0, price=0.45)
+
+        with patch.dict(
+            "os.environ",
+            {
+                "PRL_GUARD_NEGATIVE_PRICE_STABILITY_REQUIRE_HISTORY": "1",
+                "PRL_GUARD_NEGATIVE_PRICE_STABILITY_MAX_RANGE_USD": "0.03",
+                "PRL_GUARD_NEGATIVE_BYPASS_STABILITY_IF_WINDOW_MAX_UNPROFITABLE": "1",
+                "PRL_GUARD_NEGATIVE_MIN_LOSS_USD_DAY": "0.05",
+                "PRL_GUARD_REPLACEMENT_MIN_PROFIT_USD_DAY": "999",
+                "PRL_GUARD_STOP_WITHOUT_TARGET_ISSUES": "negative",
+            },
+            clear=False,
+        ):
+            decisions = guard.enforce_issues(
+                db_path=self.db_path,
+                decision_price=0.41,
+                apply=False,
+                analysis={
+                    "fresh_workers": 3,
+                    "running_no_live_billable_slots": [],
+                    "negative_slots": [
+                        {
+                            "org": "kray",
+                            "slot": "prl-kray-roi-01",
+                            "gpu": "3090",
+                            "priority": "batch",
+                            "cost_day": 0.96,
+                            "profit_day": -0.2,
+                        }
+                    ],
+                },
+            )
+
+        self.assertEqual(decisions[0]["action"], "stop")
+        self.assertEqual(decisions[0]["price_stability"]["reason"], "price_range_above_threshold")
+        self.assertEqual(decisions[0]["price_stability"]["bypass_reason"], "window_max_still_unprofitable")
+        self.assertEqual(decisions[0]["window_max_unprofitable"]["reason"], "window_max_still_unprofitable")
+        self.assertLess(decisions[0]["window_max_unprofitable"]["estimated_profit_at_window_max_usd_day"], -0.05)
+
     def test_guard_negative_retargets_when_price_window_is_stable(self) -> None:
         self.make_issue_old("negative")
         self.add_price_sample(minutes_ago=59, price=0.45)

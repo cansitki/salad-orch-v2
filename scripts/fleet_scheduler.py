@@ -350,11 +350,22 @@ def build_targets(
                         skip_profile_key=str(observed_profile),
                     )
                     if selected is not None:
-                        profile_index, profile, used_probe_fallback = selected
-                        protected = False
-                        reason = f"{mode}:replace_negative_observed_profile:{observed_profile}"
-                        if used_probe_fallback:
-                            reason += ":availability_probe_fallback"
+                        profile_index, replacement_profile, used_probe_fallback = selected
+                        replacement_profit = float(replacement_profile["expected_profit_day"])
+                        if replacement_profit > current_profit:
+                            profile = replacement_profile
+                            protected = False
+                            reason = f"{mode}:replace_negative_observed_profile:{observed_profile}"
+                            if used_probe_fallback:
+                                reason += ":availability_probe_fallback"
+                        else:
+                            profile = current
+                            profile_index = 0
+                            reason = (
+                                f"{mode}:negative_observed_profile_no_better_replacement:"
+                                f"{observed_profile}:replacement_profit_{replacement_profit:.3f}"
+                                f"_lte_current_{current_profit:.3f}"
+                            )
                     else:
                         profile = current
                         profile_index = 0

@@ -111,6 +111,10 @@ def install_rate_limited_request(watch: Any, org: OrgConfig, *, db_path: str | N
 
 
 def target_rows(conn, org_label: str) -> list[dict[str, Any]]:
+    nohash_patch_lookback_seconds = max(60, env_int("PRL_RUNNING_NOHASH_PATCH_LOOKBACK_SECONDS", 1800))
+    nohash_patch_since = (datetime.now(UTC) - timedelta(seconds=nohash_patch_lookback_seconds)).isoformat(
+        timespec="seconds"
+    )
     rows = conn.execute(
         """
         WITH live_workers AS (
@@ -125,6 +129,15 @@ def target_rows(conn, org_label: str) -> list[dict[str, Any]]:
           SELECT org_label, slot_name, COUNT(*) AS active_guard_issues
           FROM guard_issues
           GROUP BY org_label, slot_name
+        ),
+        recent_nohash_patch AS (
+          SELECT org_label, slot_name, COUNT(*) AS recent_running_nohash_patch_count
+          FROM attempts
+          WHERE ok = 1
+            AND action = 'patch'
+            AND datetime(at_utc) >= datetime(?)
+            AND json_extract(payload_json, '$.reason') LIKE 'stale_running_no_hash_profile_mismatch:%'
+          GROUP BY org_label, slot_name
         )
         SELECT t.*, p.gpu_key, p.priority, p.memory_mb, p.label,
                s.observed_profile_key AS slot_observed_profile_key,
@@ -136,7 +149,8 @@ def target_rows(conn, org_label: str) -> list[dict[str, Any]]:
                observed_score.risk_tier AS observed_profile_risk_tier,
                COALESCE(lw.live_worker_count, 0) AS live_worker_count,
                COALESCE(lw.live_worker_th, 0) AS live_worker_th,
-               COALESCE(ag.active_guard_issues, 0) AS active_guard_issues
+               COALESCE(ag.active_guard_issues, 0) AS active_guard_issues,
+               COALESCE(rnp.recent_running_nohash_patch_count, 0) AS recent_running_nohash_patch_count
         FROM slot_targets t
         JOIN gpu_profiles p ON p.profile_key = t.profile_key
         LEFT JOIN slots s ON s.org_label = t.org_label AND s.slot_name = t.slot_name
@@ -145,10 +159,11 @@ def target_rows(conn, org_label: str) -> list[dict[str, Any]]:
          AND observed_score.mode = t.mode
         LEFT JOIN live_workers lw ON lw.org_label = t.org_label AND lw.slot_name = t.slot_name
         LEFT JOIN active_guard ag ON ag.org_label = t.org_label AND ag.slot_name = t.slot_name
+        LEFT JOIN recent_nohash_patch rnp ON rnp.org_label = t.org_label AND rnp.slot_name = t.slot_name
         WHERE t.org_label = ?
         ORDER BY t.slot_name
         """,
-        (org_label,),
+        (nohash_patch_since, org_label),
     ).fetchall()
     return [dict(row) for row in rows]
 
@@ -623,8 +638,17 @@ def planned_action(
                         f"age_{age_text}_lt_{pending_retarget_after_seconds}"
                     )
                 elif allow_running_nohash_retarget:
-                    action = "patch"
-                    reason = f"stale_running_no_hash_profile_mismatch:{current or 'unknown'}:age_{running_age:.1f}"
+                    recent_nohash_patches = int(target.get("recent_running_nohash_patch_count") or 0)
+                    restart_after_patches = env_int("PRL_RUNNING_NOHASH_MISMATCH_RESTART_AFTER_PATCHES", 3)
+                    if restart_after_patches > 0 and recent_nohash_patches >= restart_after_patches:
+                        action = "restart_no_hash"
+                        reason = (
+                            f"stale_running_no_hash_profile_mismatch_restart_after_patches:"
+                            f"{current or 'unknown'}:age_{running_age:.1f}:patches_{recent_nohash_patches}"
+                        )
+                    else:
+                        action = "patch"
+                        reason = f"stale_running_no_hash_profile_mismatch:{current or 'unknown'}:age_{running_age:.1f}"
                 else:
                     action = "observe"
                     reason = (

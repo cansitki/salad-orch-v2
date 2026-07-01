@@ -1130,6 +1130,60 @@ class StateAndSchedulerTest(unittest.TestCase):
         self.assertEqual(stats["4090:batch:2048"]["failure"], 0)
         self.assertEqual(stats["4090:batch:2048"]["capacity_failure"], 0)
 
+    def test_org_worker_target_rows_counts_recent_running_nohash_patches(self) -> None:
+        now = datetime.now(UTC)
+        old = now - timedelta(hours=2)
+        with state_db.connect(self.db_path) as conn:
+            state_db.init_db(conn)
+            state_db.sync_config(conn, load_config())
+            state_db.upsert_gpu_profiles(conn, profit_model.load_profiles())
+            state_db.set_slot_target(
+                conn,
+                {
+                    "org_label": "kray",
+                    "slot_name": "prl-kray-roi-01",
+                    "profile_key": "4080:batch:2048",
+                    "mode": "base_fill",
+                    "decision_price_usd": 0.55,
+                    "expected_profit_day": 0.1,
+                    "protected": False,
+                    "reason": "test",
+                    "assigned_at_utc": now.isoformat(timespec="seconds"),
+                },
+            )
+            for offset in (0, 1, 2):
+                state_db.record_attempt(
+                    conn,
+                    {
+                        "at_utc": (now - timedelta(minutes=offset)).isoformat(timespec="seconds"),
+                        "org_label": "kray",
+                        "slot_name": "prl-kray-roi-01",
+                        "action": "patch",
+                        "profile_key": "4080:batch:2048",
+                        "ok": True,
+                        "payload": {
+                            "reason": "stale_running_no_hash_profile_mismatch:3060ti:batch:2048:age_300.0"
+                        },
+                    },
+                )
+            state_db.record_attempt(
+                conn,
+                {
+                    "at_utc": old.isoformat(timespec="seconds"),
+                    "org_label": "kray",
+                    "slot_name": "prl-kray-roi-01",
+                    "action": "patch",
+                    "profile_key": "4080:batch:2048",
+                    "ok": True,
+                    "payload": {"reason": "stale_running_no_hash_profile_mismatch:old:age_999.0"},
+                },
+            )
+            conn.commit()
+            rows = org_worker.target_rows(conn, "kray")
+
+        target = next(row for row in rows if row["slot_name"] == "prl-kray-roi-01")
+        self.assertEqual(target["recent_running_nohash_patch_count"], 3)
+
     def test_profile_runtime_stats_excludes_iso_rows_older_than_24_hours(self) -> None:
         now = datetime.now(UTC)
         old = now - timedelta(hours=25)
@@ -2402,6 +2456,42 @@ class StateAndSchedulerTest(unittest.TestCase):
 
         self.assertEqual(plan["action"], "patch")
         self.assertIn("stale_running_no_hash_profile_mismatch", plan["reason"])
+        self.assertFalse(plan["protected"])
+
+    def test_org_worker_restarts_stale_running_no_hash_mismatch_after_repeated_patches(self) -> None:
+        class Watch:
+            def slot_state(self, _slot_name):
+                return (
+                    {
+                        "priority": "low",
+                        "container": {"resources": {"gpu_classes": ["gpu-rtx-4070tis"], "memory": 2048}},
+                        "current_state": {"instance_status_counts": {"running_count": 1}},
+                    },
+                    [{"id": "running-1", "ready": True, "started": True}],
+                )
+
+            GPU = {"4070tis": "gpu-rtx-4070tis"}
+
+        plan = org_worker.planned_action(
+            Watch(),
+            "prl-kray-roi-01",
+            {
+                "profile_key": "5090:low:2048",
+                "observed_profile_since_utc": (datetime.now(UTC) - timedelta(minutes=5)).isoformat(
+                    timespec="seconds"
+                ),
+                "live_worker_count": 0,
+                "live_worker_th": 0,
+                "recent_running_nohash_patch_count": 3,
+            },
+            protect_running=True,
+            pending_retarget_after_seconds=60,
+            allow_running_nohash_retarget=True,
+        )
+
+        self.assertEqual(plan["action"], "restart_no_hash")
+        self.assertIn("stale_running_no_hash_profile_mismatch_restart_after_patches", plan["reason"])
+        self.assertEqual(plan["running_instance_ids"], ["running-1"])
         self.assertFalse(plan["protected"])
 
     def test_org_worker_protects_stale_running_no_hash_mismatch_by_default(self) -> None:

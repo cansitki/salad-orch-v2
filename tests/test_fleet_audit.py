@@ -289,6 +289,110 @@ class FleetAuditTest(unittest.TestCase):
         self.assertEqual(kray_slot["profit_day"], 0.4)
         self.assertIsNotNone(heartbeat)
 
+    def test_record_active_snapshot_respects_enabled_org_filter(self) -> None:
+        with state_db.connect(self.db_path) as conn:
+            state_db.update_slot_observation(
+                conn,
+                {
+                    "org_label": "kray",
+                    "slot_name": "prl-kray-roi-01",
+                    "observed_profile_key": "4090:batch:2048",
+                    "observed_status": "running",
+                    "live_hashrate_th": 100.0,
+                    "updated_at_utc": "2026-06-24T10:00:00+00:00",
+                },
+            )
+            state_db.update_slot_observation(
+                conn,
+                {
+                    "org_label": "kry1",
+                    "slot_name": "prl-kry1-roi-01",
+                    "observed_profile_key": "4090:batch:2048",
+                    "observed_status": "running",
+                    "live_hashrate_th": 100.0,
+                    "updated_at_utc": "2026-06-24T10:00:00+00:00",
+                },
+            )
+            state_db.sync_worker_rows(
+                conn,
+                [
+                    {
+                        "worker_name": "kray-worker-1",
+                        "org_label": "kray",
+                        "slot_name": "prl-kray-roi-01",
+                        "instance_id": "instance-1",
+                        "gpu_key": "4090",
+                        "reported_hashrate_th": 100.0,
+                        "last_stats_at": "2026-06-24T10:00:00+00:00",
+                    },
+                    {
+                        "worker_name": "kry1-worker-1",
+                        "org_label": "kry1",
+                        "slot_name": "prl-kry1-roi-01",
+                        "instance_id": "instance-2",
+                        "gpu_key": "4090",
+                        "reported_hashrate_th": 100.0,
+                        "last_stats_at": "2026-06-24T10:00:00+00:00",
+                    },
+                ],
+            )
+            conn.commit()
+
+        report = {
+            "assigned_targets": 10,
+            "target_slots": 10,
+            "live_hashing_gpus": 1,
+            "live_th": 100.0,
+            "status_counts": {"running": 1},
+            "profit_at_0_64": {"cost_day": 1.2, "profit_day": 0.4},
+            "profit_at_live": {"market_profit_day": 0.5},
+        }
+        env = {
+            "SALAD_FLEET_CONFIG_PATH": "",
+            "PRL_FLEET_CONFIG_PATH": "",
+            "SALAD_FLEET_CONFIG_JSON": "",
+            "SALAD_FLEET_ORGS_JSON": "",
+            "PRL_FLEET_ORGS_JSON": "",
+            "SALAD_FLEET_EXTRA_ORGS_JSON": "",
+            "PRL_FLEET_EXTRA_ORGS_JSON": "",
+            "PRL_ENABLED_ORGS": "kray",
+        }
+        with (
+            patch.dict("os.environ", env),
+            patch.object(fleet_audit.reporter, "build_report", return_value=report),
+        ):
+            payload = fleet_audit.record_active_snapshot(self.db_path)
+
+        with state_db.connect(self.db_path) as conn:
+            orgs = [
+                row["org_label"]
+                for row in conn.execute(
+                    """
+                    SELECT org_label
+                    FROM fleet_org_active_snapshots
+                    WHERE snapshot_id = ?
+                    ORDER BY org_label
+                    """,
+                    (payload["snapshot_id"],),
+                ).fetchall()
+            ]
+            slot_orgs = {
+                row["org_label"]
+                for row in conn.execute(
+                    """
+                    SELECT org_label
+                    FROM fleet_slot_active_snapshots
+                    WHERE snapshot_id = ?
+                    """,
+                    (payload["snapshot_id"],),
+                ).fetchall()
+            }
+
+        self.assertEqual(orgs, ["kray"])
+        self.assertEqual(slot_orgs, {"kray"})
+        self.assertEqual(set(payload["org_summary"]), {"kray"})
+        self.assertEqual(payload["slot_snapshots"], 10)
+
     def test_record_active_snapshot_refreshes_profit_when_enabled(self) -> None:
         report = {
             "assigned_targets": 40,

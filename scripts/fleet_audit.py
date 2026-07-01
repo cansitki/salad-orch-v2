@@ -44,9 +44,9 @@ def parse_money(value: Any) -> float | None:
     return parsed
 
 
-def latest_slot_profit_by_org(conn) -> dict[str, dict[str, Any]]:
+def latest_slot_profit_by_org(conn, enabled_org_labels: set[str] | None = None) -> dict[str, dict[str, Any]]:
     summary: dict[str, dict[str, Any]] = {}
-    for row in latest_slot_profit_by_key(conn).values():
+    for row in latest_slot_profit_by_key(conn, enabled_org_labels).values():
         org = str(row["org_label"])
         item = summary.setdefault(
             org,
@@ -65,7 +65,7 @@ def latest_slot_profit_by_org(conn) -> dict[str, dict[str, Any]]:
     return summary
 
 
-def latest_slot_profit_by_key(conn) -> dict[tuple[str, str], dict[str, Any]]:
+def latest_slot_profit_by_key(conn, enabled_org_labels: set[str] | None = None) -> dict[tuple[str, str], dict[str, Any]]:
     latest = conn.execute(
         "SELECT at_utc FROM profit_snapshots WHERE scope = 'slot' ORDER BY at_utc DESC, id DESC LIMIT 1"
     ).fetchone()
@@ -80,10 +80,14 @@ def latest_slot_profit_by_key(conn) -> dict[tuple[str, str], dict[str, Any]]:
         """,
         (latest["at_utc"],),
     ).fetchall()
-    return {(str(row["org_label"]), str(row["slot_name"])): dict(row) for row in rows}
+    return {
+        (str(row["org_label"]), str(row["slot_name"])): dict(row)
+        for row in rows
+        if enabled_org_labels is None or str(row["org_label"]) in enabled_org_labels
+    }
 
 
-def org_runtime_summary(conn) -> dict[str, dict[str, Any]]:
+def org_runtime_summary(conn, enabled_org_labels: set[str] | None = None) -> dict[str, dict[str, Any]]:
     summary: dict[str, dict[str, Any]] = {}
     status_rows = conn.execute(
         """
@@ -94,6 +98,8 @@ def org_runtime_summary(conn) -> dict[str, dict[str, Any]]:
     ).fetchall()
     for row in status_rows:
         org = str(row["org_label"])
+        if enabled_org_labels is not None and org not in enabled_org_labels:
+            continue
         item = summary.setdefault(
             org,
             {
@@ -128,6 +134,8 @@ def org_runtime_summary(conn) -> dict[str, dict[str, Any]]:
     ).fetchall()
     for row in worker_rows:
         org = str(row["org_label"])
+        if enabled_org_labels is not None and org not in enabled_org_labels:
+            continue
         item = summary.setdefault(
             org,
             {
@@ -141,7 +149,7 @@ def org_runtime_summary(conn) -> dict[str, dict[str, Any]]:
         item["live_hashing_gpus"] = int(row["live_hashing_gpus"] or 0)
         item["live_th"] = float(row["live_th"] or 0)
 
-    profits = latest_slot_profit_by_org(conn)
+    profits = latest_slot_profit_by_org(conn, enabled_org_labels)
     for org, item in summary.items():
         profit = profits.get(org, {})
         item.setdefault("live_hashing_gpus", 0)
@@ -152,8 +160,12 @@ def org_runtime_summary(conn) -> dict[str, dict[str, Any]]:
     return summary
 
 
-def record_slot_active_snapshots(conn, snapshot_id: int) -> int:
-    profits = latest_slot_profit_by_key(conn)
+def record_slot_active_snapshots(
+    conn,
+    snapshot_id: int,
+    enabled_org_labels: set[str] | None = None,
+) -> int:
+    profits = latest_slot_profit_by_key(conn, enabled_org_labels)
     rows = conn.execute(
         """
         SELECT s.org_label,
@@ -180,6 +192,11 @@ def record_slot_active_snapshots(conn, snapshot_id: int) -> int:
         ORDER BY s.org_label, s.slot_index, s.slot_name
         """
     ).fetchall()
+    rows = [
+        row
+        for row in rows
+        if enabled_org_labels is None or str(row["org_label"]) in enabled_org_labels
+    ]
     for row in rows:
         key = (str(row["org_label"]), str(row["slot_name"]))
         profit = profits.get(key, {})
@@ -248,6 +265,7 @@ def record_active_snapshot(
     profit_snapshot_price: float | None = None,
 ) -> dict[str, Any]:
     config = load_config()
+    enabled_org_labels = {org.label for org in config.enabled_orgs()}
     with state_db.connect(db_path) as conn:
         state_db.init_db(conn)
         state_db.sync_config(conn, config)
@@ -258,7 +276,7 @@ def record_active_snapshot(
     with state_db.connect(db_path) as conn:
         state_db.init_db(conn)
         state_db.sync_config(conn, config)
-        org_summary = org_runtime_summary(conn)
+        org_summary = org_runtime_summary(conn, enabled_org_labels)
         profit_064 = report.get("profit_at_0_64") or {}
         profit_live = report.get("profit_at_live") or {}
         cursor = conn.execute(
@@ -319,7 +337,7 @@ def record_active_snapshot(
                     compact_json(safe_public_payload(item)),
                 ),
             )
-        slot_snapshot_count = record_slot_active_snapshots(conn, snapshot_id)
+        slot_snapshot_count = record_slot_active_snapshots(conn, snapshot_id, enabled_org_labels)
         state_db.write_heartbeat(
             conn,
             "fleet_audit",

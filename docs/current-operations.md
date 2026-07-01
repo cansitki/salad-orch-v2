@@ -154,7 +154,7 @@ tail -f state/logs/prl_nohash_guard.log
 Check active GPUs and hourly balance-vs-cost audits:
 
 ```bash
-python3 scripts/fleet_audit.py --loop --interval 300 --balance-interval 3600 --balance-file state/salad_balances.json
+SALAD_FLEET_CONFIG_PATH=config/fleet.kray-only-150.json PRL_FLEET_CONFIG_PATH=config/fleet.kray-only-150.json PRL_ENABLED_ORGS=kray python3 scripts/fleet_audit.py --loop --interval 300 --balance-interval 3600 --balance-file state/salad_balances.json
 python3 scripts/portal_balances.py --loop --interval 900 --balance-file state/salad_balances.json --cookie-jar state/portal_cookies.txt
 SALAD_PORTAL_BALANCE_EMAILS="account1@example.com,account2@example.com" python3 scripts/portal_multi_balances.py --loop --interval 900 --balance-file state/salad_balances.json
 python3 scripts/spike_report.py --heartbeat --loop --interval 300

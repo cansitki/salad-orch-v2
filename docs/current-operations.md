@@ -191,6 +191,67 @@ shorter than `PRL_PENDING_PROFILE_COOLDOWN_SECONDS` so a retarget that
 immediately lands on another bad GPU can be corrected without waiting through
 the longer search cooldown.
 
+### Hash Safety Guard For Scarce-GPU Fill
+
+When the fleet is intentionally filling many scarce Salad slots, do not judge a
+slot only by whether Salad reports an active GPU. Also guard for two waste
+patterns:
+
+- `underperform`: the slot has pool hash, but the hashrate is below the
+  expected range for the observed GPU/profile.
+- `stuck_no_live`: Salad reports the slot as active/creating/allocating, but no
+  fresh Pearl worker maps to that slot after the stuck grace.
+
+The live July 2026 kray-only fill used this controlled guard loop:
+
+```bash
+tmux new-session -d -s salad-orch-v2-guard-stuck -c /home/coder/projects/salad '
+zsh -lc '"'"'
+set -a; . ./.env; set +a
+while true; do
+  PRICE=$(sqlite3 state/fleet_scheduler.db "select selected_price_usd from price_history where selected_price_usd is not null order by sampled_at_utc desc, id desc limit 1")
+  SALAD_FLEET_CONFIG_PATH=config/fleet.kray-only-150.json \
+  PRL_FLEET_CONFIG_PATH=config/fleet.kray-only-150.json \
+  PRL_ENABLED_ORGS=kray \
+  PRL_GUARD_ENABLED_ISSUES=no_hash,underperform,stuck_no_live \
+  PRL_GUARD_REPLACEMENT_MODE=base_fill \
+  PRL_GUARD_REPLACEMENT_MIN_PROFIT_USD_DAY=0 \
+  PRL_GUARD_ALLOW_NEGATIVE_REPLACEMENTS=1 \
+  PRL_GUARD_ALLOW_UNSTABLE_REPLACEMENTS=1 \
+  PRL_GUARD_UNDERPERFORM_RATIO=0.85 \
+  PRL_GUARD_UNDERPERFORM_MIN_DEFICIT_TH=10 \
+  PRL_GUARD_UNDERPERFORM_GRACE_SECONDS=120 \
+  PRL_GUARD_MAX_ACTIONS_PER_RUN=8 \
+  PRL_GUARD_RETARGET_COOLDOWN_SECONDS=600 \
+  python3 scripts/guard.py --once --apply --db state/fleet_scheduler.db --price "$PRICE" --json \
+    2>> state/logs/guard-stuck.err |
+    python3 -c "import sys,json; print(json.dumps(json.load(sys.stdin), sort_keys=True), flush=True)" \
+    >> state/logs/guard-stuck.compact.jsonl
+  sleep 180
+done
+'"'"'
+'
+```
+
+Safety points:
+
+- The loop uses the live PRL price from `price_history`, not the risk-off
+  decision price, so replacement ranking follows current market reality.
+- It applies at most 8 live actions per tick and waits 600 seconds before
+  touching the same slot again.
+- `stuck_no_live` does not stop a slot when no replacement target exists; it
+  waits instead. This avoids mass emptying slots when Salad availability is
+  thin.
+- Keep `negative` out of `PRL_GUARD_ENABLED_ISSUES` during fill unless the
+  operator explicitly wants loss-based live pruning.
+
+Watch it with:
+
+```bash
+tail -f state/logs/guard-stuck.compact.jsonl
+tail -f state/logs/guard-stuck.err
+```
+
 For the current fill-first operation with scarce Salad GPUs, run the monitor
 with `--pending-status-retarget-after-seconds 180`. That rotates
 creating/allocating/deploying slots sooner than the previous five-minute wait,

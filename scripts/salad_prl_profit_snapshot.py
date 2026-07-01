@@ -557,13 +557,35 @@ def snapshot_worker_row(row: dict[str, Any]) -> dict[str, Any] | None:
     }
 
 
+def configured_slot_org_map(config=None) -> dict[str, str]:
+    config = config or load_config()
+    return {
+        slot_name: org.label
+        for org in config.enabled_orgs()
+        for slot_name in org.slot_names()
+    }
+
+
+def named_slot_for_snapshot_worker(row: dict[str, Any], slot_orgs: dict[str, str]) -> str | None:
+    explicit = str(row.get("named_slot") or row.get("slot") or "")
+    if explicit in slot_orgs:
+        return explicit
+    worker_name = str(row.get("worker") or "")
+    for slot_name in slot_orgs:
+        if slot_name in worker_name:
+            return slot_name
+    return None
+
+
 def write_snapshot_db(snapshot: dict[str, Any], *, db_path: str | None = None, decision_price: float | None = None) -> None:
     snapshot_at = snapshot.get("at_utc") or datetime.now(UTC).isoformat(timespec="seconds")
     price = float(decision_price if decision_price is not None else snapshot.get("assumed_prl_price") or 0)
     totals = snapshot.get("totals") or {}
+    config = load_config()
+    slot_orgs = configured_slot_org_map(config)
     with state_db.connect(db_path) as conn:
         state_db.init_db(conn)
-        state_db.sync_config(conn, load_config())
+        state_db.sync_config(conn, config)
         state_db.record_profit_snapshot(
             conn,
             {
@@ -618,6 +640,30 @@ def write_snapshot_db(snapshot: dict[str, Any], *, db_path: str | None = None, d
                     "payload": row,
                 },
             )
+        for row in snapshot.get("unmapped_live_workers") or []:
+            slot_name = named_slot_for_snapshot_worker(row, slot_orgs)
+            if not slot_name:
+                continue
+            org_label = slot_orgs.get(slot_name)
+            if not org_label:
+                continue
+            worker_like = {**row, "slot": slot_name, "org": org_label}
+            profile_key = snapshot_profile_key(conn, worker_like)
+            state_db.update_slot_observation(
+                conn,
+                {
+                    "org_label": org_label,
+                    "slot_name": slot_name,
+                    "observed_profile_key": profile_key,
+                    "observed_status": "running",
+                    "live_hashrate_th": row.get("th"),
+                    "protected": True,
+                    "updated_at_utc": snapshot_at,
+                },
+            )
+            worker_row = snapshot_worker_row(worker_like)
+            if worker_row:
+                worker_rows.append(worker_row)
         state_db.sync_worker_rows(conn, worker_rows)
         state_db.write_heartbeat(
             conn,
@@ -993,6 +1039,8 @@ def build_snapshot(price: float) -> dict[str, Any]:
             {
                 "worker": row["worker"],
                 "gpu": row.get("gpu_token") or row.get("gpu"),
+                "priority": row.get("priority"),
+                "named_slot": row.get("named_slot"),
                 "th": round(float(row["th"]), 3),
                 "prl_day": round(float(row["prl_day"]), 6),
                 "revenue_day": round(float(row["revenue_day"]), 6),

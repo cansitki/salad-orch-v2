@@ -166,6 +166,65 @@ class ProfitSnapshotTest(unittest.TestCase):
             self.assertEqual(rows[1]["profile_key"], "3090:batch:2048")
             self.assertEqual(rows[1]["revenue_day"], 3.0)
 
+    def test_write_snapshot_db_marks_named_unmapped_workers_as_live(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = str(pathlib.Path(tmpdir) / "fleet.db")
+            with state_db.connect(db_path) as conn:
+                state_db.init_db(conn)
+                state_db.sync_config(conn, load_config())
+                conn.commit()
+
+            snapshot = {
+                "at_utc": "2026-07-01T12:00:00+00:00",
+                "assumed_prl_price": 0.55,
+                "live_market_prl_price": 0.47,
+                "fresh_workers": 1,
+                "totals": {
+                    "th": 0,
+                    "cost_day": 0,
+                    "revenue_day": 0,
+                    "profit_day": 0,
+                },
+                "slots": [],
+                "unmapped_live_workers": [
+                    {
+                        "worker": "kray-prl-kray-roi-01-pearlfortune-inst-1",
+                        "named_slot": "prl-kray-roi-01",
+                        "gpu": "3090",
+                        "priority": "batch",
+                        "th": 101.25,
+                        "last_stats_at": "2026-07-01T11:59:00+00:00",
+                    }
+                ],
+            }
+
+            salad_prl_profit_snapshot.write_snapshot_db(snapshot, db_path=db_path, decision_price=0.55)
+
+            with state_db.connect(db_path) as conn:
+                slot = conn.execute(
+                    """
+                    SELECT observed_status, observed_profile_key, live_hashrate_th, protected
+                    FROM slots
+                    WHERE org_label = 'kray' AND slot_name = 'prl-kray-roi-01'
+                    """
+                ).fetchone()
+                worker = conn.execute(
+                    """
+                    SELECT worker_name, org_label, slot_name, reported_hashrate_th, stale
+                    FROM workers
+                    WHERE worker_name = 'kray-prl-kray-roi-01-pearlfortune-inst-1'
+                    """
+                ).fetchone()
+
+            self.assertEqual(slot["observed_status"], "running")
+            self.assertEqual(slot["observed_profile_key"], "3090:batch:2048")
+            self.assertEqual(slot["live_hashrate_th"], 101.25)
+            self.assertEqual(slot["protected"], 1)
+            self.assertEqual(worker["org_label"], "kray")
+            self.assertEqual(worker["slot_name"], "prl-kray-roi-01")
+            self.assertEqual(worker["reported_hashrate_th"], 101.25)
+            self.assertEqual(worker["stale"], 0)
+
     def test_build_snapshot_falls_back_to_static_prices_when_catalog_fails(self) -> None:
         group = {
             "priority": "batch",

@@ -56,6 +56,19 @@ class GuardDecisionTest(unittest.TestCase):
             )
             conn.commit()
 
+    def add_price_sample(self, *, minutes_ago: int, price: float) -> None:
+        at = (datetime.now(UTC) - timedelta(minutes=minutes_ago)).isoformat(timespec="seconds")
+        with state_db.connect(self.db_path) as conn:
+            state_db.init_db(conn)
+            state_db.insert_price_sample(
+                conn,
+                {
+                    "sampled_at_utc": at,
+                    "selected_price_usd": price,
+                },
+            )
+            conn.commit()
+
     def test_guard_retargets_no_hash_after_grace(self) -> None:
         self.make_issue_old("no_hash")
         decisions = guard.enforce_issues(
@@ -490,6 +503,77 @@ class GuardDecisionTest(unittest.TestCase):
 
         self.assertEqual(decisions[0]["grace_seconds"], 60)
         self.assertEqual(decisions[0]["action"], "retarget")
+
+    def test_guard_negative_waits_when_price_window_is_unstable(self) -> None:
+        self.make_issue_old("negative")
+        self.add_price_sample(minutes_ago=59, price=0.45)
+        self.add_price_sample(minutes_ago=0, price=0.49)
+
+        with patch.dict(
+            "os.environ",
+            {
+                "PRL_GUARD_NEGATIVE_PRICE_STABILITY_REQUIRE_HISTORY": "1",
+                "PRL_GUARD_NEGATIVE_PRICE_STABILITY_MAX_RANGE_USD": "0.03",
+            },
+            clear=False,
+        ):
+            decisions = guard.enforce_issues(
+                db_path=self.db_path,
+                decision_price=0.64,
+                apply=False,
+                analysis={
+                    "fresh_workers": 3,
+                    "running_no_live_billable_slots": [],
+                    "negative_slots": [
+                        {
+                            "org": "kray",
+                            "slot": "prl-kray-roi-01",
+                            "gpu": "3090",
+                            "priority": "batch",
+                            "profit_day": -1.0,
+                        }
+                    ],
+                },
+            )
+
+        self.assertEqual(decisions[0]["action"], "wait_price_unstable")
+        self.assertEqual(decisions[0]["reason"], "price_range_above_threshold")
+        self.assertGreater(decisions[0]["price_stability"]["range"], 0.03)
+
+    def test_guard_negative_retargets_when_price_window_is_stable(self) -> None:
+        self.make_issue_old("negative")
+        self.add_price_sample(minutes_ago=59, price=0.45)
+        self.add_price_sample(minutes_ago=0, price=0.47)
+
+        with patch.dict(
+            "os.environ",
+            {
+                "PRL_GUARD_NEGATIVE_PRICE_STABILITY_REQUIRE_HISTORY": "1",
+                "PRL_GUARD_NEGATIVE_PRICE_STABILITY_MAX_RANGE_USD": "0.03",
+            },
+            clear=False,
+        ):
+            decisions = guard.enforce_issues(
+                db_path=self.db_path,
+                decision_price=0.64,
+                apply=False,
+                analysis={
+                    "fresh_workers": 3,
+                    "running_no_live_billable_slots": [],
+                    "negative_slots": [
+                        {
+                            "org": "kray",
+                            "slot": "prl-kray-roi-01",
+                            "gpu": "3090",
+                            "priority": "batch",
+                            "profit_day": -1.0,
+                        }
+                    ],
+                },
+            )
+
+        self.assertEqual(decisions[0]["action"], "retarget")
+        self.assertEqual(decisions[0]["price_stability"]["reason"], "price_stable")
 
     def test_guard_negative_loss_tolerance_filters_tiny_losses(self) -> None:
         payload = {

@@ -6,80 +6,64 @@ Post-read action: start or audit the automation, understand why it waits or rota
 
 ## Operating Goal
 
-Keep the fleet full of profitable GPUs first, then optimize quality.
+Keep the current `kray` fleet full of profitable GPUs first, then optimize quality.
 
 The current policy is:
 
-1. Fill all target slots across `kray`, `kry1`, `kray2`, and `kray3`.
-   When `kry2`/`kr1`/`kr2`/`kr3` are enabled through
-   `PRL_FLEET_EXTRA_ORGS_JSON`, include them in the same central scheduler
-   scope.
-2. Accept lower-profit GPUs during fill as long as they remain profitable at the conservative decision price.
+1. Operate only the `kray` organization for the live run. Use
+   `config/fleet.kray-only-150.json` and `PRL_ENABLED_ORGS=kray`.
+2. Fill up to the current `kray` target of 150 slots with the best currently
+   available GPU profiles, ranked by live expected profit.
 3. Do not stop a newly running no-hash slot immediately. Wait the no-hash grace window.
 4. Rotate or stop billable no-hash slots after grace.
-5. Rotate live hashing GPUs only when they are negative beyond grace, or later in optimize mode when the fleet is full.
+5. Rotate live hashing GPUs only when they are negative beyond grace and the
+   PRL price has been stable for the configured 60-minute window.
 
 ## Current Runtime Mode
 
-Default mode is `fill`.
+Default mode is kray-only live fill.
 
 Fill mode uses:
 
 | Setting | Current value |
 | --- | --- |
-| Decision PRL price | `0.64` USD |
-| Minimum candidate profit | `0.05` USD/day |
-| Allowed priorities | `batch,low` |
-| No-hash grace | `60` seconds |
-| Negative live slot grace | `90` seconds |
-| Allocating rotation | `45` seconds |
-| Creating progress grace | `120` seconds |
-| Empty creating grace | `60` seconds |
-| Watcher poll | `15` seconds |
-| Guard poll | `15` seconds |
+| Fleet config | `config/fleet.kray-only-150.json` |
+| Enabled org filter | `PRL_ENABLED_ORGS=kray` |
+| Target slots | `150` |
+| Decision PRL price | latest `price_history.selected_price_usd` |
+| Minimum replacement profit | `-0.10` USD/day during scarce-GPU fill |
+| Allowed priorities | current top live-ranked profiles, usually `batch` |
+| No-hash grace | `120` seconds |
+| Empty stuck non-live grace | `300` seconds |
+| Stuck non-live grace | `600` seconds |
+| Negative live slot grace | `3600` seconds |
+| Negative minimum loss | `0.05` USD/day |
+| Negative price stability | 60-minute history required, max `$0.03` range |
+| Guard poll | `180` seconds |
 | Snapshot HTTP timeout | `4` seconds, `1` attempt |
-| Underperform rotation | disabled in fill mode |
-| Live upgrades | disabled in fill mode |
-| No-GPU sleep trigger | after `3600` seconds without finding GPUs |
-| No-GPU sleep duration | `900` seconds |
+| Underperform rotation | enabled after `900` seconds if below expected range |
+| Safe-fill zero-worker gate | pause above 12 active zero-worker slots |
 
-Optimize mode is reserved for when all target orgs are full of live hashing workers. It uses a lower decision price of `0.62` USD and enables underperform/live upgrade checks.
+Optimize mode is reserved for when `kray` is materially full of live hashing
+workers. Do not re-enable old organizations unless Can explicitly changes the
+scope.
 
 ## Organizations And Slots
 
-The public org labels are:
+The current live org label is:
 
 | Label | Target slots | API key variable |
 | --- | ---: | --- |
-| `kray` | 10 | `SALAD_API_KEY_2` |
-| `kry1` | 10 | `SALAD_API_KEY_KRY1` |
-| `kray2` | 10 | `SALAD_API_KEY_2` |
-| `kray3` | 10 | `SALAD_API_KEY_2` |
-| `kry2` | 10 | `SALAD_API_KEY_KRY1` when sharing the kry1 token; otherwise `SALAD_API_KEY_KRY2` |
-| `kr1` | 10 | `SALAD_API_KEY_KR1` |
-| `kr2` | 10 | `SALAD_API_KEY_KR1` when sharing the kr1 token; otherwise `SALAD_API_KEY_KR2` |
-| `kr3` | 10 | `SALAD_API_KEY_KR1` when sharing the kr1 token; otherwise `SALAD_API_KEY_KR3` |
-| `alpha1` | 10 | `SALAD_API_KEY_ALPHA` |
-| `alpha2` | 10 | `SALAD_API_KEY_ALPHA` when sharing the alpha1 token |
+| `kray` | 150 | `SALAD_API_KEY_2` |
 
-The durable live layout is `config/fleet.current.json`: 28 enabled SaladCloud
-organizations at 10 container groups each, for 280 active or pending target
-slots. Do not keep a stale `PRL_ENABLED_ORGS` filter in tmux or shell env; it
-will hide newly added orgs from the scheduler.
+The old multi-org layout remains in `config/fleet.current.json` for reference,
+but it is not the current operating scope. Current live automation must use
+`config/fleet.kray-only-150.json`.
 
 Slot names follow:
 
 ```text
-prl-kray-roi-01  ... prl-kray-roi-10
-prl-kry1-roi-01  ... prl-kry1-roi-10
-prl-kray2-roi-01 ... prl-kray2-roi-10
-prl-kray3-roi-01 ... prl-kray3-roi-10
-prl-kry2-roi-01  ... prl-kry2-roi-10
-prl-kr1-roi-01   ... prl-kr1-roi-10
-prl-kr2-roi-01   ... prl-kr2-roi-10
-prl-kr3-roi-01   ... prl-kr3-roi-10
-prl-alpha1-roi-01 ... prl-alpha1-roi-10
-prl-alpha2-roi-01 ... prl-alpha2-roi-10
+prl-kray-roi-01 ... prl-kray-roi-150
 ```
 
 ## Script Map
@@ -105,31 +89,30 @@ The automation is intentionally plain Python plus shell launchers.
 Expected tmux sessions:
 
 ```text
-kray-prl-watch
-kry1-prl-watch
-kray2-prl-watch
-kray3-prl-watch
-kray-prl-guard
-kray-prl-nonstop-supervisor
+salad-orch-v2-price
+salad-orch-v2-scheduler
+salad-orch-v2-guard-stuck
+salad-orch-v2-safe-fill
+salad-orch-v2-audit
 salad-pearl-monitor
 ```
 
-The watcher sessions can run independently. The guard consumes the same public state and reuses the watcher logic for retargeting. The supervisor should keep the sessions alive instead of relying on a manual terminal.
+The scheduler, safe-fill, and guard sessions must all include
+`SALAD_FLEET_CONFIG_PATH=config/fleet.kray-only-150.json`,
+`PRL_FLEET_CONFIG_PATH=config/fleet.kray-only-150.json`, and
+`PRL_ENABLED_ORGS=kray`.
 
 ## Start Commands
 
 Create a private `.env` from `.env.example`, fill only local secrets, then run
-the v2 supervisor for the current scheduler stack:
+the kray-only v2 scheduler stack:
 
 ```bash
-SALAD_FLEET_CONFIG_PATH=config/fleet.current.json python3 scripts/supervisor.py --ensure --runtime-monitor-apply
+SALAD_FLEET_CONFIG_PATH=config/fleet.kray-only-150.json PRL_FLEET_CONFIG_PATH=config/fleet.kray-only-150.json PRL_ENABLED_ORGS=kray python3 scripts/supervisor.py --ensure --runtime-monitor-apply
 ```
 
-The supervisor clears stale `PRL_ENABLED_ORGS` filters for tmux children. This
-matters because the live fleet should use all enabled orgs from
-`config/fleet.current.json`. It uses the live `salad-orch-v2-*` tmux session
-names to avoid duplicate restarts and auto-selects `portal_multi_balances.py`
-when `state/portal_balance_accounts/` contains account cookie jars.
+The live `salad-orch-v2-*` tmux sessions are currently managed directly because
+the operating scope is intentionally restricted to `kray`.
 
 The legacy watcher-first stack is still available when explicitly needed:
 
@@ -145,8 +128,8 @@ Do not commit `.env`.
 Check process health:
 
 ```bash
-ps -eo pid,etimes,cmd | rg 'salad_prl_(watch|guard|nonstop_supervisor)' | rg -v rg
-tmux ls | rg 'kray-prl|kry1-prl|kray2-prl|kray3-prl|salad-pearl-monitor'
+ps -eo pid,etimes,cmd | rg 'scripts/(price_oracle|fleet_scheduler|guard|fast_fill_targets)' | rg -v rg
+tmux ls | rg 'salad-orch-v2|salad-pearl-monitor'
 ```
 
 Run a conservative profit snapshot:
@@ -221,6 +204,9 @@ while true; do
   PRL_STUCK_NON_LIVE_SECONDS=600 \
   PRL_GUARD_NEGATIVE_GRACE_SECONDS=3600 \
   PRL_GUARD_NEGATIVE_MIN_LOSS_USD_DAY=0.05 \
+  PRL_GUARD_NEGATIVE_PRICE_STABILITY_REQUIRE_HISTORY=1 \
+  PRL_GUARD_NEGATIVE_PRICE_STABILITY_WINDOW_MINUTES=60 \
+  PRL_GUARD_NEGATIVE_PRICE_STABILITY_MAX_RANGE_USD=0.03 \
   PRL_GUARD_REPLACEMENT_MODE=base_fill \
   PRL_GUARD_REPLACEMENT_MIN_PROFIT_USD_DAY=-0.10 \
   PRL_GUARD_ALLOW_NEGATIVE_REPLACEMENTS=1 \
@@ -253,9 +239,10 @@ Safety points:
 - `stuck_no_live` does not stop a slot when no replacement target exists; it
   waits instead. This avoids mass emptying slots when Salad availability is
   thin.
-- `negative` is enabled, but with a one-hour grace and a $0.05/day minimum loss.
-  That prevents killing hashing GPUs for short PRL price moves while still
-  pruning slots that stay unprofitable.
+- `negative` is enabled, but requires all of these before action: one-hour
+  grace, at least $0.05/day loss, and a real 60-minute price-history window
+  whose PRL range is at most $0.03. That prevents killing hashing GPUs for
+  short PRL price moves while still pruning slots that stay unprofitable.
 
 For the same scarce-GPU, below-breakeven fill mode, keep the central scheduler
 aligned with the guard by ranking target profiles by live expected profit and

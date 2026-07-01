@@ -27,6 +27,8 @@ DEFAULT_UNDERPERFORM_GRACE_SECONDS = 120
 DEFAULT_STUCK_NON_LIVE_GRACE_SECONDS = 0
 DEFAULT_RETARGET_COOLDOWN_SECONDS = 120
 DEFAULT_MAX_ACTIONS_PER_RUN = 8
+DEFAULT_NEGATIVE_PRICE_STABILITY_WINDOW_MINUTES = 60
+DEFAULT_NEGATIVE_PRICE_STABILITY_MAX_RANGE_USD = 0.03
 
 
 def age_seconds(at_utc: str | None) -> float:
@@ -70,6 +72,35 @@ def stop_without_target_issue_types() -> set[str]:
 
 def max_actions_per_run() -> int:
     return max(0, env_int("PRL_GUARD_MAX_ACTIONS_PER_RUN", DEFAULT_MAX_ACTIONS_PER_RUN))
+
+
+def negative_price_stability_window_minutes() -> int:
+    return max(
+        0,
+        env_int(
+            "PRL_GUARD_NEGATIVE_PRICE_STABILITY_WINDOW_MINUTES",
+            DEFAULT_NEGATIVE_PRICE_STABILITY_WINDOW_MINUTES,
+        ),
+    )
+
+
+def negative_price_stability_max_range_usd() -> float:
+    return max(
+        0.0,
+        env_float(
+            "PRL_GUARD_NEGATIVE_PRICE_STABILITY_MAX_RANGE_USD",
+            DEFAULT_NEGATIVE_PRICE_STABILITY_MAX_RANGE_USD,
+        ),
+    )
+
+
+def negative_price_stability_min_span_seconds(window_minutes: int) -> int:
+    default_span = int(max(0, window_minutes) * 60 * 0.8)
+    return max(0, env_int("PRL_GUARD_NEGATIVE_PRICE_STABILITY_MIN_SPAN_SECONDS", default_span))
+
+
+def negative_price_stability_required() -> bool:
+    return env_bool("PRL_GUARD_NEGATIVE_PRICE_STABILITY_REQUIRE_HISTORY", False)
 
 
 def guard_replacement_min_profit(config: Any) -> float:
@@ -554,6 +585,43 @@ def apply_guard_target(
     }
 
 
+def negative_price_stability(conn: Any) -> tuple[bool, dict[str, Any]]:
+    window_minutes = negative_price_stability_window_minutes()
+    if window_minutes <= 0:
+        return True, {"enabled": False, "reason": "disabled"}
+    max_range = negative_price_stability_max_range_usd()
+    min_span = negative_price_stability_min_span_seconds(window_minutes)
+    require_history = negative_price_stability_required()
+    window = state_db.price_window(conn, window_minutes)
+    count = int(window.get("count") or 0)
+    span_seconds = float(window.get("span_seconds") or 0.0)
+    price_range = window.get("range")
+    payload = {
+        "enabled": True,
+        "window_minutes": window_minutes,
+        "max_range_usd": max_range,
+        "min_span_seconds": min_span,
+        "require_history": require_history,
+        "count": count,
+        "span_seconds": round(span_seconds, 1),
+        "min": window.get("min"),
+        "max": window.get("max"),
+        "avg": window.get("avg"),
+        "range": price_range,
+    }
+    if count <= 0 or price_range is None:
+        payload["reason"] = "missing_price_history"
+        return (not require_history), payload
+    if span_seconds < min_span:
+        payload["reason"] = "insufficient_price_window"
+        return (not require_history), payload
+    if float(price_range) > max_range:
+        payload["reason"] = "price_range_above_threshold"
+        return False, payload
+    payload["reason"] = "price_stable"
+    return True, payload
+
+
 def enforce_issues(
     *,
     db_path: str | None,
@@ -674,11 +742,18 @@ def enforce_issues(
                 "action": "wait",
                 "apply": apply,
             }
+            price_stable = True
+            if issue_type == "negative":
+                price_stable, price_stability = negative_price_stability(conn)
+                decision["price_stability"] = price_stability
             if issue_age >= float(issue["grace_seconds"]):
                 slot_key = (org_label, slot_name)
                 cooldown_seconds = guard_retarget_cooldown_seconds()
                 last_action = recent_guard_action(conn, org_label, slot_name)
-                if apply and slot_key in actioned_slots:
+                if issue_type == "negative" and not price_stable:
+                    decision["action"] = "wait_price_unstable"
+                    decision["reason"] = str((decision.get("price_stability") or {}).get("reason") or "price_unstable")
+                elif apply and slot_key in actioned_slots:
                     decision["action"] = "skip_duplicate"
                     decision["reason"] = "slot_already_actioned_this_tick"
                 elif max_actions > 0 and action_count >= max_actions:
@@ -703,7 +778,7 @@ def enforce_issues(
                     decision["action"] = "wait_no_target"
                     decision["reason"] = "no_replacement_target"
                 if apply:
-                    if decision["action"] in {"cooldown", "skip_duplicate", "defer_max_actions", "wait_no_target"}:
+                    if decision["action"] not in {"retarget", "stop"}:
                         pass
                     else:
                         actioned_slots.add(slot_key)

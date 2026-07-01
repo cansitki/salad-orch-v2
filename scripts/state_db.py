@@ -1234,9 +1234,18 @@ def price_window(conn: sqlite3.Connection, minutes: int) -> dict[str, float | No
         except ValueError:
             continue
     if not values:
-        return {"min": None, "avg": None, "count": 0.0, "span_seconds": 0.0}
+        return {"min": None, "max": None, "avg": None, "range": None, "count": 0.0, "span_seconds": 0.0}
     span_seconds = max(timestamps) - min(timestamps) if len(timestamps) >= 2 else 0.0
-    return {"min": min(values), "avg": sum(values) / len(values), "count": float(len(values)), "span_seconds": span_seconds}
+    min_price = min(values)
+    max_price = max(values)
+    return {
+        "min": min_price,
+        "max": max_price,
+        "avg": sum(values) / len(values),
+        "range": max_price - min_price,
+        "count": float(len(values)),
+        "span_seconds": span_seconds,
+    }
 
 
 def set_risk_mode(conn: sqlite3.Connection, payload: dict[str, Any]) -> None:

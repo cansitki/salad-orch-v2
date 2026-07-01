@@ -213,17 +213,21 @@ while true; do
   SALAD_FLEET_CONFIG_PATH=config/fleet.kray-only-150.json \
   PRL_FLEET_CONFIG_PATH=config/fleet.kray-only-150.json \
   PRL_ENABLED_ORGS=kray \
-  PRL_GUARD_ENABLED_ISSUES=no_hash,underperform,stuck_no_live \
-  PRL_NOHASH_GRACE_SECONDS=120 \
+  PRL_FILL_MIN_PROFIT_USD_DAY=-0.10 \
+  PRL_OPTIMIZE_MIN_PROFIT_USD_DAY=-0.10 \
+  PRL_GUARD_ENABLED_ISSUES=no_hash,underperform,stuck_no_live,negative \
+  PRL_GUARD_NOHASH_GRACE_SECONDS=120 \
   PRL_EMPTY_STUCK_NON_LIVE_SECONDS=300 \
   PRL_STUCK_NON_LIVE_SECONDS=600 \
+  PRL_GUARD_NEGATIVE_GRACE_SECONDS=3600 \
+  PRL_GUARD_NEGATIVE_MIN_LOSS_USD_DAY=0.05 \
   PRL_GUARD_REPLACEMENT_MODE=base_fill \
-  PRL_GUARD_REPLACEMENT_MIN_PROFIT_USD_DAY=0 \
+  PRL_GUARD_REPLACEMENT_MIN_PROFIT_USD_DAY=-0.10 \
   PRL_GUARD_ALLOW_NEGATIVE_REPLACEMENTS=1 \
   PRL_GUARD_ALLOW_UNSTABLE_REPLACEMENTS=1 \
   PRL_GUARD_UNDERPERFORM_RATIO=0.85 \
   PRL_GUARD_UNDERPERFORM_MIN_DEFICIT_TH=10 \
-  PRL_GUARD_UNDERPERFORM_GRACE_SECONDS=120 \
+  PRL_GUARD_UNDERPERFORM_GRACE_SECONDS=900 \
   PRL_GUARD_MAX_ACTIONS_PER_RUN=16 \
   PRL_GUARD_RETARGET_COOLDOWN_SECONDS=420 \
   python3 scripts/guard.py --once --apply --db state/fleet_scheduler.db --price "$PRICE" --json \
@@ -249,8 +253,9 @@ Safety points:
 - `stuck_no_live` does not stop a slot when no replacement target exists; it
   waits instead. This avoids mass emptying slots when Salad availability is
   thin.
-- Keep `negative` out of `PRL_GUARD_ENABLED_ISSUES` during fill unless the
-  operator explicitly wants loss-based live pruning.
+- `negative` is enabled, but with a one-hour grace and a $0.05/day minimum loss.
+  That prevents killing hashing GPUs for short PRL price moves while still
+  pruning slots that stay unprofitable.
 
 For the same scarce-GPU, below-breakeven fill mode, keep the central scheduler
 aligned with the guard by ranking target profiles by live expected profit and
@@ -265,8 +270,8 @@ while true; do
   PRICE=$(sqlite3 state/fleet_scheduler.db "select selected_price_usd from price_history where selected_price_usd is not null order by sampled_at_utc desc, id desc limit 1")
   PRL_SCHEDULER_ALLOW_UNSTABLE_PROFILES=1 \
   PRL_SCHEDULER_RANK_BY_PROFIT=1 \
-  PRL_FILL_MIN_PROFIT_USD_DAY=-999 \
-  PRL_OPTIMIZE_MIN_PROFIT_USD_DAY=-999 \
+  PRL_FILL_MIN_PROFIT_USD_DAY=-0.10 \
+  PRL_OPTIMIZE_MIN_PROFIT_USD_DAY=-0.10 \
   SALAD_FLEET_CONFIG_PATH=config/fleet.kray-only-150.json \
   PRL_FLEET_CONFIG_PATH=config/fleet.kray-only-150.json \
   PRL_ENABLED_ORGS=kray \
@@ -282,10 +287,48 @@ be negative at current price. Without `PRL_SCHEDULER_ALLOW_UNSTABLE_PROFILES=1`,
 the scheduler can prefer a "safe" but more expensive GPU profile over a recently
 unstable profile with materially lower expected loss.
 
+Apply scheduler targets with a gated fast-fill loop. This loop limits actual
+create/patch/start actions after skipping already-active containers, and pauses
+new starts while too many active/pending slots have no fresh Pearl worker:
+
+```bash
+tmux new-session -d -s salad-orch-v2-safe-fill -c /home/coder/projects/salad '
+zsh -lc '"'"'
+set -a; . ./.env; set +a
+while true; do
+  PRICE=$(sqlite3 state/fleet_scheduler.db "select selected_price_usd from price_history where selected_price_usd is not null order by sampled_at_utc desc, id desc limit 1")
+  SALAD_FLEET_CONFIG_PATH=config/fleet.kray-only-150.json \
+  PRL_FLEET_CONFIG_PATH=config/fleet.kray-only-150.json \
+  PRL_ENABLED_ORGS=kray \
+  python3 scripts/fast_fill_targets.py \
+    --org kray \
+    --workers 4 \
+    --price "$PRICE" \
+    --min-profit -0.10 \
+    --patch-existing \
+    --actionable-limit 8 \
+    --max-zero-worker-active 12 \
+    --db state/fleet_scheduler.db \
+    --json >> state/logs/safe-fill.compact.jsonl
+  sleep 90
+done
+'"'"'
+'
+```
+
+Profit reports should keep two numbers separate:
+
+- `hashing_only`: current run-rate for slots with fresh Pearl workers. This is
+  the profit number used for live mining decisions.
+- `zero_worker_active`: temporary probing/deploying cost. Treat it as a guard
+  pressure signal, not as the final daily mining run-rate, unless it persists
+  beyond the no-hash/stuck windows.
+
 Watch it with:
 
 ```bash
 tail -f state/logs/guard-stuck.compact.jsonl
+tail -f state/logs/safe-fill.compact.jsonl
 tail -f state/logs/guard-stuck.err
 ```
 

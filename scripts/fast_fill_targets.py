@@ -281,7 +281,82 @@ def _fast_apply_one(
         }
 
 
-def _record_results(db_path: str | None, org_label: str, results: list[dict[str, Any]]) -> None:
+def _skip_active_result(target: dict[str, Any]) -> dict[str, Any]:
+    started_at = time.monotonic()
+    existing_info = _status_info(target.get("_existing_container"))
+    return {
+        "slot_name": str(target["slot_name"]),
+        "profile_key": str(target.get("profile_key") or ""),
+        "action": "skip_active_container",
+        "ok": True,
+        "created": False,
+        "patched": False,
+        "started": False,
+        "status": existing_info["status"],
+        "instance_counts": existing_info["instance_counts"],
+        "duration_ms": int((time.monotonic() - started_at) * 1000),
+    }
+
+
+def _deferred_actionable_result(target: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "slot_name": str(target["slot_name"]),
+        "profile_key": str(target.get("profile_key") or ""),
+        "action": "defer_actionable_limit",
+        "ok": True,
+        "created": False,
+        "patched": False,
+        "started": False,
+        "duration_ms": 0,
+    }
+
+
+def _active_without_hash_target(target: dict[str, Any]) -> bool:
+    existing_info = _status_info(target.get("_existing_container"))
+    if not existing_info["active_or_pending"]:
+        return False
+    try:
+        live_worker_count = int(target.get("live_worker_count") or 0)
+    except (TypeError, ValueError):
+        live_worker_count = 0
+    try:
+        live_worker_th = float(target.get("live_worker_th") or 0.0)
+    except (TypeError, ValueError):
+        live_worker_th = 0.0
+    return live_worker_count <= 0 and live_worker_th <= 0.0
+
+
+def _target_is_actionable(target: dict[str, Any], *, touch_active: bool) -> bool:
+    existing_info = _status_info(target.get("_existing_container"))
+    return not (existing_info["exists"] and existing_info["active_or_pending"] and not touch_active)
+
+
+def _split_actionable_targets(
+    targets: list[dict[str, Any]],
+    *,
+    touch_active: bool,
+    actionable_limit: int,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    actionable: list[dict[str, Any]] = []
+    skipped: list[dict[str, Any]] = []
+    for target in targets:
+        if not _target_is_actionable(target, touch_active=touch_active):
+            skipped.append(_skip_active_result(target))
+            continue
+        if actionable_limit > 0 and len(actionable) >= actionable_limit:
+            skipped.append(_deferred_actionable_result(target))
+            continue
+        actionable.append(target)
+    return actionable, skipped
+
+
+def _record_results(
+    db_path: str | None,
+    org_label: str,
+    results: list[dict[str, Any]],
+    *,
+    extra_payload: dict[str, Any] | None = None,
+) -> None:
     with state_db.connect(db_path) as conn:
         state_db.init_db(conn)
         for result in results:
@@ -299,17 +374,20 @@ def _record_results(db_path: str | None, org_label: str, results: list[dict[str,
                     "payload": result,
                 },
             )
+        event_payload = {
+            "results": len(results),
+            "ok": sum(1 for item in results if item.get("ok")),
+            "failed": sum(1 for item in results if not item.get("ok")),
+            "actions": _counts(result["action"] for result in results),
+        }
+        if extra_payload:
+            event_payload.update(extra_payload)
         state_db.record_event(
             conn,
             "fast_fill_targets",
             source=f"fast_fill:{org_label}",
             message="fast direct target apply finished",
-            payload={
-                "results": len(results),
-                "ok": sum(1 for item in results if item.get("ok")),
-                "failed": sum(1 for item in results if not item.get("ok")),
-                "actions": _counts(result["action"] for result in results),
-            },
+            payload=event_payload,
         )
         conn.commit()
 
@@ -334,6 +412,8 @@ def fast_fill_org(
     touch_active: bool,
     skip_live_hashing: bool,
     limit: int,
+    actionable_limit: int,
+    max_zero_worker_active: int,
 ) -> dict[str, Any]:
     config = load_config()
     orgs = {org.label: org for org in config.enabled_orgs()}
@@ -368,6 +448,27 @@ def fast_fill_org(
     )
     for target in targets:
         target["_existing_container"] = existing_by_name.get(str(target["slot_name"]))
+    zero_worker_active_count = sum(1 for target in targets if _active_without_hash_target(target))
+    if max_zero_worker_active >= 0 and zero_worker_active_count >= max_zero_worker_active:
+        payload = {
+            "org_label": org_label,
+            "target_count": len(targets),
+            "actionable_target_count": 0,
+            "zero_worker_active_count": zero_worker_active_count,
+            "max_zero_worker_active": max_zero_worker_active,
+            "workers": 0,
+            "ok": 0,
+            "failed": 0,
+            "actions": {"skip_zero_worker_gate": 1},
+            "errors": {},
+        }
+        _record_results(db_path, org_label, [], extra_payload=payload)
+        return payload
+    actionable_targets, skipped_results = _split_actionable_targets(
+        targets,
+        touch_active=touch_active,
+        actionable_limit=actionable_limit,
+    )
     results: list[dict[str, Any]] = []
     max_workers = max(1, int(workers))
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -380,15 +481,31 @@ def fast_fill_org(
                 patch_existing=patch_existing,
                 touch_active=touch_active,
             ): target
-            for target in targets
+            for target in actionable_targets
         }
         for future in concurrent.futures.as_completed(future_map):
             results.append(future.result())
+    results.extend(skipped_results)
 
-    _record_results(db_path, org_label, results)
+    _record_results(
+        db_path,
+        org_label,
+        results,
+        extra_payload={
+            "actionable_target_count": len(actionable_targets),
+            "deferred_target_count": sum(1 for item in skipped_results if item.get("action") == "defer_actionable_limit"),
+            "zero_worker_active_count": zero_worker_active_count,
+            "max_zero_worker_active": max_zero_worker_active,
+            "actionable_limit": actionable_limit,
+        },
+    )
     return {
         "org_label": org_label,
         "target_count": len(targets),
+        "actionable_target_count": len(actionable_targets),
+        "deferred_target_count": sum(1 for item in skipped_results if item.get("action") == "defer_actionable_limit"),
+        "zero_worker_active_count": zero_worker_active_count,
+        "max_zero_worker_active": max_zero_worker_active,
         "workers": max_workers,
         "ok": sum(1 for item in results if item.get("ok")),
         "failed": sum(1 for item in results if not item.get("ok")),
@@ -409,6 +526,8 @@ def main() -> None:
     parser.add_argument("--touch-active", action="store_true")
     parser.add_argument("--include-live-hashing", action="store_true")
     parser.add_argument("--limit", type=int, default=0)
+    parser.add_argument("--actionable-limit", type=int, default=0)
+    parser.add_argument("--max-zero-worker-active", type=int, default=-1)
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
 
@@ -423,13 +542,16 @@ def main() -> None:
         touch_active=args.touch_active,
         skip_live_hashing=not args.include_live_hashing,
         limit=args.limit,
+        actionable_limit=args.actionable_limit,
+        max_zero_worker_active=args.max_zero_worker_active,
     )
     if args.json:
         print(json_dumps(payload))
     else:
         print(
             f"fast_fill org={payload['org_label']} ok={payload['ok']}/{payload['target_count']} "
-            f"failed={payload['failed']} workers={payload['workers']}"
+            f"failed={payload['failed']} actionable={payload.get('actionable_target_count', 0)} "
+            f"zero_worker_active={payload.get('zero_worker_active_count', 0)} workers={payload['workers']}"
         )
         for action, count in sorted(payload["actions"].items(), key=lambda item: item[1], reverse=True):
             print(f"{count:>4} {action}")

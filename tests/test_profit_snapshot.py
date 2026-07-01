@@ -3,6 +3,7 @@ from __future__ import annotations
 import pathlib
 import json
 import sys
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -11,6 +12,8 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
 import salad_prl_profit_snapshot
+import state_db
+from config_loader import load_config
 
 
 class ProfitSnapshotTest(unittest.TestCase):
@@ -97,6 +100,71 @@ class ProfitSnapshotTest(unittest.TestCase):
         self.assertEqual(points, 2)
         self.assertEqual(fee, 0.01)
         self.assertAlmostEqual(value, 20 * 0.99 * 0.92)
+
+    def test_write_snapshot_db_persists_live_workers_and_profit_rows(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = str(pathlib.Path(tmpdir) / "fleet.db")
+            with state_db.connect(db_path) as conn:
+                state_db.init_db(conn)
+                state_db.sync_config(conn, load_config())
+                conn.commit()
+
+            snapshot = {
+                "at_utc": "2026-07-01T12:00:00+00:00",
+                "assumed_prl_price": 0.55,
+                "live_market_prl_price": 0.47,
+                "fresh_workers": 1,
+                "totals": {
+                    "th": 111.5,
+                    "cost_day": 2.16,
+                    "revenue_day": 3.0,
+                    "profit_day": 0.84,
+                },
+                "slots": [
+                    {
+                        "worker": "kray-prl-roi-01-pearlfortune-inst-1",
+                        "slot": "prl-kray-roi-01",
+                        "org": "kray",
+                        "gpu": "3090",
+                        "priority": "batch",
+                        "th": 111.5,
+                        "cost_day": 2.16,
+                        "revenue_day": 3.0,
+                        "profit_day": 0.84,
+                        "last_stats_at": "2026-07-01T11:59:00+00:00",
+                    }
+                ],
+            }
+
+            salad_prl_profit_snapshot.write_snapshot_db(snapshot, db_path=db_path, decision_price=0.55)
+
+            with state_db.connect(db_path) as conn:
+                slot = conn.execute(
+                    """
+                    SELECT observed_status, observed_profile_key, live_hashrate_th, protected
+                    FROM slots
+                    WHERE org_label = 'kray' AND slot_name = 'prl-kray-roi-01'
+                    """
+                ).fetchone()
+                worker = conn.execute("SELECT * FROM workers").fetchone()
+                rows = conn.execute(
+                    """
+                    SELECT scope, org_label, slot_name, profile_key, th, revenue_day
+                    FROM profit_snapshots
+                    ORDER BY id
+                    """
+                ).fetchall()
+
+            self.assertEqual(slot["observed_status"], "running")
+            self.assertEqual(slot["observed_profile_key"], "3090:batch:2048")
+            self.assertEqual(slot["live_hashrate_th"], 111.5)
+            self.assertEqual(slot["protected"], 1)
+            self.assertEqual(worker["worker_name"], "kray-prl-roi-01-pearlfortune-inst-1")
+            self.assertEqual(worker["reported_hashrate_th"], 111.5)
+            self.assertEqual(worker["stale"], 0)
+            self.assertEqual([row["scope"] for row in rows], ["fleet", "slot"])
+            self.assertEqual(rows[1]["profile_key"], "3090:batch:2048")
+            self.assertEqual(rows[1]["revenue_day"], 3.0)
 
 
 if __name__ == "__main__":

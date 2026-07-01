@@ -12,6 +12,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 import reporter
+import salad_prl_profit_snapshot
 import state_db
 from config_loader import load_config
 from fleet_common import compact_json, env_float, json_dumps, safe_public_payload, utc_now
@@ -230,12 +231,29 @@ def record_slot_active_snapshots(conn, snapshot_id: int) -> int:
     return len(rows)
 
 
-def record_active_snapshot(db_path: str | None = None) -> dict[str, Any]:
+def refresh_profit_snapshot(db_path: str | None = None, *, price: float | None = None) -> dict[str, Any]:
+    snapshot_price = price
+    if snapshot_price is None:
+        configured = os.environ.get("PRL_AUDIT_PROFIT_SNAPSHOT_PRICE")
+        snapshot_price = float(configured) if configured else salad_prl_profit_snapshot.default_snapshot_price()
+    snapshot = salad_prl_profit_snapshot.build_snapshot(float(snapshot_price))
+    salad_prl_profit_snapshot.write_snapshot_db(snapshot, db_path=db_path, decision_price=float(snapshot_price))
+    return snapshot
+
+
+def record_active_snapshot(
+    db_path: str | None = None,
+    *,
+    refresh_profit: bool = False,
+    profit_snapshot_price: float | None = None,
+) -> dict[str, Any]:
     config = load_config()
     with state_db.connect(db_path) as conn:
         state_db.init_db(conn)
         state_db.sync_config(conn, config)
         conn.commit()
+    if refresh_profit:
+        refresh_profit_snapshot(db_path, price=profit_snapshot_price)
     report = reporter.build_report(db_path)
     with state_db.connect(db_path) as conn:
         state_db.init_db(conn)
@@ -610,8 +628,14 @@ def run_once(
     balance_json: str | None = None,
     balance_file: str | None = None,
     monitor_db: str | None = None,
+    refresh_profit_snapshot: bool = False,
+    profit_snapshot_price: float | None = None,
 ) -> dict[str, Any]:
-    active = record_active_snapshot(db_path)
+    active = record_active_snapshot(
+        db_path,
+        refresh_profit=refresh_profit_snapshot,
+        profit_snapshot_price=profit_snapshot_price,
+    )
     balance_results = None
     if force_balance or balance_audit_due(db_path, balance_interval_seconds):
         balances, source = load_balance_values(balance_json=balance_json, balance_file=balance_file, monitor_db=monitor_db)
@@ -630,6 +654,12 @@ def main() -> None:
     parser.add_argument("--balance-json", default=None, help="JSON object of org_label to balance USD.")
     parser.add_argument("--balance-file", default=None, help="JSON file of org_label to balance USD, refreshed externally.")
     parser.add_argument("--monitor-db", default=None, help="Existing salad-pearl-monitor SQLite DB with salad_org_balances.")
+    parser.add_argument(
+        "--refresh-profit-snapshot",
+        action="store_true",
+        help="Fetch Pearl live workers and persist profit snapshots before recording the fleet audit.",
+    )
+    parser.add_argument("--profit-snapshot-price", type=float, default=None)
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
 
@@ -642,6 +672,8 @@ def main() -> None:
                 balance_json=args.balance_json,
                 balance_file=args.balance_file,
                 monitor_db=args.monitor_db,
+                refresh_profit_snapshot=args.refresh_profit_snapshot,
+                profit_snapshot_price=args.profit_snapshot_price,
             )
         except Exception as exc:
             record_runtime_failure(args.db, "fleet_audit", exc)

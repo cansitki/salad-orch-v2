@@ -289,6 +289,29 @@ class FleetAuditTest(unittest.TestCase):
         self.assertEqual(kray_slot["profit_day"], 0.4)
         self.assertIsNotNone(heartbeat)
 
+    def test_record_active_snapshot_refreshes_profit_when_enabled(self) -> None:
+        report = {
+            "assigned_targets": 40,
+            "target_slots": 40,
+            "live_hashing_gpus": 1,
+            "live_th": 100.0,
+            "status_counts": {"running": 1},
+            "profit_at_0_64": {"cost_day": 1.2, "profit_day": 0.4},
+            "profit_at_live": {"market_profit_day": 0.5},
+        }
+        with (
+            patch.object(fleet_audit, "refresh_profit_snapshot", return_value={"fresh_workers": 1}) as refresh,
+            patch.object(fleet_audit.reporter, "build_report", return_value=report),
+        ):
+            payload = fleet_audit.record_active_snapshot(
+                self.db_path,
+                refresh_profit=True,
+                profit_snapshot_price=0.55,
+            )
+
+        refresh.assert_called_once_with(self.db_path, price=0.55)
+        self.assertEqual(payload["live_hashing_gpus"], 1)
+
     def test_balance_audit_marks_expected_hourly_cost_ok(self) -> None:
         balances = {"kray": 100.0, "kry1": 100.0, "kray2": 100.0, "kray3": 100.0}
         with patch.object(fleet_audit, "utc_now", return_value="2026-06-24T10:00:00+00:00"):

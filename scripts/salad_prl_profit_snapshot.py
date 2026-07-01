@@ -15,6 +15,8 @@ import urllib.request
 from datetime import UTC, datetime
 from typing import Any
 
+import profit_model
+import state_db
 from config_loader import load_config
 
 
@@ -518,6 +520,130 @@ def append_snapshot_csv(snapshot: dict[str, Any]) -> None:
         print(f"warning: failed to append snapshot CSV {path}: {type(exc).__name__}: {exc}", file=sys.stderr)
 
 
+def snapshot_profile_key(conn, row: dict[str, Any]) -> str | None:
+    from_payload = profit_model.observed_profile_key(row.get("gpu"), row.get("priority"))
+    if from_payload:
+        return from_payload
+    slot = conn.execute(
+        """
+        SELECT observed_profile_key, desired_profile_key
+        FROM slots
+        WHERE org_label = ? AND slot_name = ?
+        """,
+        (row.get("org"), row.get("slot")),
+    ).fetchone()
+    if slot is None:
+        return None
+    return slot["observed_profile_key"] or slot["desired_profile_key"]
+
+
+def snapshot_worker_row(row: dict[str, Any]) -> dict[str, Any] | None:
+    worker_name = str(row.get("worker") or "")
+    if not worker_name or worker_name == "NO_POOL_HASHRATE":
+        return None
+    slot_name = str(row.get("slot") or "")
+    org_label = str(row.get("org") or "")
+    if not slot_name or not org_label:
+        return None
+    return {
+        "worker_name": worker_name,
+        "org_label": org_label,
+        "slot_name": slot_name,
+        "instance_id": worker_instance_id(worker_name),
+        "gpu_key": row.get("gpu"),
+        "reported_hashrate_th": row.get("th"),
+        "stale": False,
+        "last_stats_at": row.get("last_stats_at"),
+    }
+
+
+def write_snapshot_db(snapshot: dict[str, Any], *, db_path: str | None = None, decision_price: float | None = None) -> None:
+    snapshot_at = snapshot.get("at_utc") or datetime.now(UTC).isoformat(timespec="seconds")
+    price = float(decision_price if decision_price is not None else snapshot.get("assumed_prl_price") or 0)
+    totals = snapshot.get("totals") or {}
+    with state_db.connect(db_path) as conn:
+        state_db.init_db(conn)
+        state_db.sync_config(conn, load_config())
+        state_db.record_profit_snapshot(
+            conn,
+            {
+                "at_utc": snapshot_at,
+                "scope": "fleet",
+                "decision_price_usd": price,
+                "live_price_usd": snapshot.get("live_market_prl_price"),
+                "th": totals.get("th"),
+                "cost_day": totals.get("cost_day"),
+                "revenue_day": totals.get("revenue_day"),
+                "profit_day": totals.get("profit_day"),
+                "payload": snapshot,
+            },
+        )
+        state_db.reset_slot_hashrates(conn)
+        worker_rows = []
+        for row in snapshot.get("slots") or []:
+            org_label = row.get("org")
+            slot_name = row.get("slot")
+            if not org_label or not slot_name:
+                continue
+            profile_key = snapshot_profile_key(conn, row)
+            state_db.update_slot_observation(
+                conn,
+                {
+                    "org_label": org_label,
+                    "slot_name": slot_name,
+                    "observed_profile_key": profile_key,
+                    "observed_status": "running",
+                    "live_hashrate_th": row.get("th"),
+                    "protected": True,
+                    "updated_at_utc": snapshot_at,
+                },
+            )
+            worker_row = snapshot_worker_row(row)
+            if worker_row:
+                worker_rows.append(worker_row)
+            state_db.record_profit_snapshot(
+                conn,
+                {
+                    "at_utc": snapshot_at,
+                    "scope": "slot",
+                    "org_label": org_label,
+                    "slot_name": slot_name,
+                    "profile_key": profile_key,
+                    "decision_price_usd": price,
+                    "live_price_usd": snapshot.get("live_market_prl_price"),
+                    "th": row.get("th"),
+                    "cost_day": row.get("cost_day"),
+                    "revenue_day": row.get("revenue_day"),
+                    "profit_day": row.get("profit_day"),
+                    "payload": row,
+                },
+            )
+        state_db.sync_worker_rows(conn, worker_rows)
+        state_db.write_heartbeat(
+            conn,
+            "prl_profit_snapshot",
+            stale_after_seconds=900,
+            payload={
+                "fresh_workers": snapshot.get("fresh_workers"),
+                "slot_snapshots": len(snapshot.get("slots") or []),
+                "live_market_prl_price": snapshot.get("live_market_prl_price"),
+                "decision_price_usd": price,
+            },
+        )
+        state_db.record_event(
+            conn,
+            "prl_profit_snapshot_recorded",
+            source="salad_prl_profit_snapshot",
+            message="PRL profit snapshot written to fleet DB",
+            payload={
+                "fresh_workers": snapshot.get("fresh_workers"),
+                "slot_snapshots": len(snapshot.get("slots") or []),
+                "live_market_prl_price": snapshot.get("live_market_prl_price"),
+            },
+        )
+        conn.commit()
+
+
 def build_snapshot(price: float) -> dict[str, Any]:
     load_env()
     if not WALLET or WALLET == "prl1...":
@@ -917,8 +1043,13 @@ def build_snapshot(price: float) -> dict[str, Any]:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--price", type=float, default=default_snapshot_price())
+    parser.add_argument("--write-db", action="store_true", help="Persist the live PRL snapshot into the fleet DB.")
+    parser.add_argument("--db", default=None, help="Fleet DB path for --write-db.")
     args = parser.parse_args()
-    print(json.dumps(build_snapshot(args.price), indent=2, sort_keys=True))
+    snapshot = build_snapshot(args.price)
+    if args.write_db:
+        write_snapshot_db(snapshot, db_path=args.db, decision_price=args.price)
+    print(json.dumps(snapshot, indent=2, sort_keys=True))
 
 
 if __name__ == "__main__":

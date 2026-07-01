@@ -265,6 +265,7 @@ def _run_shadow(
     db_path: str | None,
     price: float | None,
     fee: float | None,
+    schedule_width: int,
     require_secrets: bool,
     require_fresh_heartbeats: bool,
     allow_degraded: bool,
@@ -279,6 +280,7 @@ def _run_shadow(
             db_path=db_path,
             price=price,
             fee=fee,
+            schedule_width=schedule_width,
             apply_workers=False,
             apply_guard=False,
             skip_guard=True,
@@ -299,6 +301,7 @@ def _run_action(
     org: str | None,
     price: float | None,
     fee: float | None,
+    schedule_width: int,
     require_secrets: bool,
     allow_pending_retarget: bool,
     pending_retarget_after_seconds: int,
@@ -312,6 +315,7 @@ def _run_action(
                 db_path=db_path,
                 price=price,
                 fee=fee,
+                schedule_width=schedule_width,
                 apply_guard=True,
                 require_secrets=require_secrets,
                 worker_parallelism=worker_parallelism,
@@ -322,6 +326,7 @@ def _run_action(
                 db_path=db_path,
                 price=price,
                 fee=fee,
+                schedule_width=schedule_width,
                 apply_workers=True,
                 confirm_all_orgs=True,
                 allow_pending_retarget=True,
@@ -340,6 +345,7 @@ def _run_action(
                 org_label=org,
                 price=price,
                 fee=fee,
+                schedule_width=schedule_width,
                 apply_workers=True,
                 allow_pending_retarget=allow_pending_retarget,
                 pending_retarget_after_seconds=pending_retarget_after_seconds,
@@ -356,6 +362,7 @@ def run_monitor_tick(
     db_path: str | None = None,
     price: float | None = None,
     fee: float | None = None,
+    schedule_width: int = 10,
     require_secrets: bool = False,
     require_fresh_heartbeats: bool = False,
     allow_degraded_shadow: bool = False,
@@ -393,6 +400,7 @@ def run_monitor_tick(
                 db_path=db_path,
                 price=price,
                 fee=fee,
+                schedule_width=schedule_width,
                 require_secrets=require_secrets,
                 require_fresh_heartbeats=require_fresh_heartbeats,
                 allow_degraded=allow_degraded_shadow,
@@ -462,6 +470,7 @@ def run_monitor_tick(
                         org=org,
                         price=price,
                         fee=fee,
+                        schedule_width=schedule_width,
                         require_secrets=require_secrets,
                         allow_pending_retarget=allow_pending_retarget,
                         pending_retarget_after_seconds=pending_retarget_after_seconds,
@@ -591,6 +600,7 @@ def main() -> None:
     parser.add_argument("--db", default=None)
     parser.add_argument("--price", type=float, default=None)
     parser.add_argument("--fee", type=float, default=None)
+    parser.add_argument("--width", type=int, default=10, help="Number of top scheduler profiles to target.")
     parser.add_argument("--require-secrets", action="store_true")
     parser.add_argument("--require-fresh-heartbeats", action="store_true")
     parser.add_argument(
@@ -653,6 +663,7 @@ def main() -> None:
             db_path=args.db,
             price=args.price,
             fee=args.fee,
+            schedule_width=args.width,
             require_secrets=args.require_secrets,
             require_fresh_heartbeats=args.require_fresh_heartbeats,
             allow_degraded_shadow=args.allow_degraded_shadow,

@@ -22,7 +22,17 @@ def _scheduler_mode(config: FleetConfig, db_mode: str | None) -> str:
 
 def _eligible_profiles(scores: list[dict[str, Any]]) -> list[dict[str, Any]]:
     eligible = [row for row in scores if row.get("eligible")]
-    eligible.sort(key=lambda item: (float(item["score"]), float(item["expected_profit_day"])), reverse=True)
+    if env_int("PRL_SCHEDULER_RANK_BY_PROFIT", 0):
+        eligible.sort(
+            key=lambda item: (
+                float(item["expected_profit_day"]),
+                -float(item.get("break_even_price_usd") or 999999),
+                float(item["score"]),
+            ),
+            reverse=True,
+        )
+    else:
+        eligible.sort(key=lambda item: (float(item["score"]), float(item["expected_profit_day"])), reverse=True)
     return eligible
 
 
@@ -70,6 +80,7 @@ def build_targets(
     recycle_current_pending_first = bool(env_int("PRL_FILL_RECYCLE_CURRENT_PENDING_FIRST", 1))
     prefer_reported_available_score_order = bool(env_int("PRL_FILL_PREFER_REPORTED_AVAILABLE_SCORE_ORDER", 1))
     prefer_reported_available_capacity_first = bool(env_int("PRL_FILL_REPORTED_AVAILABLE_CAPACITY_FIRST", 0))
+    fallback_within_width_only = bool(env_int("PRL_SCHEDULER_FALLBACK_WITHIN_WIDTH_ONLY", 0))
     min_profit_day = config.risk.min_profit_for_mode("optimize" if mode == "optimize" else "fill")
     assigned_by_org_profile: dict[tuple[str, str], int] = {}
     targets: list[dict[str, Any]] = []
@@ -236,7 +247,7 @@ def build_targets(
             skip_profile_key=skip_profile_key,
             min_profit_day=min_profit_day,
             require_reported_available=True,
-            candidate_profiles=eligible_profiles,
+            candidate_profiles=profiles if fallback_within_width_only else eligible_profiles,
         )
         if selected is not None:
             profile_index, profile = selected

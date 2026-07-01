@@ -1,0 +1,16 @@
+{
+  "organizations": [
+    {
+      "label": "kray",
+      "slug": "kray",
+      "api_key_env": "SALAD_API_KEY_2",
+      "slot_prefix": "prl-kray-roi",
+      "slots": 150,
+      "enabled": true,
+      "worker_prefix": "kray-prl",
+      "worker_slot_prefix": "kray-roi-",
+      "pool_worker_prefix": "kray-prl-kray",
+      "display_prefix": "PearlFortune KRAY"
+    }
+  ]
+}

@@ -3,14 +3,14 @@ from __future__ import annotations
 
 import argparse
 import json
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from datetime import UTC, datetime
 from typing import Any
 
 import profit_model
 import state_db
 from config_loader import load_config
-from fleet_common import env_bool, env_float, json_dumps, utc_now
+from fleet_common import env_bool, env_float, env_int, json_dumps, utc_now
 
 
 def _latest_float(row: Any, key: str, fallback: float) -> float:
@@ -63,14 +63,17 @@ def _snapshot_profile_key(row: Any, payload: dict[str, Any]) -> str | None:
 
 def profile_runtime_stats(conn) -> dict[str, dict[str, float]]:
     stats: dict[str, dict[str, float]] = {}
+    lookback_hours = max(1.0, env_float("PRL_PROFILE_RUNTIME_LOOKBACK_HOURS", 24.0))
+    lookback_window = f"-{lookback_hours:g} hours"
     rows = conn.execute(
         """
         SELECT *
         FROM profit_snapshots
         WHERE scope = 'slot'
-          AND julianday(at_utc) >= julianday('now', '-24 hours')
+          AND julianday(at_utc) >= julianday('now', ?)
         ORDER BY at_utc ASC, id ASC
-        """
+        """,
+        (lookback_window,),
     ).fetchall()
     live_snapshots: list[dict[str, Any]] = []
     for row in rows:
@@ -86,6 +89,7 @@ def profile_runtime_stats(conn) -> dict[str, dict[str, float]]:
                 "no_hash_samples": 0,
                 "negative_samples": 0,
                 "th_total": 0.0,
+                "live_th_total": 0.0,
                 "profit_total": 0.0,
                 "time_to_hash_samples": 0,
                 "time_to_hash_total_seconds": 0.0,
@@ -98,6 +102,7 @@ def profile_runtime_stats(conn) -> dict[str, dict[str, float]]:
         item["profit_total"] += profit_day
         if th > 0:
             item["live_hash_samples"] += 1
+            item["live_th_total"] += th
             live_snapshots.append(
                 {
                     "org_label": row["org_label"],
@@ -117,11 +122,12 @@ def profile_runtime_stats(conn) -> dict[str, dict[str, float]]:
         FROM attempts
         WHERE profile_key IS NOT NULL
           AND ok = 1
-          AND julianday(at_utc) >= julianday('now', '-24 hours')
+          AND julianday(at_utc) >= julianday('now', ?)
           AND action NOT LIKE 'dry_run_%'
           AND action IN ('create', 'patch', 'start', 'guard_retarget')
         ORDER BY at_utc ASC
-        """
+        """,
+        (lookback_window,),
     ).fetchall()
     for attempt in attempts:
         attempt_profile = str(attempt["profile_key"])
@@ -149,6 +155,7 @@ def profile_runtime_stats(conn) -> dict[str, dict[str, float]]:
                 "no_hash_samples": 0,
                 "negative_samples": 0,
                 "th_total": 0.0,
+                "live_th_total": 0.0,
                 "profit_total": 0.0,
                 "time_to_hash_samples": 0,
                 "time_to_hash_total_seconds": 0.0,
@@ -197,11 +204,35 @@ def score_profiles(
             if selected_mode in {"boost_fill", "aggressive_boost", "optimize"}
             else config.risk.base_allowed_priorities
         )
+        use_observed_th = env_bool("PRL_SCORER_USE_OBSERVED_TH", False)
+        observed_min_live_samples = max(1, env_int("PRL_SCORER_OBSERVED_TH_MIN_LIVE_SAMPLES", 20))
+        observed_max_multiplier = env_float("PRL_SCORER_OBSERVED_TH_MAX_MULTIPLIER", 2.0)
+        observed_min_multiplier = env_float("PRL_SCORER_OBSERVED_TH_MIN_MULTIPLIER", 0.0)
 
         rows: list[dict[str, Any]] = []
         for profile in profiles:
+            runtime = runtime_stats.get(profile.profile_key, {})
+            live_hash_samples = float(runtime.get("live_hash_samples", 0))
+            avg_observed_live_th = (
+                float(runtime.get("live_th_total", 0)) / live_hash_samples if live_hash_samples else 0.0
+            )
+            effective_expected_th = float(profile.expected_th)
+            expected_th_source = "static"
+            if (
+                use_observed_th
+                and live_hash_samples >= observed_min_live_samples
+                and avg_observed_live_th > 0
+            ):
+                observed_th = avg_observed_live_th
+                if observed_max_multiplier > 0:
+                    observed_th = min(observed_th, profile.expected_th * observed_max_multiplier)
+                if observed_min_multiplier > 0:
+                    observed_th = max(observed_th, profile.expected_th * observed_min_multiplier)
+                effective_expected_th = observed_th
+                expected_th_source = "observed_live_avg"
+            estimate_profile = replace(profile, expected_th=effective_expected_th)
             estimate = profit_model.expected_profit(
-                profile,
+                estimate_profile,
                 decision_price_usd=decision_price,
                 gross_prl_per_th_day=gross,
                 pearl_fee_rate=fee,
@@ -210,7 +241,6 @@ def score_profiles(
             stats = attempt_stats.get(profile.profile_key, {})
             success = float(stats.get("success", 0))
             failure = float(stats.get("failure", 0))
-            runtime = runtime_stats.get(profile.profile_key, {})
             spikes = spike_stats.get(profile.profile_key, {})
             attempt_no_hash = float(stats.get("no_hash", 0))
             runtime_no_hash = float(runtime.get("no_hash_samples", 0))
@@ -229,10 +259,7 @@ def score_profiles(
                 spike_penalty += env_float("PRL_SPIKE_SCORE_UNSTABLE_PENALTY", 80.0)
             capacity_failure = float(stats.get("capacity_failure", 0))
             profit_samples = float(runtime.get("profit_samples", 0))
-            live_hash_samples = float(runtime.get("live_hash_samples", 0))
-            avg_observed_th = (
-                float(runtime.get("th_total", 0)) / profit_samples if profit_samples else 0.0
-            )
+            avg_observed_th = avg_observed_live_th
             live_hash_sample_rate = live_hash_samples / profit_samples if profit_samples else None
             no_hash_sample_rate = float(runtime.get("no_hash_samples", 0)) / profit_samples if profit_samples else 0.0
             negative_sample_rate = negative / profit_samples if profit_samples else 0.0
@@ -253,7 +280,7 @@ def score_profiles(
             total = success + failure
             success_rate = success / total if total else 0.5
             tier = profit_model.risk_tier(
-                profile,
+                estimate_profile,
                 base_price_usd=config.risk.base_decision_price,
                 boost_price_usd=max(decision_price, config.risk.base_decision_price),
                 gross_prl_per_th_day=gross,
@@ -265,7 +292,7 @@ def score_profiles(
 
             score = estimate.profit_day * 100
             score += success_rate * 20
-            score += profile.expected_th * 0.03
+            score += effective_expected_th * 0.03
             score += availability_weight
             if live_hash_sample_rate is not None:
                 score += live_hash_sample_rate * 15
@@ -309,6 +336,9 @@ def score_profiles(
                 "profit_samples": profit_samples,
                 "live_hash_samples": live_hash_samples,
                 "avg_observed_th": round(avg_observed_th, 4),
+                "expected_th_source": expected_th_source,
+                "static_expected_th": round(float(profile.expected_th), 4),
+                "effective_expected_th": round(effective_expected_th, 4),
                 "live_hash_sample_rate": round(live_hash_sample_rate, 4) if live_hash_sample_rate is not None else None,
                 "no_hash_sample_rate": round(no_hash_sample_rate, 4),
                 "negative_sample_rate": round(negative_sample_rate, 4),
@@ -324,7 +354,7 @@ def score_profiles(
                 "allowed_priorities": list(allowed),
             }
             row = {
-                **asdict(profile),
+                **asdict(estimate_profile),
                 "mode": selected_mode,
                 "decision_price_usd": decision_price,
                 "gross_prl_per_th_day": gross,

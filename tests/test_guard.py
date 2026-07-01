@@ -504,6 +504,46 @@ class GuardDecisionTest(unittest.TestCase):
         self.assertEqual(decisions[0]["grace_seconds"], 60)
         self.assertEqual(decisions[0]["action"], "retarget")
 
+    def test_guard_negative_stable_price_can_reduce_grace(self) -> None:
+        self.add_price_sample(minutes_ago=59, price=0.45)
+        self.add_price_sample(minutes_ago=0, price=0.47)
+
+        with patch.dict(
+            "os.environ",
+            {
+                "PRL_GUARD_NEGATIVE_GRACE_SECONDS": "3600",
+                "PRL_GUARD_NEGATIVE_STABLE_GRACE_SECONDS": "0",
+                "PRL_GUARD_NEGATIVE_PRICE_STABILITY_REQUIRE_HISTORY": "1",
+                "PRL_GUARD_NEGATIVE_PRICE_STABILITY_MAX_RANGE_USD": "0.03",
+                "PRL_GUARD_REPLACEMENT_MIN_PROFIT_USD_DAY": "999",
+                "PRL_GUARD_STOP_WITHOUT_TARGET_ISSUES": "negative",
+            },
+            clear=False,
+        ):
+            decisions = guard.enforce_issues(
+                db_path=self.db_path,
+                decision_price=0.64,
+                apply=False,
+                analysis={
+                    "fresh_workers": 3,
+                    "running_no_live_billable_slots": [],
+                    "negative_slots": [
+                        {
+                            "org": "kray",
+                            "slot": "prl-kray-roi-01",
+                            "gpu": "3090",
+                            "priority": "batch",
+                            "profit_day": -1.0,
+                        }
+                    ],
+                },
+            )
+
+        self.assertEqual(decisions[0]["price_stability"]["reason"], "price_stable")
+        self.assertEqual(decisions[0]["grace_seconds"], 0)
+        self.assertTrue(decisions[0]["stable_price_grace_applied"])
+        self.assertEqual(decisions[0]["action"], "stop")
+
     def test_guard_negative_waits_when_price_window_is_unstable(self) -> None:
         self.make_issue_old("negative")
         self.add_price_sample(minutes_ago=59, price=0.45)

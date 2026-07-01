@@ -112,6 +112,12 @@ def negative_window_max_min_loss_usd_day() -> float:
     return max(0.0, env_float("PRL_GUARD_NEGATIVE_WINDOW_MAX_MIN_LOSS_USD_DAY", default_loss))
 
 
+def negative_stable_grace_seconds(default_grace_seconds: int) -> int:
+    if os.environ.get("PRL_GUARD_NEGATIVE_STABLE_GRACE_SECONDS") is None:
+        return default_grace_seconds
+    return max(0, env_int("PRL_GUARD_NEGATIVE_STABLE_GRACE_SECONDS", default_grace_seconds))
+
+
 def guard_replacement_min_profit(config: Any) -> float:
     if os.environ.get("PRL_GUARD_REPLACEMENT_MIN_PROFIT_USD_DAY") is not None:
         return env_float("PRL_GUARD_REPLACEMENT_MIN_PROFIT_USD_DAY", 0.0)
@@ -807,6 +813,12 @@ def enforce_issues(
                     if bypass_stability:
                         price_stable = True
                         price_stability["bypass_reason"] = bypass_payload["reason"]
+                if price_stable:
+                    stable_grace_seconds = negative_stable_grace_seconds(int(issue["grace_seconds"]))
+                    if stable_grace_seconds < int(issue["grace_seconds"]):
+                        issue["grace_seconds"] = stable_grace_seconds
+                        decision["grace_seconds"] = stable_grace_seconds
+                        decision["stable_price_grace_applied"] = True
             if issue_age >= float(issue["grace_seconds"]):
                 slot_key = (org_label, slot_name)
                 cooldown_seconds = guard_retarget_cooldown_seconds()

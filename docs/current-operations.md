@@ -245,6 +245,36 @@ Safety points:
 - Keep `negative` out of `PRL_GUARD_ENABLED_ISSUES` during fill unless the
   operator explicitly wants loss-based live pruning.
 
+For the same scarce-GPU, below-breakeven fill mode, keep the central scheduler
+aligned with the guard by ranking target profiles by live expected profit and
+allowing temporarily unstable profiles when they are still the least-loss
+choice:
+
+```bash
+tmux new-session -d -s salad-orch-v2-scheduler -c /home/coder/projects/salad '
+zsh -lc '"'"'
+set -a; . ./.env; set +a
+while true; do
+  PRICE=$(sqlite3 state/fleet_scheduler.db "select selected_price_usd from price_history where selected_price_usd is not null order by sampled_at_utc desc, id desc limit 1")
+  PRL_SCHEDULER_ALLOW_UNSTABLE_PROFILES=1 \
+  PRL_SCHEDULER_RANK_BY_PROFIT=1 \
+  PRL_FILL_MIN_PROFIT_USD_DAY=-999 \
+  PRL_OPTIMIZE_MIN_PROFIT_USD_DAY=-999 \
+  SALAD_FLEET_CONFIG_PATH=config/fleet.kray-only-150.json \
+  PRL_FLEET_CONFIG_PATH=config/fleet.kray-only-150.json \
+  PRL_ENABLED_ORGS=kray \
+  python3 scripts/fleet_scheduler.py --once --mode base_fill --price "$PRICE" --fee 0.01 --width 2 --db state/fleet_scheduler.db
+  sleep 120
+done
+'"'"'
+'
+```
+
+This mode is intentionally for fill/credit-burn periods where every target may
+be negative at current price. Without `PRL_SCHEDULER_ALLOW_UNSTABLE_PROFILES=1`,
+the scheduler can prefer a "safe" but more expensive GPU profile over a recently
+unstable profile with materially lower expected loss.
+
 Watch it with:
 
 ```bash

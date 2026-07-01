@@ -2553,6 +2553,68 @@ class StateAndSchedulerTest(unittest.TestCase):
         self.assertEqual(target_count, 40)
         self.assertGreaterEqual(profile_count, 10)
 
+    def test_scheduler_preserves_existing_targets_when_no_eligible_profiles(self) -> None:
+        org = config_loader.OrgConfig(
+            label="kray",
+            slug="kray",
+            api_key_env="SALAD_API_KEY",
+            slot_prefix="prl-kray-roi",
+            slots=1,
+        )
+        config = config_loader.FleetConfig(organizations=(org,))
+        with state_db.connect(self.db_path) as conn:
+            state_db.init_db(conn)
+            state_db.sync_config(conn, config)
+            state_db.set_slot_target(
+                conn,
+                {
+                    "org_label": "kray",
+                    "slot_name": "prl-kray-roi-01",
+                    "profile_key": "4070ti:batch:2048",
+                    "mode": "base_fill",
+                    "decision_price_usd": 0.55,
+                    "expected_profit_day": 0.2,
+                    "protected": False,
+                    "reason": "existing",
+                    "assigned_at_utc": "2026-06-24T12:00:00+00:00",
+                },
+            )
+            conn.commit()
+
+        with (
+            patch("fleet_scheduler.load_config", return_value=config),
+            patch("fleet_scheduler.profile_scorer.score_profiles", return_value=[]),
+        ):
+            payload = fleet_scheduler.schedule_once(
+                db_path=self.db_path,
+                price=0.55,
+                fee=0.01,
+                dry_run=False,
+                width=16,
+            )
+
+        self.assertTrue(payload["preserved_existing_targets"])
+        self.assertEqual(payload["assigned_targets"], 1)
+        with state_db.connect(self.db_path) as conn:
+            row = conn.execute(
+                """
+                SELECT profile_key, reason
+                FROM slot_targets
+                WHERE org_label='kray' AND slot_name='prl-kray-roi-01'
+                """
+            ).fetchone()
+            event = conn.execute(
+                """
+                SELECT event_type
+                FROM events
+                ORDER BY id DESC
+                LIMIT 1
+                """
+            ).fetchone()
+        self.assertEqual(row["profile_key"], "4070ti:batch:2048")
+        self.assertEqual(row["reason"], "existing")
+        self.assertEqual(event["event_type"], "slot_targets_preserved")
+
     def test_scheduler_preserves_protected_running_slot_target(self) -> None:
         config = load_config()
         with state_db.connect(self.db_path) as conn:

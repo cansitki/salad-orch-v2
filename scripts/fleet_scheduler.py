@@ -563,13 +563,18 @@ def schedule_once(
         guard_targets=guard_targets,
         existing_targets=existing_targets,
     )
+    preserved_existing_targets = False
+    if not dry_run and not targets and existing_targets:
+        preserved_existing_targets = True
+        targets = list(existing_targets.values())
 
     with state_db.connect(db_path) as conn:
         state_db.init_db(conn)
         if not dry_run:
-            conn.execute("DELETE FROM slot_targets")
-            for target in targets:
-                state_db.set_slot_target(conn, target)
+            if not preserved_existing_targets:
+                conn.execute("DELETE FROM slot_targets")
+                for target in targets:
+                    state_db.set_slot_target(conn, target)
             state_db.write_heartbeat(
                 conn,
                 "fleet_scheduler",
@@ -578,18 +583,24 @@ def schedule_once(
                     "decision_price_usd": decision_price,
                     "targets": len(targets),
                     "target_slots": config.target_slot_count(),
+                    "preserved_existing_targets": preserved_existing_targets,
                 },
             )
             state_db.record_event(
                 conn,
-                "slot_targets_assigned",
+                "slot_targets_preserved" if preserved_existing_targets else "slot_targets_assigned",
                 source="fleet_scheduler",
-                message="central scheduler assigned slot targets",
+                message=(
+                    "central scheduler preserved existing slot targets because no eligible replacements were found"
+                    if preserved_existing_targets
+                    else "central scheduler assigned slot targets"
+                ),
                 payload={
                     "mode": selected_mode,
                     "targets": len(targets),
                     "profiles": sorted({target["profile_key"] for target in targets}),
                     "dry_run": dry_run,
+                    "preserved_existing_targets": preserved_existing_targets,
                 },
             )
             conn.commit()
@@ -604,6 +615,7 @@ def schedule_once(
         "target_slots": config.target_slot_count(),
         "assigned_targets": len(targets),
         "dry_run": dry_run,
+        "preserved_existing_targets": preserved_existing_targets,
         "profile_counts": profile_counts,
         "targets": targets,
     }

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import pathlib
 import sys
@@ -15,13 +16,14 @@ import profile_scorer
 import salad_prl_profit_snapshot as snapshot
 import state_db
 from config_loader import load_config
-from fleet_common import env_float, env_int, json_dumps, utc_now
+from fleet_common import env_bool, env_float, env_int, json_dumps, utc_now
 
 
 SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
 LEGACY_GUARD = SCRIPT_DIR / "salad_prl_guard.py"
 DEFAULT_NO_HASH_GRACE_SECONDS = 60
 DEFAULT_NEGATIVE_GRACE_SECONDS = 90
+DEFAULT_UNDERPERFORM_GRACE_SECONDS = 120
 DEFAULT_RETARGET_COOLDOWN_SECONDS = 120
 
 
@@ -46,6 +48,142 @@ def issue_age_seconds(issue_row: Any, payload_row: dict[str, Any]) -> float:
     return max(age, state_age)
 
 
+def underperform_ratio() -> float:
+    return max(0.0, env_float("PRL_GUARD_UNDERPERFORM_RATIO", 0.85))
+
+
+def underperform_min_deficit_th() -> float:
+    return max(0.0, env_float("PRL_GUARD_UNDERPERFORM_MIN_DEFICIT_TH", 10.0))
+
+
+def enabled_issue_types() -> set[str]:
+    raw = os.environ.get("PRL_GUARD_ENABLED_ISSUES", "no_hash,negative,underperform")
+    return {item.strip() for item in raw.split(",") if item.strip()}
+
+
+def guard_replacement_min_profit(config: Any) -> float:
+    if os.environ.get("PRL_GUARD_REPLACEMENT_MIN_PROFIT_USD_DAY") is not None:
+        return env_float("PRL_GUARD_REPLACEMENT_MIN_PROFIT_USD_DAY", 0.0)
+    return config.risk.min_profit_for_mode()
+
+
+def hash_range_overrides() -> dict[str, Any]:
+    raw = os.environ.get("PRL_GUARD_HASH_RANGES_JSON", "").strip()
+    if not raw:
+        return {}
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _range_value(item: Any, key: str) -> float | None:
+    if isinstance(item, dict) and item.get(key) is not None:
+        try:
+            return float(item[key])
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+def configured_hash_range(row: dict[str, Any]) -> dict[str, Any] | None:
+    profile_key = profit_model.observed_profile_key(row.get("gpu"), row.get("priority"))
+    gpu_key = str(row.get("gpu") or "").lower().strip()
+    priority = str(row.get("priority") or "").lower().strip()
+    if not profile_key or not gpu_key or gpu_key == "requested":
+        return None
+    profiles = {profile.profile_key: profile for profile in profit_model.load_profiles()}
+    profile = profiles.get(profile_key)
+    if profile is None or float(profile.expected_th) <= 0:
+        return None
+
+    overrides = hash_range_overrides()
+    override = (
+        overrides.get(profile_key)
+        or overrides.get(f"{gpu_key}:{priority}")
+        or overrides.get(gpu_key)
+    )
+    min_th = None
+    max_th = None
+    grace_seconds = None
+    min_deficit_th = None
+    source = "default_expected_ratio"
+    if isinstance(override, (list, tuple)) and override:
+        try:
+            min_th = float(override[0])
+        except (TypeError, ValueError):
+            min_th = None
+        if len(override) > 1 and override[1] is not None:
+            try:
+                max_th = float(override[1])
+            except (TypeError, ValueError):
+                max_th = None
+        source = "env_range"
+    elif isinstance(override, dict):
+        min_th = _range_value(override, "min_th")
+        max_th = _range_value(override, "max_th")
+        grace_seconds = _range_value(override, "grace_seconds")
+        min_deficit_th = _range_value(override, "min_deficit_th")
+        source = "env_range"
+
+    expected_th = float(profile.expected_th)
+    if min_th is None:
+        min_th = expected_th * underperform_ratio()
+    if max_th is None and source == "default_expected_ratio":
+        max_th = expected_th * 1.35
+    if min_deficit_th is None:
+        min_deficit_th = underperform_min_deficit_th()
+    return {
+        "profile_key": profile_key,
+        "expected_th": expected_th,
+        "min_th": max(0.0, float(min_th)),
+        "max_th": max_th,
+        "grace_seconds": int(grace_seconds) if grace_seconds is not None else None,
+        "min_deficit_th": max(0.0, float(min_deficit_th)),
+        "source": source,
+    }
+
+
+def underperform_slots(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    rows = []
+    no_hash_slots = {str(row.get("slot") or "") for row in payload.get("running_no_live_billable_slots") or []}
+    for row in payload.get("slots") or []:
+        slot = str(row.get("slot") or "")
+        if not slot or slot in no_hash_slots or str(row.get("worker") or "") == "NO_POOL_HASHRATE":
+            continue
+        try:
+            th = float(row.get("th") or 0)
+        except (TypeError, ValueError):
+            th = 0.0
+        if th <= 0:
+            continue
+        hash_range = configured_hash_range(row)
+        if hash_range is None:
+            continue
+        min_th = float(hash_range["min_th"])
+        deficit_th = min_th - th
+        if deficit_th < float(hash_range["min_deficit_th"]):
+            continue
+        expected_th = float(hash_range["expected_th"])
+        rows.append(
+            {
+                **row,
+                "issue_type": "underperform",
+                "profile_key": hash_range["profile_key"],
+                "expected_th": round(expected_th, 3),
+                "min_th": round(min_th, 3),
+                "max_th": round(float(hash_range["max_th"]), 3) if hash_range.get("max_th") is not None else None,
+                "actual_th": round(th, 3),
+                "underperform_ratio": round(th / expected_th, 4) if expected_th else None,
+                "deficit_th": round(deficit_th, 3),
+                "hash_range_source": hash_range["source"],
+                "grace_seconds": hash_range.get("grace_seconds"),
+            }
+        )
+    return rows
+
+
 def analyze_snapshot(payload: dict[str, Any]) -> dict[str, Any]:
     slots = payload.get("slots") or []
     no_hash = payload.get("running_no_live_billable_slots") or []
@@ -55,12 +193,14 @@ def analyze_snapshot(payload: dict[str, Any]) -> dict[str, Any]:
         for row in slots
         if float(row.get("profit_day") or 0) < -negative_min_loss
     ]
+    underperform = underperform_slots(payload)
     return {
         "totals": payload.get("totals") or {},
         "fresh_workers": payload.get("fresh_workers"),
         "running_no_live_billable_slots": no_hash,
         "negative_slots": negative,
-        "issue_count": len(no_hash) + len(negative),
+        "underperform_slots": underperform,
+        "issue_count": len(no_hash) + len(negative) + len(underperform),
     }
 
 
@@ -126,23 +266,42 @@ def replacement_target(
     current_profile_key: str | None,
     decision_price: float,
     min_profit_day: float,
+    mode: str,
 ) -> dict[str, Any] | None:
     unstable_profiles = {
         str(row["profile_key"])
         for row in state_db.recent_spike_summary(conn, limit=1000).get("profiles", [])
         if row.get("unstable") and row.get("profile_key")
     }
+    allow_negative = env_bool("PRL_GUARD_ALLOW_NEGATIVE_REPLACEMENTS", False)
+    allow_unstable = env_bool("PRL_GUARD_ALLOW_UNSTABLE_REPLACEMENTS", False)
+    blocked_tiers = ["blocked_priority"]
+    if not allow_negative:
+        blocked_tiers.extend(["negative", "marginal"])
+    if not allow_unstable:
+        blocked_tiers.append("unstable_recent_spikes")
+    blocked_placeholders = ",".join("?" for _item in blocked_tiers)
+    clauses = ["s.mode = ?", f"s.risk_tier NOT IN ({blocked_placeholders})"]
+    order_clause = (
+        "ORDER BY s.expected_profit_day DESC, s.score DESC"
+        if allow_negative
+        else "ORDER BY s.score DESC, s.expected_profit_day DESC"
+    )
+    params: list[Any] = [mode, *blocked_tiers]
+    if not allow_negative:
+        clauses.insert(0, "s.expected_profit_day >= ?")
+        params.insert(0, min_profit_day)
+    where_clause = " AND ".join(clauses)
     rows = conn.execute(
-        """
+        f"""
         SELECT s.profile_key, s.mode, s.decision_price_usd, s.expected_profit_day,
                s.score, s.risk_tier, p.gpu_key, p.priority, p.memory_mb, p.label
         FROM profile_scores s
         JOIN gpu_profiles p ON p.profile_key = s.profile_key
-        WHERE s.expected_profit_day >= ?
-          AND s.risk_tier NOT IN ('negative', 'marginal', 'blocked_priority', 'unstable_recent_spikes')
-        ORDER BY s.score DESC, s.expected_profit_day DESC
+        WHERE {where_clause}
+        {order_clause}
         """,
-        (min_profit_day,),
+        params,
     ).fetchall()
     cooldowns = state_db.active_search_cooldowns(conn)
     availability = state_db.latest_profile_availability(conn)
@@ -150,7 +309,7 @@ def replacement_target(
 
     def available(row: Any, *, allow_probe_fallback: bool) -> bool:
         profile = str(row["profile_key"])
-        if profile in unstable_profiles:
+        if not allow_unstable and profile in unstable_profiles:
             return False
         if current_profile_key and profile == current_profile_key:
             return False
@@ -370,16 +529,34 @@ def enforce_issues(
     apply: bool,
 ) -> list[dict[str, Any]]:
     config = load_config()
-    min_profit = config.risk.min_profit_for_mode()
+    min_profit = guard_replacement_min_profit(config)
+    replacement_mode = os.environ.get("PRL_GUARD_REPLACEMENT_MODE", "base_fill").strip() or "base_fill"
     if not analysis.get("fresh_workers") or int(analysis.get("fresh_workers") or 0) < 1:
         return []
     issues: list[dict[str, Any]] = []
+    enabled_issues = enabled_issue_types()
     no_hash_grace_seconds = env_int("PRL_GUARD_NOHASH_GRACE_SECONDS", DEFAULT_NO_HASH_GRACE_SECONDS)
     negative_grace_seconds = env_int("PRL_GUARD_NEGATIVE_GRACE_SECONDS", DEFAULT_NEGATIVE_GRACE_SECONDS)
-    for row in analysis.get("running_no_live_billable_slots") or []:
-        issues.append({"issue_type": "no_hash", "grace_seconds": no_hash_grace_seconds, "row": row})
-    for row in analysis.get("negative_slots") or []:
-        issues.append({"issue_type": "negative", "grace_seconds": negative_grace_seconds, "row": row})
+    underperform_grace_seconds = env_int(
+        "PRL_GUARD_UNDERPERFORM_GRACE_SECONDS",
+        DEFAULT_UNDERPERFORM_GRACE_SECONDS,
+    )
+    if "no_hash" in enabled_issues:
+        for row in analysis.get("running_no_live_billable_slots") or []:
+            issues.append({"issue_type": "no_hash", "grace_seconds": no_hash_grace_seconds, "row": row})
+    if "negative" in enabled_issues:
+        for row in analysis.get("negative_slots") or []:
+            issues.append({"issue_type": "negative", "grace_seconds": negative_grace_seconds, "row": row})
+    if "underperform" in enabled_issues:
+        for row in analysis.get("underperform_slots") or []:
+            row_grace = row.get("grace_seconds")
+            issues.append(
+                {
+                    "issue_type": "underperform",
+                    "grace_seconds": int(row_grace) if row_grace is not None else underperform_grace_seconds,
+                    "row": row,
+                }
+            )
 
     decisions: list[dict[str, Any]] = []
     active_keys: set[tuple[str, str, str]] = set()
@@ -388,7 +565,12 @@ def enforce_issues(
     restart_no_hash_after_seconds = env_int("PRL_GUARD_RESTART_NOHASH_AFTER_SECONDS", 0)
     with state_db.connect(db_path) as conn:
         state_db.init_db(conn)
-        profile_scorer.score_profiles(db_path=db_path, decision_price_usd=decision_price, write=True)
+        profile_scorer.score_profiles(
+            db_path=db_path,
+            mode=replacement_mode,
+            decision_price_usd=decision_price,
+            write=True,
+        )
         for issue in issues:
             row = dict(issue["row"])
             org_label = str(row.get("org") or "")
@@ -432,6 +614,7 @@ def enforce_issues(
                 current_profile_key=current,
                 decision_price=decision_price,
                 min_profit_day=min_profit,
+                mode=replacement_mode,
             )
             if target is not None:
                 target["snapshot_instance_id"] = snapshot.worker_instance_id(str(row.get("worker") or ""))

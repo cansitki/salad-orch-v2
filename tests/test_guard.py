@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import pathlib
 import sys
 import tempfile
@@ -12,6 +13,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
 import guard
+import profit_model
 import profile_scorer
 import state_db
 from config_loader import load_config
@@ -168,6 +170,7 @@ class GuardDecisionTest(unittest.TestCase):
     def test_guard_replacement_skips_recently_unstable_profiles(self) -> None:
         profile_scorer.score_profiles(
             db_path=self.db_path,
+            mode="base_fill",
             decision_price_usd=0.64,
             pearl_fee_rate=0.01,
             write=True,
@@ -198,6 +201,7 @@ class GuardDecisionTest(unittest.TestCase):
                 current_profile_key=None,
                 decision_price=0.64,
                 min_profit_day=0.05,
+                mode="base_fill",
             )
 
         self.assertIsNotNone(target)
@@ -207,6 +211,7 @@ class GuardDecisionTest(unittest.TestCase):
     def test_guard_replacement_skips_profiles_with_recent_spike_summary_even_when_score_is_stale(self) -> None:
         profile_scorer.score_profiles(
             db_path=self.db_path,
+            mode="base_fill",
             decision_price_usd=0.64,
             pearl_fee_rate=0.01,
             write=True,
@@ -249,11 +254,101 @@ class GuardDecisionTest(unittest.TestCase):
                 current_profile_key=None,
                 decision_price=0.64,
                 min_profit_day=0.05,
+                mode="base_fill",
             )
 
         self.assertIsNotNone(target)
         self.assertNotEqual(target["profile_key"], skipped)
         self.assertEqual(target["profile_key"], fallback)
+
+    def test_guard_replacement_defaults_to_base_fill_scores(self) -> None:
+        with state_db.connect(self.db_path) as conn:
+            state_db.init_db(conn)
+            state_db.upsert_gpu_profiles(conn, profit_model.load_profiles())
+            state_db.upsert_profile_score(
+                conn,
+                {
+                    "profile_key": "5090:batch:2048",
+                    "mode": "boost_fill",
+                    "decision_price_usd": 0.64,
+                    "expected_profit_day": 99.0,
+                    "score": 999.0,
+                    "risk_tier": "safe_base",
+                },
+            )
+            state_db.upsert_profile_score(
+                conn,
+                {
+                    "profile_key": "3060ti:batch:2048",
+                    "mode": "base_fill",
+                    "decision_price_usd": 0.64,
+                    "expected_profit_day": 1.0,
+                    "score": 1.0,
+                    "risk_tier": "safe_base",
+                },
+            )
+            target = guard.replacement_target(
+                conn,
+                org_label="kray",
+                slot_name="prl-kray-roi-01",
+                issue_type="underperform",
+                current_profile_key="3090:batch:2048",
+                decision_price=0.64,
+                min_profit_day=0.0,
+                mode="base_fill",
+            )
+
+        self.assertIsNotNone(target)
+        self.assertEqual(target["profile_key"], "3060ti:batch:2048")
+        self.assertEqual(target["mode"], "base_fill")
+
+    def test_guard_can_choose_least_negative_replacement_when_enabled(self) -> None:
+        with state_db.connect(self.db_path) as conn:
+            state_db.init_db(conn)
+            state_db.upsert_gpu_profiles(conn, profit_model.load_profiles())
+            state_db.upsert_profile_score(
+                conn,
+                {
+                    "profile_key": "4070ti:batch:2048",
+                    "mode": "base_fill",
+                    "decision_price_usd": 0.44,
+                    "expected_profit_day": -0.2,
+                    "score": 100.0,
+                    "risk_tier": "safe_base",
+                },
+            )
+            state_db.upsert_profile_score(
+                conn,
+                {
+                    "profile_key": "3060ti:batch:2048",
+                    "mode": "base_fill",
+                    "decision_price_usd": 0.44,
+                    "expected_profit_day": -0.05,
+                    "score": -100.0,
+                    "risk_tier": "unstable_recent_spikes",
+                },
+            )
+            with patch.dict(
+                "os.environ",
+                {
+                    "PRL_GUARD_ALLOW_NEGATIVE_REPLACEMENTS": "1",
+                    "PRL_GUARD_ALLOW_UNSTABLE_REPLACEMENTS": "1",
+                },
+                clear=False,
+            ):
+                target = guard.replacement_target(
+                    conn,
+                    org_label="kray",
+                    slot_name="prl-kray-roi-01",
+                    issue_type="underperform",
+                    current_profile_key="3090:batch:2048",
+                    decision_price=0.44,
+                    min_profit_day=0.0,
+                    mode="base_fill",
+                )
+
+        self.assertIsNotNone(target)
+        self.assertEqual(target["profile_key"], "3060ti:batch:2048")
 
     def test_guard_stops_when_no_profitable_replacement_exists(self) -> None:
         self.make_issue_old("negative")
@@ -330,6 +425,105 @@ class GuardDecisionTest(unittest.TestCase):
             analysis = guard.analyze_snapshot(payload)
 
         self.assertEqual([row["slot"] for row in analysis["negative_slots"]], ["real-loss"])
+
+    def test_guard_detects_underperforming_hashrate_from_expected_range(self) -> None:
+        payload = {
+            "slots": [
+                {
+                    "org": "kray",
+                    "slot": "prl-kray-roi-01",
+                    "worker": "kray-prl-kray-roi-01-pearlfortune-instance",
+                    "gpu": "3090",
+                    "priority": "batch",
+                    "th": 70.0,
+                    "profit_day": 0.5,
+                    "cost_day": 2.16,
+                }
+            ],
+            "running_no_live_billable_slots": [],
+        }
+
+        with patch.dict(
+            "os.environ",
+            {
+                "PRL_GUARD_UNDERPERFORM_RATIO": "0.85",
+                "PRL_GUARD_UNDERPERFORM_MIN_DEFICIT_TH": "10",
+            },
+            clear=False,
+        ):
+            analysis = guard.analyze_snapshot(payload)
+
+        underperform = analysis["underperform_slots"]
+        self.assertEqual(len(underperform), 1)
+        self.assertEqual(underperform[0]["slot"], "prl-kray-roi-01")
+        self.assertEqual(underperform[0]["profile_key"], "3090:batch:2048")
+        self.assertEqual(underperform[0]["expected_th"], 100.0)
+        self.assertEqual(underperform[0]["min_th"], 85.0)
+        self.assertEqual(underperform[0]["deficit_th"], 15.0)
+
+    def test_guard_uses_configured_hash_range_override(self) -> None:
+        payload = {
+            "slots": [
+                {
+                    "org": "kray",
+                    "slot": "prl-kray-roi-01",
+                    "worker": "kray-prl-kray-roi-01-pearlfortune-instance",
+                    "gpu": "3060ti",
+                    "priority": "batch",
+                    "th": 44.0,
+                    "profit_day": 0.1,
+                    "cost_day": 0.72,
+                }
+            ],
+            "running_no_live_billable_slots": [],
+        }
+        ranges = {
+            "3060ti:batch": {
+                "min_th": 50,
+                "max_th": 75,
+                "grace_seconds": 30,
+                "min_deficit_th": 2,
+            }
+        }
+
+        with patch.dict("os.environ", {"PRL_GUARD_HASH_RANGES_JSON": json.dumps(ranges)}, clear=False):
+            analysis = guard.analyze_snapshot(payload)
+
+        underperform = analysis["underperform_slots"]
+        self.assertEqual(len(underperform), 1)
+        self.assertEqual(underperform[0]["min_th"], 50.0)
+        self.assertEqual(underperform[0]["max_th"], 75.0)
+        self.assertEqual(underperform[0]["grace_seconds"], 30)
+        self.assertEqual(underperform[0]["deficit_th"], 6.0)
+
+    def test_guard_retargets_underperforming_slot_after_grace(self) -> None:
+        self.make_issue_old("underperform")
+        decisions = guard.enforce_issues(
+            db_path=self.db_path,
+            decision_price=0.64,
+            apply=False,
+            analysis={
+                "fresh_workers": 3,
+                "running_no_live_billable_slots": [],
+                "negative_slots": [],
+                "underperform_slots": [
+                    {
+                        "org": "kray",
+                        "slot": "prl-kray-roi-01",
+                        "worker": "kray-prl-kray-roi-01-pearlfortune-instance",
+                        "gpu": "3090",
+                        "priority": "batch",
+                        "th": 70.0,
+                        "profit_day": 0.5,
+                        "cost_day": 2.16,
+                    }
+                ],
+            },
+        )
+
+        self.assertEqual(decisions[0]["issue_type"], "underperform")
+        self.assertEqual(decisions[0]["action"], "retarget")
+        self.assertEqual(decisions[0]["target"]["reason"], "guard_underperform_retarget")
 
     def test_guard_records_spike_event_for_recent_issue_history(self) -> None:
         self.make_issue_old("negative")

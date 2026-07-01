@@ -24,7 +24,9 @@ LEGACY_GUARD = SCRIPT_DIR / "salad_prl_guard.py"
 DEFAULT_NO_HASH_GRACE_SECONDS = 60
 DEFAULT_NEGATIVE_GRACE_SECONDS = 90
 DEFAULT_UNDERPERFORM_GRACE_SECONDS = 120
+DEFAULT_STUCK_NON_LIVE_GRACE_SECONDS = 0
 DEFAULT_RETARGET_COOLDOWN_SECONDS = 120
+DEFAULT_MAX_ACTIONS_PER_RUN = 8
 
 
 def age_seconds(at_utc: str | None) -> float:
@@ -57,8 +59,17 @@ def underperform_min_deficit_th() -> float:
 
 
 def enabled_issue_types() -> set[str]:
-    raw = os.environ.get("PRL_GUARD_ENABLED_ISSUES", "no_hash,negative,underperform")
+    raw = os.environ.get("PRL_GUARD_ENABLED_ISSUES", "no_hash,negative,underperform,stuck_no_live")
     return {item.strip() for item in raw.split(",") if item.strip()}
+
+
+def stop_without_target_issue_types() -> set[str]:
+    raw = os.environ.get("PRL_GUARD_STOP_WITHOUT_TARGET_ISSUES", "no_hash,negative")
+    return {item.strip() for item in raw.split(",") if item.strip()}
+
+
+def max_actions_per_run() -> int:
+    return max(0, env_int("PRL_GUARD_MAX_ACTIONS_PER_RUN", DEFAULT_MAX_ACTIONS_PER_RUN))
 
 
 def guard_replacement_min_profit(config: Any) -> float:
@@ -184,6 +195,26 @@ def underperform_slots(payload: dict[str, Any]) -> list[dict[str, Any]]:
     return rows
 
 
+def stuck_non_live_slots(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    no_hash_slots = {str(row.get("slot") or "") for row in payload.get("running_no_live_billable_slots") or []}
+    rows = []
+    for row in payload.get("stuck_non_live_slots") or []:
+        slot = str(row.get("slot") or "")
+        if not slot or slot in no_hash_slots:
+            continue
+        requested = row.get("requested_gpus") or []
+        gpu = str(requested[0]) if requested else str(row.get("gpu") or "requested")
+        rows.append(
+            {
+                **row,
+                "issue_type": "stuck_no_live",
+                "gpu": gpu,
+                "cost_day": float(row.get("cost_day") or 0.0),
+            }
+        )
+    return rows
+
+
 def analyze_snapshot(payload: dict[str, Any]) -> dict[str, Any]:
     slots = payload.get("slots") or []
     no_hash = payload.get("running_no_live_billable_slots") or []
@@ -194,13 +225,15 @@ def analyze_snapshot(payload: dict[str, Any]) -> dict[str, Any]:
         if float(row.get("profit_day") or 0) < -negative_min_loss
     ]
     underperform = underperform_slots(payload)
+    stuck_non_live = stuck_non_live_slots(payload)
     return {
         "totals": payload.get("totals") or {},
         "fresh_workers": payload.get("fresh_workers"),
         "running_no_live_billable_slots": no_hash,
         "negative_slots": negative,
         "underperform_slots": underperform,
-        "issue_count": len(no_hash) + len(negative) + len(underperform),
+        "stuck_non_live_slots": stuck_non_live,
+        "issue_count": len(no_hash) + len(negative) + len(underperform) + len(stuck_non_live),
     }
 
 
@@ -541,6 +574,7 @@ def enforce_issues(
         "PRL_GUARD_UNDERPERFORM_GRACE_SECONDS",
         DEFAULT_UNDERPERFORM_GRACE_SECONDS,
     )
+    stuck_grace_seconds = env_int("PRL_GUARD_STUCK_NON_LIVE_GRACE_SECONDS", DEFAULT_STUCK_NON_LIVE_GRACE_SECONDS)
     if "no_hash" in enabled_issues:
         for row in analysis.get("running_no_live_billable_slots") or []:
             issues.append({"issue_type": "no_hash", "grace_seconds": no_hash_grace_seconds, "row": row})
@@ -557,10 +591,16 @@ def enforce_issues(
                     "row": row,
                 }
             )
+    if "stuck_no_live" in enabled_issues:
+        for row in analysis.get("stuck_non_live_slots") or []:
+            issues.append({"issue_type": "stuck_no_live", "grace_seconds": stuck_grace_seconds, "row": row})
 
     decisions: list[dict[str, Any]] = []
     active_keys: set[tuple[str, str, str]] = set()
     actioned_slots: set[tuple[str, str]] = set()
+    stop_without_target = stop_without_target_issue_types()
+    max_actions = max_actions_per_run()
+    action_count = 0
     restart_no_hash_after_actions = env_int("PRL_GUARD_RESTART_AFTER_NOHASH_ACTIONS", 1)
     restart_no_hash_after_seconds = env_int("PRL_GUARD_RESTART_NOHASH_AFTER_SECONDS", 0)
     with state_db.connect(db_path) as conn:
@@ -641,6 +681,10 @@ def enforce_issues(
                 if apply and slot_key in actioned_slots:
                     decision["action"] = "skip_duplicate"
                     decision["reason"] = "slot_already_actioned_this_tick"
+                elif max_actions > 0 and action_count >= max_actions:
+                    decision["action"] = "defer_max_actions"
+                    decision["reason"] = "max_actions_per_run_reached"
+                    decision["max_actions_per_run"] = max_actions
                 elif last_action and float(last_action["age_seconds"]) < cooldown_seconds:
                     decision["action"] = "cooldown"
                     decision["reason"] = "recent_guard_action_cooldown"
@@ -651,10 +695,15 @@ def enforce_issues(
                     state_db.set_slot_target(conn, target)
                     decision["action"] = "retarget"
                     decision["target"] = target
-                else:
+                    action_count += 1
+                elif issue_type in stop_without_target:
                     decision["action"] = "stop"
+                    action_count += 1
+                else:
+                    decision["action"] = "wait_no_target"
+                    decision["reason"] = "no_replacement_target"
                 if apply:
-                    if decision["action"] in {"cooldown", "skip_duplicate"}:
+                    if decision["action"] in {"cooldown", "skip_duplicate", "defer_max_actions", "wait_no_target"}:
                         pass
                     else:
                         actioned_slots.add(slot_key)

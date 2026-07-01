@@ -104,6 +104,84 @@ class GuardDecisionTest(unittest.TestCase):
         self.assertEqual(decisions[0]["action"], "retarget")
         self.assertEqual(decisions[0]["age_seconds"], 600)
 
+    def test_guard_detects_stuck_non_live_slots(self) -> None:
+        payload = {
+            "slots": [],
+            "running_no_live_billable_slots": [
+                {"org": "kray", "slot": "already-no-hash", "cost_day": 0.72}
+            ],
+            "stuck_non_live_slots": [
+                {
+                    "org": "kray",
+                    "slot": "already-no-hash",
+                    "priority": "batch",
+                    "requested_gpus": ["3060ti"],
+                    "state_age_seconds": 600,
+                },
+                {
+                    "org": "kray",
+                    "slot": "allocating-stuck",
+                    "priority": "batch",
+                    "requested_gpus": ["3070"],
+                    "state_age_seconds": 600,
+                },
+            ],
+        }
+
+        analysis = guard.analyze_snapshot(payload)
+
+        self.assertEqual([row["slot"] for row in analysis["stuck_non_live_slots"]], ["allocating-stuck"])
+        self.assertEqual(analysis["stuck_non_live_slots"][0]["gpu"], "3070")
+        self.assertEqual(analysis["issue_count"], 2)
+
+    def test_guard_limits_actions_per_run(self) -> None:
+        for slot in ("prl-kray-roi-01", "prl-kray-roi-02"):
+            with state_db.connect(self.db_path) as conn:
+                state_db.init_db(conn)
+                state_db.record_guard_issue(
+                    conn,
+                    {
+                        "org_label": "kray",
+                        "slot_name": slot,
+                        "issue_type": "stuck_no_live",
+                        "first_seen_utc": (datetime.now(UTC) - timedelta(minutes=10)).isoformat(timespec="seconds"),
+                        "payload": {},
+                    },
+                )
+                conn.commit()
+        analysis = {
+            "fresh_workers": 3,
+            "running_no_live_billable_slots": [],
+            "negative_slots": [],
+            "underperform_slots": [],
+            "stuck_non_live_slots": [
+                {
+                    "org": "kray",
+                    "slot": "prl-kray-roi-01",
+                    "gpu": "3060ti",
+                    "priority": "batch",
+                    "state_age_seconds": 600,
+                },
+                {
+                    "org": "kray",
+                    "slot": "prl-kray-roi-02",
+                    "gpu": "3060ti",
+                    "priority": "batch",
+                    "state_age_seconds": 600,
+                },
+            ],
+        }
+
+        with patch.dict("os.environ", {"PRL_GUARD_MAX_ACTIONS_PER_RUN": "1"}, clear=False):
+            decisions = guard.enforce_issues(
+                db_path=self.db_path,
+                decision_price=0.64,
+                apply=False,
+                analysis=analysis,
+            )
+
+        self.assertEqual([decision["action"] for decision in decisions], ["retarget", "defer_max_actions"])
+
     def test_guard_can_force_restart_prolonged_no_hash(self) -> None:
         with patch.dict("os.environ", {"PRL_GUARD_RESTART_NOHASH_AFTER_SECONDS": "60"}, clear=False):
             decisions = guard.enforce_issues(

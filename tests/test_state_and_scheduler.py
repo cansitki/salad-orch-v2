@@ -2635,8 +2635,9 @@ class StateAndSchedulerTest(unittest.TestCase):
             width=10,
         )
         self.assertEqual(payload["assigned_targets"], 40)
-        self.assertEqual(len(payload["profile_counts"]), 10)
+        self.assertEqual(len(payload["profile_counts"]), 9)
         self.assertTrue(all(":low:" not in key for key in payload["profile_counts"]))
+        self.assertTrue(all(target["expected_profit_day"] >= 0 for target in payload["targets"]))
         with state_db.connect(self.db_path) as conn:
             target_count = conn.execute("SELECT COUNT(*) FROM slot_targets").fetchone()[0]
             profile_count = conn.execute("SELECT COUNT(*) FROM gpu_profiles").fetchone()[0]
@@ -2704,6 +2705,64 @@ class StateAndSchedulerTest(unittest.TestCase):
         self.assertEqual(row["profile_key"], "4070ti:batch:2048")
         self.assertEqual(row["reason"], "existing")
         self.assertEqual(event["event_type"], "slot_targets_preserved")
+
+    def test_scheduler_drops_existing_negative_targets_when_no_eligible_profiles(self) -> None:
+        org = config_loader.OrgConfig(
+            label="kray",
+            slug="kray",
+            api_key_env="SALAD_API_KEY",
+            slot_prefix="prl-kray-roi",
+            slots=1,
+        )
+        config = config_loader.FleetConfig(
+            organizations=(org,),
+            risk=config_loader.RiskConfig(fill_min_profit_day=0.0),
+        )
+        with state_db.connect(self.db_path) as conn:
+            state_db.init_db(conn)
+            state_db.sync_config(conn, config)
+            state_db.set_slot_target(
+                conn,
+                {
+                    "org_label": "kray",
+                    "slot_name": "prl-kray-roi-01",
+                    "profile_key": "3070ti:batch:4096",
+                    "mode": "base_fill",
+                    "decision_price_usd": 0.55,
+                    "expected_profit_day": -0.25,
+                    "protected": False,
+                    "reason": "existing-negative",
+                    "assigned_at_utc": "2026-06-24T12:00:00+00:00",
+                },
+            )
+            conn.commit()
+
+        with (
+            patch("fleet_scheduler.load_config", return_value=config),
+            patch("fleet_scheduler.profile_scorer.score_profiles", return_value=[]),
+        ):
+            payload = fleet_scheduler.schedule_once(
+                db_path=self.db_path,
+                price=0.55,
+                fee=0.01,
+                dry_run=False,
+                width=16,
+            )
+
+        self.assertFalse(payload["preserved_existing_targets"])
+        self.assertEqual(payload["assigned_targets"], 0)
+        with state_db.connect(self.db_path) as conn:
+            target_count = conn.execute("SELECT COUNT(*) FROM slot_targets").fetchone()[0]
+            event = conn.execute(
+                """
+                SELECT event_type
+                FROM events
+                ORDER BY id DESC
+                LIMIT 1
+                """
+            ).fetchone()
+        self.assertEqual(target_count, 0)
+        self.assertEqual(event["event_type"], "slot_targets_assigned")
 
     def test_scheduler_preserves_protected_running_slot_target(self) -> None:
         config = load_config()
@@ -2825,7 +2884,7 @@ class StateAndSchedulerTest(unittest.TestCase):
                 {
                     "org_label": "kray",
                     "slot_name": "prl-kray-roi-01",
-                    "observed_profile_key": "5090:batch:2048",
+                    "observed_profile_key": "4090:batch:2048",
                     "observed_status": "allocating",
                     "updated_at_utc": observed_at,
                 },
@@ -2843,7 +2902,7 @@ class StateAndSchedulerTest(unittest.TestCase):
                 """
             ).fetchone()
 
-        self.assertEqual(row["profile_key"], "5090:batch:2048")
+        self.assertEqual(row["profile_key"], "4090:batch:2048")
         self.assertEqual(row["protected"], 0)
         self.assertIn("pending_observed_profile_recycle_first", row["reason"])
 
@@ -3151,7 +3210,7 @@ class StateAndSchedulerTest(unittest.TestCase):
         self.assertGreaterEqual(row["expected_profit_day"], 0.05)
         self.assertIn("replace_negative_observed_profile", row["reason"])
 
-    def test_scheduler_does_not_replace_negative_profile_with_worse_candidate(self) -> None:
+    def test_scheduler_drops_negative_profile_when_no_profitable_replacement_exists(self) -> None:
         org = config_loader.OrgConfig(
             label="kray",
             slug="kray",
@@ -3160,6 +3219,60 @@ class StateAndSchedulerTest(unittest.TestCase):
             slots=1,
         )
         config = config_loader.FleetConfig(organizations=(org,))
+        scores = [
+            {
+                "profile_key": "3070ti:batch:4096",
+                "gpu_key": "3070ti",
+                "priority": "batch",
+                "memory_mb": 4096,
+                "label": "RTX 3070 Ti",
+                "score": 1.0,
+                "eligible": True,
+                "expected_profit_day": -0.25,
+                "break_even_price_usd": 0.6,
+            },
+            {
+                "profile_key": "3080ti:batch:2048",
+                "gpu_key": "3080ti",
+                "priority": "batch",
+                "memory_mb": 2048,
+                "label": "RTX 3080 Ti",
+                "score": 10.0,
+                "eligible": True,
+                "expected_profit_day": -0.46,
+                "break_even_price_usd": 0.8,
+            },
+        ]
+        targets = fleet_scheduler.build_targets(
+            config,
+            scores,
+            mode="base_fill",
+            decision_price_usd=0.55,
+            width=2,
+            slot_rows={
+                ("kray", "prl-kray-roi-01"): {
+                    "observed_profile_key": "3070ti:batch:4096",
+                    "observed_status": "running",
+                    "live_hashrate_th": 0,
+                    "protected": True,
+                }
+            },
+        )
+
+        self.assertEqual(targets, [])
+
+    def test_scheduler_can_keep_negative_profile_when_min_profit_allows_it(self) -> None:
+        org = config_loader.OrgConfig(
+            label="kray",
+            slug="kray",
+            api_key_env="SALAD_API_KEY",
+            slot_prefix="prl-kray-roi",
+            slots=1,
+        )
+        config = config_loader.FleetConfig(
+            organizations=(org,),
+            risk=config_loader.RiskConfig(fill_min_profit_day=-0.30),
+        )
         scores = [
             {
                 "profile_key": "3070ti:batch:4096",
@@ -3474,7 +3587,8 @@ class StateAndSchedulerTest(unittest.TestCase):
                     slot_prefix="prl-kray-roi",
                     slots=1,
                 ),
-            )
+            ),
+            risk=config_loader.RiskConfig(fill_min_profit_day=-999.0),
         )
         scores = [
             {

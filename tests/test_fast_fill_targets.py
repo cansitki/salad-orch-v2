@@ -65,6 +65,18 @@ class FastFillTargetSelectionTest(unittest.TestCase):
             [True, True, False, False],
         )
 
+    def test_min_profit_filter_skips_negative_targets(self) -> None:
+        rows = [
+            {**target("negative"), "expected_profit_day": -0.01},
+            {**target("positive"), "expected_profit_day": 0.02},
+        ]
+
+        eligible, skipped = fast_fill_targets._split_min_profit_targets(rows, min_profit_day=0.0)
+
+        self.assertEqual([item["slot_name"] for item in eligible], ["positive"])
+        self.assertEqual([item["action"] for item in skipped], ["skip_below_min_profit"])
+        self.assertEqual(skipped[0]["slot_name"], "negative")
+
     def test_recent_guard_stop_cooldown_skips_actionable_target(self) -> None:
         targets = [
             target("recent-stop"),

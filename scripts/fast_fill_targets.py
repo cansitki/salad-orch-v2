@@ -313,6 +313,21 @@ def _deferred_actionable_result(target: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _skip_below_min_profit_result(target: dict[str, Any], min_profit_day: float) -> dict[str, Any]:
+    return {
+        "slot_name": str(target["slot_name"]),
+        "profile_key": str(target.get("profile_key") or ""),
+        "action": "skip_below_min_profit",
+        "ok": True,
+        "created": False,
+        "patched": False,
+        "started": False,
+        "expected_profit_day": target.get("expected_profit_day"),
+        "min_profit_day": min_profit_day,
+        "duration_ms": 0,
+    }
+
+
 def _skip_guard_stop_cooldown_result(target: dict[str, Any], cooldown: dict[str, Any]) -> dict[str, Any]:
     return {
         "slot_name": str(target["slot_name"]),
@@ -341,6 +356,28 @@ def _active_without_hash_target(target: dict[str, Any]) -> bool:
     except (TypeError, ValueError):
         live_worker_th = 0.0
     return live_worker_count <= 0 and live_worker_th <= 0.0
+
+
+def _target_expected_profit_day(target: dict[str, Any]) -> float:
+    try:
+        return float(target.get("expected_profit_day") or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _split_min_profit_targets(
+    targets: list[dict[str, Any]],
+    *,
+    min_profit_day: float,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    eligible: list[dict[str, Any]] = []
+    skipped: list[dict[str, Any]] = []
+    for target in targets:
+        if _target_expected_profit_day(target) < min_profit_day:
+            skipped.append(_skip_below_min_profit_result(target, min_profit_day))
+            continue
+        eligible.append(target)
+    return eligible, skipped
 
 
 def _target_is_actionable(
@@ -511,6 +548,10 @@ def fast_fill_org(
         raise SystemExit(f"org {org_label!r} is not enabled in current config")
     org = orgs[org_label]
     targets = _targets_for_org(db_path, org_label)
+    targets, skipped_min_profit_results = _split_min_profit_targets(
+        targets,
+        min_profit_day=min_profit_day,
+    )
     if skip_live_hashing:
         targets = [
             target
@@ -582,6 +623,7 @@ def fast_fill_org(
         for future in concurrent.futures.as_completed(future_map):
             results.append(future.result())
     results.extend(skipped_results)
+    results.extend(skipped_min_profit_results)
 
     _record_results(
         db_path,
@@ -594,16 +636,18 @@ def fast_fill_org(
             "max_zero_worker_active": max_zero_worker_active,
             "actionable_limit": actionable_limit,
             "guard_stop_cooldown_count": len(guard_stop_cooldowns),
+            "skipped_below_min_profit_count": len(skipped_min_profit_results),
         },
     )
     return {
         "org_label": org_label,
-        "target_count": len(targets),
+        "target_count": len(targets) + len(skipped_min_profit_results),
         "actionable_target_count": len(actionable_targets),
         "deferred_target_count": sum(1 for item in skipped_results if item.get("action") == "defer_actionable_limit"),
         "zero_worker_active_count": zero_worker_active_count,
         "max_zero_worker_active": max_zero_worker_active,
         "guard_stop_cooldown_count": len(guard_stop_cooldowns),
+        "skipped_below_min_profit_count": len(skipped_min_profit_results),
         "workers": max_workers,
         "ok": sum(1 for item in results if item.get("ok")),
         "failed": sum(1 for item in results if not item.get("ok")),

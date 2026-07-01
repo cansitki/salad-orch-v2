@@ -59,6 +59,10 @@ def _top_eligible_profiles(scores: list[dict[str, Any]], *, width: int) -> list[
     return eligible[: max(1, min(width, len(eligible)))]
 
 
+def _hard_profit_floor(min_profit_day: float) -> float:
+    return min_profit_day if min_profit_day <= 0.0 else 0.0
+
+
 def _age_seconds(value: Any) -> float | None:
     if not value:
         return None
@@ -100,6 +104,7 @@ def build_targets(
     prefer_reported_available_capacity_first = bool(env_int("PRL_FILL_REPORTED_AVAILABLE_CAPACITY_FIRST", 0))
     fallback_within_width_only = bool(env_int("PRL_SCHEDULER_FALLBACK_WITHIN_WIDTH_ONLY", 0))
     min_profit_day = config.risk.min_profit_for_mode("optimize" if mode == "optimize" else "fill")
+    hard_profit_floor = _hard_profit_floor(min_profit_day)
     assigned_by_org_profile: dict[tuple[str, str], int] = {}
     targets: list[dict[str, Any]] = []
     assigned_at = utc_now()
@@ -385,6 +390,8 @@ def build_targets(
                                 f"_lte_current_{current_profit:.3f}"
                             )
                     else:
+                        if current_profit < hard_profit_floor:
+                            continue
                         profile = current
                         profile_index = 0
                         reason = f"{mode}:negative_observed_profile_no_replacement"
@@ -467,6 +474,8 @@ def build_targets(
                 reason = f"{mode}:diversified_rank_{profile_rank + 1}_of_{len(eligible_profiles)}"
                 if used_probe_fallback:
                     reason += ":availability_probe_fallback"
+            if float(profile["expected_profit_day"]) < hard_profit_floor:
+                continue
             assigned_by_org_profile[(org.label, str(profile["profile_key"]))] = (
                 assigned_by_org_profile.get((org.label, str(profile["profile_key"])), 0) + 1
             )
@@ -583,8 +592,14 @@ def schedule_once(
     )
     preserved_existing_targets = False
     if not dry_run and not targets and existing_targets:
-        preserved_existing_targets = True
-        targets = list(existing_targets.values())
+        min_profit_day = config.risk.min_profit_for_mode("optimize" if selected_mode == "optimize" else "fill")
+        hard_profit_floor = _hard_profit_floor(min_profit_day)
+        targets = [
+            target
+            for target in existing_targets.values()
+            if float(target.get("expected_profit_day") or 0.0) >= hard_profit_floor
+        ]
+        preserved_existing_targets = bool(targets)
 
     with state_db.connect(db_path) as conn:
         state_db.init_db(conn)

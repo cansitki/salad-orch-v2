@@ -277,6 +277,59 @@ class ProfitSnapshotTest(unittest.TestCase):
         self.assertEqual(snapshot["totals"]["cost_day"], 2.16)
         self.assertEqual(snapshot["slots"][0]["slot"], "prl-kray-roi-01")
 
+    def test_build_snapshot_treats_named_unmapped_worker_as_live_for_nohash_lists(self) -> None:
+        group = {
+            "priority": "batch",
+            "container": {"resources": {"gpu_classes": [salad_prl_profit_snapshot.GPU_IDS["3090"]]}},
+            "current_state": {
+                "status": "running",
+                "start_time": "2026-07-01T11:30:00+00:00",
+                "instance_status_counts": {"running_count": 1},
+            },
+        }
+
+        def fake_salad_json(path: str, _api_key: str) -> dict:
+            if path.endswith("/instances"):
+                return {"items": [{"id": "different-instance"}]}
+            return group
+
+        with (
+            patch.object(
+                salad_prl_profit_snapshot,
+                "configured_accounts",
+                return_value=[("kray", "kray", "SALAD_API_KEY", ["prl-kray-roi-01"])],
+            ),
+            patch.dict("os.environ", {"SALAD_API_KEY": "test", "PRL_WALLET": "prl-test"}, clear=False),
+            patch.object(salad_prl_profit_snapshot, "price_catalog", return_value={}),
+            patch.object(salad_prl_profit_snapshot, "salad_json", side_effect=fake_salad_json),
+            patch.object(salad_prl_profit_snapshot, "pool_prl_per_th_day", return_value=(0.04, 24, 0.01)),
+            patch.object(salad_prl_profit_snapshot, "market_prl_price_usd", return_value=0.47),
+            patch.object(
+                salad_prl_profit_snapshot,
+                "parse_workers",
+                return_value=[
+                    {
+                        "worker": "kray-prl-kray-roi-01-pearlfortune-live-instance",
+                        "slot": None,
+                        "named_slot": None,
+                        "gpu": "RTX 3090",
+                        "gpu_id": salad_prl_profit_snapshot.GPU_IDS["3090"],
+                        "gpu_token": "3090",
+                        "th": 100.0,
+                        "stale": False,
+                        "last_stats_at": "2026-07-01T11:59:00+00:00",
+                    }
+                ],
+            ),
+        ):
+            snapshot = salad_prl_profit_snapshot.build_snapshot(0.55)
+
+        self.assertEqual(snapshot["fresh_workers"], 1)
+        self.assertEqual(snapshot["slots"], [])
+        self.assertEqual(snapshot["unmapped_live_workers"][0]["named_slot"], "prl-kray-roi-01")
+        self.assertEqual(snapshot["running_no_live_billable_slots"], [])
+        self.assertEqual(snapshot["stuck_non_live_slots"], [])
+
 
 if __name__ == "__main__":
     unittest.main()

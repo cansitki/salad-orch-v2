@@ -822,7 +822,12 @@ def build_snapshot(price: float) -> dict[str, Any]:
             }
         )
 
-    known_slots = {row.get("slot") for row in rows}
+    fresh_named_live_slots = {
+        str(worker.get("named_slot"))
+        for worker in workers
+        if str(worker.get("named_slot") or "") in groups
+    }
+    known_slots = {row.get("slot") for row in rows} | fresh_named_live_slots
     pending_slots = []
     running_no_live = []
     stuck_non_live = []

@@ -575,14 +575,17 @@ def planned_action(
     *,
     protect_running: bool = True,
     protect_pending: bool = True,
-    pending_retarget_after_seconds: int = 45,
+    pending_retarget_after_seconds: int = 900,
     pending_status_retarget_after_seconds: int | None = None,
+    allow_running_nohash_retarget: bool | None = None,
 ) -> dict[str, Any]:
     pending_retarget_after_seconds = max(0, int(pending_retarget_after_seconds))
     pending_status_retarget_after_seconds = resolve_pending_status_retarget_after_seconds(
         pending_retarget_after_seconds,
         pending_status_retarget_after_seconds,
     )
+    if allow_running_nohash_retarget is None:
+        allow_running_nohash_retarget = env_bool("PRL_ALLOW_RUNNING_NOHASH_RETARGET", False)
     try:
         group, instances = watch.slot_state(slot_name)
     except KeyError:
@@ -609,9 +612,15 @@ def planned_action(
                         f"running_no_hash_profile_mismatch_wait:{current or 'unknown'}:"
                         f"age_{age_text}_lt_{pending_retarget_after_seconds}"
                     )
-                else:
+                elif allow_running_nohash_retarget:
                     action = "patch"
                     reason = f"stale_running_no_hash_profile_mismatch:{current or 'unknown'}:age_{running_age:.1f}"
+                else:
+                    action = "observe"
+                    reason = (
+                        f"running_no_hash_profile_mismatch_protected:{current or 'unknown'}:"
+                        f"age_{running_age:.1f}:retarget_disabled"
+                    )
         elif pending_active:
             pending_age = pending_profile_age_seconds(target)
             if protect_pending:
@@ -651,9 +660,15 @@ def planned_action(
                 f"running_no_hash_same_profile_wait:{current or 'unknown'}:"
                 f"age_{age_text}_lt_{pending_retarget_after_seconds}"
             )
-        else:
+        elif allow_running_nohash_retarget:
             action = "restart_no_hash"
             reason = f"stale_running_no_hash_same_profile:{current or 'unknown'}:age_{running_age:.1f}"
+        else:
+            action = "observe"
+            reason = (
+                f"running_no_hash_same_profile_protected:{current or 'unknown'}:"
+                f"age_{running_age:.1f}:restart_disabled"
+            )
     else:
         action = "observe"
         reason = "target_already_active_or_pending"
@@ -980,8 +995,9 @@ def run_once(
     schedule_if_empty: bool = True,
     allow_live_retarget: bool = False,
     allow_pending_retarget: bool = False,
-    pending_retarget_after_seconds: int = 45,
+    pending_retarget_after_seconds: int = 900,
     pending_status_retarget_after_seconds: int | None = None,
+    allow_running_nohash_retarget: bool | None = None,
     heartbeat_stale_after_seconds: int | None = None,
 ) -> dict[str, Any]:
     config = load_config()
@@ -1012,6 +1028,8 @@ def run_once(
         pending_retarget_after_seconds,
         pending_status_retarget_after_seconds,
     )
+    if allow_running_nohash_retarget is None:
+        allow_running_nohash_retarget = env_bool("PRL_ALLOW_RUNNING_NOHASH_RETARGET", False)
     if heartbeat_stale_after_seconds is None:
         heartbeat_stale_after_seconds = env_int("PRL_ORG_WORKER_STALE_AFTER_SECONDS", 300)
 
@@ -1325,6 +1343,7 @@ def run_once(
                     protect_pending=not allow_pending_retarget,
                     pending_retarget_after_seconds=pending_retarget_after_seconds,
                     pending_status_retarget_after_seconds=pending_status_retarget_after_seconds,
+                    allow_running_nohash_retarget=allow_running_nohash_retarget,
                 )
                 result = execute_action(watch, target, plan, apply=apply)
                 ok = bool(result.get("ok", True))
@@ -1422,6 +1441,7 @@ def run_once(
                 "apply": apply,
                 "allow_live_retarget": allow_live_retarget,
                 "allow_pending_retarget": allow_pending_retarget,
+                "allow_running_nohash_retarget": allow_running_nohash_retarget,
                 "pending_retarget_after_seconds": pending_retarget_after_seconds,
                 "pending_status_retarget_after_seconds": pending_status_retarget_after_seconds,
                 "targets": len(targets),
@@ -1438,6 +1458,7 @@ def run_once(
                 "apply": apply,
                 "allow_live_retarget": allow_live_retarget,
                 "allow_pending_retarget": allow_pending_retarget,
+                "allow_running_nohash_retarget": allow_running_nohash_retarget,
                 "pending_retarget_after_seconds": pending_retarget_after_seconds,
                 "pending_status_retarget_after_seconds": pending_status_retarget_after_seconds,
                 "targets": len(targets),
@@ -1451,6 +1472,7 @@ def run_once(
         "apply": apply,
         "allow_live_retarget": allow_live_retarget,
         "allow_pending_retarget": allow_pending_retarget,
+        "allow_running_nohash_retarget": allow_running_nohash_retarget,
         "pending_retarget_after_seconds": pending_retarget_after_seconds,
         "pending_status_retarget_after_seconds": pending_status_retarget_after_seconds,
         "targets": len(targets),
@@ -1467,7 +1489,12 @@ def main() -> None:
     parser.add_argument("--apply", action="store_true", help="Perform live Salad create/patch/start actions.")
     parser.add_argument("--allow-live-retarget", action="store_true", help="Allow patching already running slots.")
     parser.add_argument("--allow-pending-retarget", action="store_true", help="Allow patching creating/allocating slots.")
-    parser.add_argument("--pending-retarget-after-seconds", type=int, default=45)
+    parser.add_argument(
+        "--allow-running-nohash-retarget",
+        action="store_true",
+        help="Allow patch/restart of running slots that have not yet appeared in the pool.",
+    )
+    parser.add_argument("--pending-retarget-after-seconds", type=int, default=900)
     parser.add_argument(
         "--pending-status-retarget-after-seconds",
         type=int,
@@ -1495,6 +1522,7 @@ def main() -> None:
                     apply=args.apply,
                     allow_live_retarget=args.allow_live_retarget,
                     allow_pending_retarget=args.allow_pending_retarget,
+                    allow_running_nohash_retarget=args.allow_running_nohash_retarget,
                     pending_retarget_after_seconds=args.pending_retarget_after_seconds,
                     pending_status_retarget_after_seconds=args.pending_status_retarget_after_seconds,
                 )
@@ -1508,6 +1536,7 @@ def main() -> None:
                 apply=args.apply,
                 allow_live_retarget=args.allow_live_retarget,
                 allow_pending_retarget=args.allow_pending_retarget,
+                allow_running_nohash_retarget=args.allow_running_nohash_retarget,
                 pending_retarget_after_seconds=args.pending_retarget_after_seconds,
                 pending_status_retarget_after_seconds=args.pending_status_retarget_after_seconds,
             )

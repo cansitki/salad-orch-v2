@@ -304,6 +304,7 @@ def _run_action(
     schedule_width: int,
     require_secrets: bool,
     allow_pending_retarget: bool,
+    allow_running_nohash_retarget: bool,
     pending_retarget_after_seconds: int,
     pending_status_retarget_after_seconds: int | None,
     worker_parallelism: int,
@@ -330,6 +331,7 @@ def _run_action(
                 apply_workers=True,
                 confirm_all_orgs=True,
                 allow_pending_retarget=True,
+                allow_running_nohash_retarget=allow_running_nohash_retarget,
                 pending_retarget_after_seconds=pending_retarget_after_seconds,
                 pending_status_retarget_after_seconds=pending_status_retarget_after_seconds,
                 skip_guard=True,
@@ -348,6 +350,7 @@ def _run_action(
                 schedule_width=schedule_width,
                 apply_workers=True,
                 allow_pending_retarget=allow_pending_retarget,
+                allow_running_nohash_retarget=allow_running_nohash_retarget,
                 pending_retarget_after_seconds=pending_retarget_after_seconds,
                 pending_status_retarget_after_seconds=pending_status_retarget_after_seconds,
                 skip_guard=True,
@@ -374,7 +377,8 @@ def run_monitor_tick(
     guard_actionable_only: bool = False,
     org: str | None = None,
     allow_pending_retarget: bool = False,
-    pending_retarget_after_seconds: int = 45,
+    allow_running_nohash_retarget: bool = False,
+    pending_retarget_after_seconds: int = 900,
     pending_status_retarget_after_seconds: int | None = None,
     confirm_live_actions: bool = False,
     runner_timeout_seconds: float = 90,
@@ -473,6 +477,7 @@ def run_monitor_tick(
                         schedule_width=schedule_width,
                         require_secrets=require_secrets,
                         allow_pending_retarget=allow_pending_retarget,
+                        allow_running_nohash_retarget=allow_running_nohash_retarget,
                         pending_retarget_after_seconds=pending_retarget_after_seconds,
                         pending_status_retarget_after_seconds=pending_status_retarget_after_seconds,
                         worker_parallelism=worker_parallelism,
@@ -628,7 +633,12 @@ def main() -> None:
     )
     parser.add_argument("--org", default=None, help="Organization label for --apply-one-org.")
     parser.add_argument("--allow-pending-retarget", action="store_true", help="Allow one-org apply to patch stale creating/allocating slots.")
-    parser.add_argument("--pending-retarget-after-seconds", type=int, default=45)
+    parser.add_argument(
+        "--allow-running-nohash-retarget",
+        action="store_true",
+        help="Allow live action ticks to patch/restart running slots that have not appeared in the pool.",
+    )
+    parser.add_argument("--pending-retarget-after-seconds", type=int, default=900)
     parser.add_argument(
         "--pending-status-retarget-after-seconds",
         type=int,
@@ -675,6 +685,7 @@ def main() -> None:
             guard_actionable_only=args.guard_actionable_only,
             org=args.org,
             allow_pending_retarget=args.allow_pending_retarget,
+            allow_running_nohash_retarget=args.allow_running_nohash_retarget,
             pending_retarget_after_seconds=args.pending_retarget_after_seconds,
             pending_status_retarget_after_seconds=args.pending_status_retarget_after_seconds,
             confirm_live_actions=args.confirm_live_actions,

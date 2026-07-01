@@ -1375,6 +1375,7 @@ class StateAndSchedulerTest(unittest.TestCase):
             },
             protect_running=True,
             pending_retarget_after_seconds=60,
+            allow_running_nohash_retarget=True,
         )
 
         self.assertEqual(pending_plan["action"], "observe")
@@ -2338,11 +2339,45 @@ class StateAndSchedulerTest(unittest.TestCase):
             },
             protect_running=True,
             pending_retarget_after_seconds=60,
+            allow_running_nohash_retarget=True,
         )
 
         self.assertEqual(plan["action"], "patch")
         self.assertIn("stale_running_no_hash_profile_mismatch", plan["reason"])
         self.assertFalse(plan["protected"])
+
+    def test_org_worker_protects_stale_running_no_hash_mismatch_by_default(self) -> None:
+        class Watch:
+            def slot_state(self, _slot_name):
+                return (
+                    {
+                        "priority": "low",
+                        "container": {"resources": {"gpu_classes": ["gpu-rtx-4070tis"], "memory": 2048}},
+                        "current_state": {"instance_status_counts": {"running_count": 1}},
+                    },
+                    [{"id": "running-1", "ready": True, "started": True}],
+                )
+
+            GPU = {"4070tis": "gpu-rtx-4070tis"}
+
+        plan = org_worker.planned_action(
+            Watch(),
+            "prl-kray-roi-01",
+            {
+                "profile_key": "5090:low:2048",
+                "observed_profile_since_utc": (datetime.now(UTC) - timedelta(minutes=30)).isoformat(
+                    timespec="seconds"
+                ),
+                "live_worker_count": 0,
+                "live_worker_th": 0,
+            },
+            protect_running=True,
+            pending_retarget_after_seconds=60,
+        )
+
+        self.assertEqual(plan["action"], "observe")
+        self.assertIn("running_no_hash_profile_mismatch_protected", plan["reason"])
+        self.assertIn("retarget_disabled", plan["reason"])
 
     def test_org_worker_waits_before_restarting_fresh_running_no_hash_same_profile(self) -> None:
         class Watch:
@@ -2402,12 +2437,46 @@ class StateAndSchedulerTest(unittest.TestCase):
             },
             protect_running=True,
             pending_retarget_after_seconds=60,
+            allow_running_nohash_retarget=True,
         )
 
         self.assertEqual(plan["action"], "restart_no_hash")
         self.assertIn("stale_running_no_hash_same_profile", plan["reason"])
         self.assertEqual(plan["running_instance_ids"], ["running-1"])
         self.assertFalse(plan["protected"])
+
+    def test_org_worker_protects_stale_running_no_hash_same_profile_by_default(self) -> None:
+        class Watch:
+            def slot_state(self, _slot_name):
+                return (
+                    {
+                        "priority": "batch",
+                        "container": {"resources": {"gpu_classes": ["gpu-rtx-3090"], "memory": 2048}},
+                        "current_state": {"instance_status_counts": {"running_count": 1}},
+                    },
+                    [{"id": "running-1", "ready": True, "started": True}],
+                )
+
+            GPU = {"3090": "gpu-rtx-3090"}
+
+        plan = org_worker.planned_action(
+            Watch(),
+            "prl-kray-roi-10",
+            {
+                "profile_key": "3090:batch:2048",
+                "observed_profile_since_utc": (datetime.now(UTC) - timedelta(minutes=30)).isoformat(
+                    timespec="seconds"
+                ),
+                "live_worker_count": 0,
+                "live_worker_th": 0,
+            },
+            protect_running=True,
+            pending_retarget_after_seconds=60,
+        )
+
+        self.assertEqual(plan["action"], "observe")
+        self.assertIn("running_no_hash_same_profile_protected", plan["reason"])
+        self.assertIn("restart_disabled", plan["reason"])
 
     def test_scheduler_assigns_diversified_profitable_batch_targets(self) -> None:
         payload = fleet_scheduler.schedule_once(

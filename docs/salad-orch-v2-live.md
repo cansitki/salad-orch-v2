@@ -141,22 +141,25 @@ For active fill mode, use the pending-only live monitor after the read-only
 monitor has shown safe targets:
 
 ```bash
-PRL_PEARL_FEE_RATE=0.01 python3 scripts/runtime_monitor.py --loop --interval 60 --runner-timeout-seconds 240 --fee 0.01 --require-secrets --apply-all-orgs-pending --guard-on-issues-every 1 --guard-actionable-only --confirm-live-actions --pending-retarget-after-seconds 60 --worker-parallelism 4 --skip-shadow-workers
+PRL_PEARL_FEE_RATE=0.01 python3 scripts/runtime_monitor.py --loop --interval 60 --runner-timeout-seconds 240 --fee 0.01 --require-secrets --apply-all-orgs-pending --guard-on-issues-every 1 --guard-actionable-only --confirm-live-actions --pending-retarget-after-seconds 900 --pending-status-retarget-after-seconds 900 --worker-parallelism 4 --skip-shadow-workers
 ```
 
 This still runs a shadow gate first, but `--skip-shadow-workers` makes that
 preflight DB-only so the same cycle does not spend Salad API requests twice. The
 action pass still performs live worker observations before patching stale
 creating/allocating slots across all orgs, but it does not pass
-`--allow-live-retarget`, so running slots remain protected.
+`--allow-live-retarget` or `--allow-running-nohash-retarget`, so running slots
+remain protected even when the GPU is active before the miner appears in the
+pool.
 `--guard-actionable-only` keeps fill moving while no-hash or negative slots are
 still inside grace, but switches immediately to guard once the read-only guard
 probe has a retarget/stop decision.
-`--pending-retarget-after-seconds` controls running slots that have no live pool
-hashrate. Creating/allocating/deploying slots use the separate
-`--pending-status-retarget-after-seconds` grace, defaulting to at least 120
-seconds, and the scheduler's pending-target protection follows that longer
-window. When `PRL_PENDING_PROFILE_COOLDOWN_SECONDS` is not explicitly set, the
+`--pending-retarget-after-seconds` only affects running no-hash slots when
+`--allow-running-nohash-retarget` is explicitly passed. Without that flag,
+running no-hash slots are observed and left alone. Creating/allocating/deploying
+slots use the separate `--pending-status-retarget-after-seconds` grace,
+defaulting to at least 120 seconds, and the scheduler's pending-target
+protection follows that longer window. When `PRL_PENDING_PROFILE_COOLDOWN_SECONDS` is not explicitly set, the
 monitor keeps stale pending profile cooldowns on the shorter no-hash cadence so
 failed searches can rotate quickly after the longer pending wait.
 `--worker-parallelism 4` runs each organization in an isolated process, which is
@@ -288,12 +291,14 @@ If refresh times out, reporter should return stale DB state with a
 Use this only after read-only shadow is safe:
 
 ```bash
-PRL_PEARL_FEE_RATE=0.01 python3 scripts/runtime_monitor.py --once --runner-timeout-seconds 90 --price 0.64 --fee 0.01 --require-secrets --apply-one-org --org kry1 --confirm-live-actions --allow-pending-retarget --pending-retarget-after-seconds 60
+PRL_PEARL_FEE_RATE=0.01 python3 scripts/runtime_monitor.py --once --runner-timeout-seconds 90 --price 0.64 --fee 0.01 --require-secrets --apply-one-org --org kry1 --confirm-live-actions --allow-pending-retarget --pending-retarget-after-seconds 900 --pending-status-retarget-after-seconds 900
 ```
 
 This can patch stale creating/allocating mismatches after
 `--pending-status-retarget-after-seconds`, which defaults to at least 120
-seconds.
+seconds. Do not add `--allow-running-nohash-retarget` during warm-up; use it
+only for deliberate later optimization when the pool has had enough time to
+report workers.
 Running profitable GPUs remain protected unless a separate live-retarget flag is
 used.
 

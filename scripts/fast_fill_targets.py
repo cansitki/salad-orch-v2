@@ -9,6 +9,7 @@ from typing import Any
 import requests
 
 import org_worker
+from profit_model import profile_key
 import state_db
 from config_loader import load_config
 from fleet_common import json_dumps, utc_now
@@ -73,6 +74,58 @@ def _status_info(container: dict[str, Any] | None) -> dict[str, Any]:
         "instance_counts": counts,
         "active_or_pending": active_or_pending,
     }
+
+
+def _observed_profile_key(watch: Any, target: dict[str, Any], container: dict[str, Any] | None) -> str | None:
+    if not container:
+        return None
+    gpu_by_id = {value: key for key, value in watch.GPU.items()}
+    container_payload = container.get("container") or {}
+    resources = container_payload.get("resources") or {}
+    gpu_ids = resources.get("gpu_classes") or []
+    gpu_keys = [gpu_by_id.get(str(gpu_id)) for gpu_id in gpu_ids]
+    gpu_keys = [key for key in gpu_keys if key]
+    if len(gpu_keys) != 1:
+        return str(target.get("profile_key") or "") or None
+    priority = str(container.get("priority") or container_payload.get("priority") or target.get("priority") or "")
+    memory_mb = int(resources.get("memory") or target.get("memory_mb") or 2048)
+    return profile_key(gpu_keys[0], priority, memory_mb)
+
+
+def _sync_observations(
+    *,
+    db_path: str | None,
+    org_label: str,
+    watch: Any,
+    targets: list[dict[str, Any]],
+    existing_by_name: dict[str, dict[str, Any]],
+) -> None:
+    with state_db.connect(db_path) as conn:
+        state_db.init_db(conn)
+        for target in targets:
+            slot_name = str(target["slot_name"])
+            container = existing_by_name.get(slot_name)
+            info = _status_info(container)
+            state_db.update_slot_observation(
+                conn,
+                {
+                    "org_label": org_label,
+                    "slot_name": slot_name,
+                    "observed_profile_key": _observed_profile_key(watch, target, container),
+                    "observed_status": info["status"],
+                    "protected": bool(info["active_or_pending"]),
+                    "reset_observed_age": False,
+                },
+            )
+        state_db.write_heartbeat(
+            conn,
+            f"fast_fill_sync:{org_label}",
+            payload={
+                "targets": len(targets),
+                "observed": len(existing_by_name),
+            },
+        )
+        conn.commit()
 
 
 def _fast_apply_one(
@@ -306,6 +359,13 @@ def fast_fill_org(
         for item in _container_items(watch)
         if item.get("name")
     }
+    _sync_observations(
+        db_path=db_path,
+        org_label=org_label,
+        watch=watch,
+        targets=targets,
+        existing_by_name=existing_by_name,
+    )
     for target in targets:
         target["_existing_container"] = existing_by_name.get(str(target["slot_name"]))
     results: list[dict[str, Any]] = []

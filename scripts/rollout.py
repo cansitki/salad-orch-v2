@@ -421,6 +421,7 @@ def _run_org_workers(
     apply_workers: bool,
     allow_live_retarget: bool,
     allow_pending_retarget: bool,
+    allow_running_nohash_retarget: bool,
     pending_retarget_after_seconds: int,
     pending_status_retarget_after_seconds: int | None,
     worker_parallelism: int,
@@ -435,6 +436,7 @@ def _run_org_workers(
             "apply": apply_workers,
             "allow_live_retarget": allow_live_retarget,
             "allow_pending_retarget": allow_pending_retarget,
+            "allow_running_nohash_retarget": allow_running_nohash_retarget,
             "pending_retarget_after_seconds": pending_retarget_after_seconds,
             "pending_status_retarget_after_seconds": pending_status_retarget_after_seconds,
             "heartbeat_stale_after_seconds": 0,
@@ -467,6 +469,7 @@ def run_rollout(
     confirm_all_orgs: bool = False,
     allow_live_retarget: bool = False,
     allow_pending_retarget: bool = False,
+    allow_running_nohash_retarget: bool = False,
     confirm_live_retarget: bool = False,
     skip_workers: bool = False,
     skip_guard: bool = False,
@@ -476,7 +479,7 @@ def run_rollout(
     require_secrets: bool = False,
     require_fresh_heartbeats: bool = False,
     schedule_width: int = 10,
-    pending_retarget_after_seconds: int = 45,
+    pending_retarget_after_seconds: int = 900,
     pending_status_retarget_after_seconds: int | None = None,
     worker_parallelism: int = 1,
 ) -> dict[str, Any]:
@@ -510,6 +513,7 @@ def run_rollout(
                     "apply_guard": apply_guard,
                     "allow_live_retarget": allow_live_retarget,
                     "allow_pending_retarget": allow_pending_retarget,
+                    "allow_running_nohash_retarget": allow_running_nohash_retarget,
                 },
             )
             conn.commit()
@@ -538,6 +542,7 @@ def run_rollout(
             apply_workers=apply_workers,
             allow_live_retarget=allow_live_retarget,
             allow_pending_retarget=allow_pending_retarget,
+            allow_running_nohash_retarget=allow_running_nohash_retarget,
             pending_retarget_after_seconds=pending_retarget_after_seconds,
             pending_status_retarget_after_seconds=pending_status_retarget_after_seconds,
             worker_parallelism=worker_parallelism,
@@ -559,6 +564,7 @@ def run_rollout(
                 apply_workers=apply_workers,
                 allow_live_retarget=allow_live_retarget,
                 allow_pending_retarget=allow_pending_retarget,
+                allow_running_nohash_retarget=allow_running_nohash_retarget,
                 pending_retarget_after_seconds=pending_retarget_after_seconds,
                 pending_status_retarget_after_seconds=pending_status_retarget_after_seconds,
                 worker_parallelism=worker_parallelism,
@@ -616,6 +622,7 @@ def run_rollout(
         "apply_guard": apply_guard,
         "allow_live_retarget": allow_live_retarget,
         "allow_pending_retarget": allow_pending_retarget,
+        "allow_running_nohash_retarget": allow_running_nohash_retarget,
         "pending_retarget_after_seconds": pending_retarget_after_seconds,
         "pending_status_retarget_after_seconds": pending_status_retarget_after_seconds,
         "worker_parallelism": worker_parallelism,
@@ -683,7 +690,12 @@ def main() -> None:
     parser.add_argument("--apply-guard", action="store_true", help="Allow guard v2 live retarget/stop actions.")
     parser.add_argument("--allow-live-retarget", action="store_true", help="Allow org_worker to patch running slots.")
     parser.add_argument("--allow-pending-retarget", action="store_true", help="Allow org_worker to patch creating/allocating slots.")
-    parser.add_argument("--pending-retarget-after-seconds", type=int, default=45)
+    parser.add_argument(
+        "--allow-running-nohash-retarget",
+        action="store_true",
+        help="Allow org_worker to patch/restart running slots that have not appeared in the pool.",
+    )
+    parser.add_argument("--pending-retarget-after-seconds", type=int, default=900)
     parser.add_argument(
         "--pending-status-retarget-after-seconds",
         type=int,
@@ -714,6 +726,7 @@ def main() -> None:
         confirm_all_orgs=args.confirm_all_orgs,
         allow_live_retarget=args.allow_live_retarget,
         allow_pending_retarget=args.allow_pending_retarget,
+        allow_running_nohash_retarget=args.allow_running_nohash_retarget,
         confirm_live_retarget=args.confirm_live_retarget,
         skip_workers=args.skip_workers,
         skip_guard=args.skip_guard,

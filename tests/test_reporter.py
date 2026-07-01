@@ -230,29 +230,37 @@ class ReporterTest(unittest.TestCase):
         self.assertEqual(report["running_no_live_billable_slots"], [])
 
     def test_running_no_live_falls_back_to_stale_slot_observation(self) -> None:
+        original = os.environ.get("PRL_REPORT_NOHASH_GRACE_SECONDS")
+        os.environ["PRL_REPORT_NOHASH_GRACE_SECONDS"] = "60"
         now = datetime.now(UTC).replace(microsecond=0)
-        with state_db.connect(self.db_path) as conn:
-            conn.execute(
-                """
-                UPDATE slots
-                SET observed_status='running',
-                    observed_profile_key='3090:batch:2048',
-                    live_hashrate_th=0,
-                    protected=0,
-                    observed_profile_since_utc=?,
-                    observed_status_since_utc=?,
-                    updated_at_utc=?
-                WHERE org_label='kray' AND slot_name='prl-kray-roi-01'
-                """,
-                (
-                    (now - timedelta(minutes=3)).isoformat(timespec="seconds"),
-                    (now - timedelta(minutes=10)).isoformat(timespec="seconds"),
-                    now.isoformat(timespec="seconds"),
-                ),
-            )
-            conn.commit()
+        try:
+            with state_db.connect(self.db_path) as conn:
+                conn.execute(
+                    """
+                    UPDATE slots
+                    SET observed_status='running',
+                        observed_profile_key='3090:batch:2048',
+                        live_hashrate_th=0,
+                        protected=0,
+                        observed_profile_since_utc=?,
+                        observed_status_since_utc=?,
+                        updated_at_utc=?
+                    WHERE org_label='kray' AND slot_name='prl-kray-roi-01'
+                    """,
+                    (
+                        (now - timedelta(minutes=3)).isoformat(timespec="seconds"),
+                        (now - timedelta(minutes=10)).isoformat(timespec="seconds"),
+                        now.isoformat(timespec="seconds"),
+                    ),
+                )
+                conn.commit()
 
-        report = reporter.build_report(self.db_path)
+            report = reporter.build_report(self.db_path)
+        finally:
+            if original is None:
+                os.environ.pop("PRL_REPORT_NOHASH_GRACE_SECONDS", None)
+            else:
+                os.environ["PRL_REPORT_NOHASH_GRACE_SECONDS"] = original
 
         self.assertEqual(len(report["running_no_live_billable_slots"]), 1)
         issue = report["running_no_live_billable_slots"][0]
@@ -312,50 +320,66 @@ class ReporterTest(unittest.TestCase):
         self.assertEqual(report["active_pending_slots"], 3)
 
     def test_stuck_slots_use_observed_status_age_not_refresh_age(self) -> None:
+        original = os.environ.get("PRL_REPORT_STUCK_PENDING_AFTER_SECONDS")
+        os.environ["PRL_REPORT_STUCK_PENDING_AFTER_SECONDS"] = "600"
         now = datetime.now(UTC).replace(microsecond=0)
-        with state_db.connect(self.db_path) as conn:
-            conn.execute(
-                """
-                UPDATE slots
-                SET observed_status='allocating',
-                    observed_profile_key='3090:batch:2048',
-                    observed_status_since_utc=?,
-                    updated_at_utc=?
-                WHERE org_label='kray' AND slot_name='prl-kray-roi-01'
-                """,
-                (
-                    (now - timedelta(minutes=12)).isoformat(timespec="seconds"),
-                    now.isoformat(timespec="seconds"),
-                ),
-            )
-            conn.commit()
+        try:
+            with state_db.connect(self.db_path) as conn:
+                conn.execute(
+                    """
+                    UPDATE slots
+                    SET observed_status='allocating',
+                        observed_profile_key='3090:batch:2048',
+                        observed_status_since_utc=?,
+                        updated_at_utc=?
+                    WHERE org_label='kray' AND slot_name='prl-kray-roi-01'
+                    """,
+                    (
+                        (now - timedelta(minutes=12)).isoformat(timespec="seconds"),
+                        now.isoformat(timespec="seconds"),
+                    ),
+                )
+                conn.commit()
 
-        report = reporter.build_report(self.db_path)
+            report = reporter.build_report(self.db_path)
+        finally:
+            if original is None:
+                os.environ.pop("PRL_REPORT_STUCK_PENDING_AFTER_SECONDS", None)
+            else:
+                os.environ["PRL_REPORT_STUCK_PENDING_AFTER_SECONDS"] = original
 
         self.assertEqual(len(report["stuck_slots"]), 1)
         self.assertEqual(report["stuck_slots"][0]["slot_name"], "prl-kray-roi-01")
         self.assertEqual(report["stuck_slots"][0]["age_source"], "observed_status_since_utc")
 
     def test_mature_pending_uses_operational_pending_threshold(self) -> None:
+        original = os.environ.get("PRL_REPORT_MATURE_PENDING_AFTER_SECONDS")
+        os.environ["PRL_REPORT_MATURE_PENDING_AFTER_SECONDS"] = "300"
         now = datetime.now(UTC).replace(microsecond=0)
-        with state_db.connect(self.db_path) as conn:
-            conn.execute(
-                """
-                UPDATE slots
-                SET observed_status='deploying',
-                    observed_profile_key='3090:batch:2048',
-                    observed_status_since_utc=?,
-                    updated_at_utc=?
-                WHERE org_label='kray' AND slot_name='prl-kray-roi-01'
-                """,
-                (
-                    (now - timedelta(minutes=6)).isoformat(timespec="seconds"),
-                    now.isoformat(timespec="seconds"),
-                ),
-            )
-            conn.commit()
+        try:
+            with state_db.connect(self.db_path) as conn:
+                conn.execute(
+                    """
+                    UPDATE slots
+                    SET observed_status='deploying',
+                        observed_profile_key='3090:batch:2048',
+                        observed_status_since_utc=?,
+                        updated_at_utc=?
+                    WHERE org_label='kray' AND slot_name='prl-kray-roi-01'
+                    """,
+                    (
+                        (now - timedelta(minutes=6)).isoformat(timespec="seconds"),
+                        now.isoformat(timespec="seconds"),
+                    ),
+                )
+                conn.commit()
 
-        report = reporter.build_report(self.db_path)
+            report = reporter.build_report(self.db_path)
+        finally:
+            if original is None:
+                os.environ.pop("PRL_REPORT_MATURE_PENDING_AFTER_SECONDS", None)
+            else:
+                os.environ["PRL_REPORT_MATURE_PENDING_AFTER_SECONDS"] = original
 
         self.assertEqual(report["mature_pending_after_seconds"], 300)
         self.assertEqual(len(report["mature_pending_slots"]), 1)

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import signal
 from datetime import UTC, datetime
 from typing import Any
@@ -24,6 +25,23 @@ def _age_seconds(at_utc: str | None) -> float | None:
     if at.tzinfo is None:
         at = at.replace(tzinfo=UTC)
     return max(0.0, (datetime.now(UTC) - at).total_seconds())
+
+
+def _latest_age_seconds(*values: str | None) -> float | None:
+    parsed: list[datetime] = []
+    for value in values:
+        if not value:
+            continue
+        try:
+            at = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        if at.tzinfo is None:
+            at = at.replace(tzinfo=UTC)
+        parsed.append(at)
+    if not parsed:
+        return None
+    return max(0.0, (datetime.now(UTC) - max(parsed)).total_seconds())
 
 
 def _payload(row: Any) -> dict[str, Any]:
@@ -65,12 +83,12 @@ def _running_no_live_from_slot_observations(
             continue
         if float(slot.get("live_hashrate_th") or 0) > 0:
             continue
-        age_value = (
-            slot.get("observed_profile_since_utc")
-            or slot.get("observed_status_since_utc")
-            or slot.get("updated_at_utc")
+        age = _latest_age_seconds(
+            slot.get("observed_profile_since_utc"),
+            slot.get("observed_status_since_utc"),
         )
-        age = _age_seconds(age_value)
+        if age is None:
+            age = _age_seconds(slot.get("updated_at_utc"))
         if age is None or age < grace_seconds:
             continue
         profile_key = str(slot.get("observed_profile_key") or slot.get("desired_profile_key") or "")
@@ -433,6 +451,23 @@ def build_report(
     refresh_timeout_seconds: int = 45,
 ) -> dict[str, Any]:
     config = load_config()
+    enabled_org_labels = {org.label for org in config.enabled_orgs()}
+    filter_to_enabled_orgs = any(
+        os.environ.get(key)
+        for key in (
+            "SALAD_FLEET_CONFIG_PATH",
+            "PRL_FLEET_CONFIG_PATH",
+            "SALAD_FLEET_CONFIG_JSON",
+            "PRL_ENABLED_ORGS",
+            "PRL_FLEET_ORGS",
+        )
+    )
+
+    def include_enabled_org(row: dict[str, Any]) -> bool:
+        if not filter_to_enabled_orgs or not enabled_org_labels:
+            return True
+        return str(row.get("org_label") or "") in enabled_org_labels
+
     refresh_error: str | None = None
     if refresh:
         old_handler = signal.signal(signal.SIGALRM, _raise_refresh_timeout)
@@ -503,6 +538,7 @@ def build_report(
                 """
             ).fetchall()
         ]
+        targets = [row for row in targets if include_enabled_org(row)]
         scores = [
             dict(row)
             for row in conn.execute(
@@ -554,9 +590,12 @@ def build_report(
             conn,
             str(latest_profit["at_utc"]) if latest_profit else None,
         )
+        latest_slot_snapshots = [row for row in latest_slot_snapshots if include_enabled_org(row)]
         slot_rows = [dict(row) for row in conn.execute("SELECT * FROM slots ORDER BY org_label, slot_name").fetchall()]
+        slot_rows = [row for row in slot_rows if include_enabled_org(row)]
         heartbeats = [dict(row) for row in conn.execute("SELECT * FROM heartbeats ORDER BY process_name").fetchall()]
         worker_rows = [dict(row) for row in conn.execute("SELECT * FROM workers ORDER BY stale, org_label, slot_name").fetchall()]
+        worker_rows = [row for row in worker_rows if include_enabled_org(row)]
         risky_profiles = [
             dict(row)
             for row in conn.execute(
@@ -572,7 +611,10 @@ def build_report(
     profile_counts: dict[str, int] = {}
     for target in targets:
         profile_counts[str(target["profile_key"])] = profile_counts.get(str(target["profile_key"]), 0) + 1
-    replica_quotas = status.get("org_replica_quotas") or []
+    replica_quotas = [
+        row for row in (status.get("org_replica_quotas") or [])
+        if include_enabled_org(row)
+    ]
     quota_blockers = [row for row in replica_quotas if str(row.get("status") or "") == "zero_quota"]
     org_slot_counts: dict[str, int] = {}
     for slot in slot_rows:
@@ -643,7 +685,7 @@ def build_report(
     snapshot_running_no_live = list(latest_payload.get("running_no_live_billable_slots") or [])
     no_hash_grace_seconds = env_int(
         "PRL_REPORT_NOHASH_GRACE_SECONDS",
-        env_int("PRL_GUARD_NOHASH_GRACE_SECONDS", 60),
+        env_int("PRL_GUARD_NOHASH_GRACE_SECONDS", env_int("PRL_NOHASH_GRACE_SECONDS", 900)),
     )
     live_worker_slots = {
         (str(row.get("org_label") or ""), str(row.get("slot_name") or ""))
@@ -658,7 +700,11 @@ def build_report(
     )
     mature_pending_after_seconds = env_int(
         "PRL_REPORT_MATURE_PENDING_AFTER_SECONDS",
-        env_int("PRL_PENDING_STATUS_RETARGET_AFTER_SECONDS", 300),
+        env_int("PRL_PENDING_STATUS_RETARGET_AFTER_SECONDS", 900),
+    )
+    stuck_pending_after_seconds = env_int(
+        "PRL_REPORT_STUCK_PENDING_AFTER_SECONDS",
+        max(1800, mature_pending_after_seconds * 2),
     )
     pending_statuses = {"creating", "allocating", "deploying"}
     mature_pending_slots = [
@@ -685,7 +731,7 @@ def build_report(
         for slot in slot_rows
         if slot.get("observed_status") in pending_statuses
         for age, age_source in [_pending_status_age_seconds(slot)]
-        if age is not None and age > 600
+        if age is not None and age > stuck_pending_after_seconds
     ]
     heartbeat_status = []
     for heartbeat in heartbeats:
@@ -735,6 +781,7 @@ def build_report(
         "running_no_live_billable_slots": running_no_live_billable_slots,
         "negative_slots": latest_payload.get("negative_slots") or [],
         "mature_pending_after_seconds": mature_pending_after_seconds,
+        "stuck_pending_after_seconds": stuck_pending_after_seconds,
         "mature_pending_slots": mature_pending_slots,
         "stuck_slots": stuck_slots,
         "profile_counts": profile_counts,

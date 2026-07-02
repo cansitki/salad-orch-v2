@@ -22,6 +22,13 @@ SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
 WATCH_PATH = SCRIPT_DIR / "salad_prl_watch.py"
 DEFAULT_BALANCE_FILE = pathlib.Path("state/salad_balances.json")
 NO_CREDITS_ERROR_TEXT = "no_credits_available"
+LIVE_ACTION_LIMITED_ACTIONS = {
+    "create",
+    "patch",
+    "start",
+    "cooldown_pending",
+    "restart_no_hash",
+}
 
 
 def parse_slot_filter(values: list[str] | None) -> set[str] | None:
@@ -1021,6 +1028,24 @@ def execute_action(watch: Any, target: dict[str, Any], plan: dict[str, Any], *, 
     return {"ok": True, "applied": True, **plan}
 
 
+def is_live_limited_plan(plan: dict[str, Any]) -> bool:
+    return str(plan.get("action") or "") in LIVE_ACTION_LIMITED_ACTIONS
+
+
+def live_action_limit_result(target: dict[str, Any], plan: dict[str, Any], max_live_actions: int) -> dict[str, Any]:
+    return {
+        "ok": True,
+        "applied": False,
+        **plan,
+        "action": "defer_live_action_limit",
+        "original_action": plan.get("action"),
+        "reason": f"live_action_limit:{plan.get('action')}:max_{max_live_actions}",
+        "target_profile_key": target["profile_key"],
+        "current_profile_key": plan.get("current_profile_key"),
+        "live_action_limit": max_live_actions,
+    }
+
+
 def run_once(
     *,
     org_label: str,
@@ -1034,6 +1059,7 @@ def run_once(
     allow_running_nohash_retarget: bool | None = None,
     heartbeat_stale_after_seconds: int | None = None,
     slot_filter: set[str] | None = None,
+    max_live_actions: int = 0,
 ) -> dict[str, Any]:
     config = load_config()
     orgs = {org.label: org for org in config.enabled_orgs()}
@@ -1069,6 +1095,7 @@ def run_once(
         allow_running_nohash_retarget = env_bool("PRL_ALLOW_RUNNING_NOHASH_RETARGET", False)
     if heartbeat_stale_after_seconds is None:
         heartbeat_stale_after_seconds = env_int("PRL_ORG_WORKER_STALE_AFTER_SECONDS", 300)
+    max_live_actions = max(0, int(max_live_actions))
 
     zero_balance_skip = explicit_zero_balance_skip(org_label) if apply else None
     if zero_balance_skip is not None:
@@ -1359,6 +1386,7 @@ def run_once(
     cooldown_rows: list[dict[str, Any]] = []
     active_no_credits_skip: dict[str, Any] | None = None
     pending_profile_cooldown_seconds = env_int("PRL_PENDING_PROFILE_COOLDOWN_SECONDS", 600)
+    live_action_attempts = 0
     for target in targets:
         started = time.monotonic()
         if apply and active_no_credits_skip is not None:
@@ -1382,7 +1410,14 @@ def run_once(
                     pending_status_retarget_after_seconds=pending_status_retarget_after_seconds,
                     allow_running_nohash_retarget=allow_running_nohash_retarget,
                 )
-                result = execute_action(watch, target, plan, apply=apply)
+                if apply and max_live_actions > 0 and is_live_limited_plan(plan):
+                    if live_action_attempts >= max_live_actions:
+                        result = live_action_limit_result(target, plan, max_live_actions)
+                    else:
+                        live_action_attempts += 1
+                        result = execute_action(watch, target, plan, apply=apply)
+                else:
+                    result = execute_action(watch, target, plan, apply=apply)
                 ok = bool(result.get("ok", True))
                 error = None if ok else str(result.get("error") or "action failed")[:180]
             except Exception as exc:
@@ -1479,6 +1514,7 @@ def run_once(
                 "allow_live_retarget": allow_live_retarget,
                 "allow_pending_retarget": allow_pending_retarget,
                 "allow_running_nohash_retarget": allow_running_nohash_retarget,
+                "max_live_actions": max_live_actions,
                 "pending_retarget_after_seconds": pending_retarget_after_seconds,
                 "pending_status_retarget_after_seconds": pending_status_retarget_after_seconds,
                 "targets": len(targets),
@@ -1496,6 +1532,7 @@ def run_once(
                 "allow_live_retarget": allow_live_retarget,
                 "allow_pending_retarget": allow_pending_retarget,
                 "allow_running_nohash_retarget": allow_running_nohash_retarget,
+                "max_live_actions": max_live_actions,
                 "pending_retarget_after_seconds": pending_retarget_after_seconds,
                 "pending_status_retarget_after_seconds": pending_status_retarget_after_seconds,
                 "targets": len(targets),
@@ -1510,6 +1547,7 @@ def run_once(
         "allow_live_retarget": allow_live_retarget,
         "allow_pending_retarget": allow_pending_retarget,
         "allow_running_nohash_retarget": allow_running_nohash_retarget,
+        "max_live_actions": max_live_actions,
         "pending_retarget_after_seconds": pending_retarget_after_seconds,
         "pending_status_retarget_after_seconds": pending_status_retarget_after_seconds,
         "targets": len(targets),
@@ -1547,6 +1585,12 @@ def main() -> None:
         default=[],
         help="Limit this pass to one slot. Can be repeated or comma-separated.",
     )
+    parser.add_argument(
+        "--max-live-actions",
+        type=int,
+        default=0,
+        help="Maximum mutating live actions to apply in this pass; 0 means unlimited.",
+    )
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
     slot_filter = parse_slot_filter(args.slot)
@@ -1570,6 +1614,7 @@ def main() -> None:
                     pending_retarget_after_seconds=args.pending_retarget_after_seconds,
                     pending_status_retarget_after_seconds=args.pending_status_retarget_after_seconds,
                     slot_filter=slot_filter,
+                    max_live_actions=args.max_live_actions,
                 )
             )
             time.sleep(args.interval)
@@ -1585,6 +1630,7 @@ def main() -> None:
                 pending_retarget_after_seconds=args.pending_retarget_after_seconds,
                 pending_status_retarget_after_seconds=args.pending_status_retarget_after_seconds,
                 slot_filter=slot_filter,
+                max_live_actions=args.max_live_actions,
             )
         )
 

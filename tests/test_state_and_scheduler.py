@@ -388,6 +388,88 @@ class StateAndSchedulerTest(unittest.TestCase):
             [("prl-kray-roi-02", "dry_run_create")],
         )
 
+    def test_org_worker_can_limit_live_actions_per_pass(self) -> None:
+        with state_db.connect(self.db_path) as conn:
+            state_db.init_db(conn)
+            state_db.sync_config(conn, load_config())
+            state_db.upsert_gpu_profiles(conn, profit_model.load_profiles())
+            for slot_name in ("prl-kray-roi-01", "prl-kray-roi-02"):
+                state_db.set_slot_target(
+                    conn,
+                    {
+                        "org_label": "kray",
+                        "slot_name": slot_name,
+                        "profile_key": "4090:batch:2048",
+                        "mode": "base_fill",
+                        "decision_price_usd": 0.64,
+                        "expected_profit_day": 1.0,
+                        "protected": False,
+                        "reason": "test",
+                        "assigned_at_utc": "2026-06-24T12:00:00+00:00",
+                    },
+                )
+            conn.commit()
+
+        class FakeWatch:
+            ORG = "kray"
+            PROJECT = "default"
+            GPU = {"4090": "gpu-rtx-4090"}
+
+            class Candidate:
+                def __init__(self, label, priority, gpu_keys, memory):
+                    self.label = label
+                    self.priority = priority
+                    self.gpu_keys = gpu_keys
+                    self.memory = memory
+
+            def __init__(self) -> None:
+                self.create_calls: list[str] = []
+
+            def request(self, method, path, _payload=None, **_kwargs):
+                if method == "GET" and path == "/organizations/kray/quotas":
+                    return {
+                        "container_groups_quotas": {
+                            "container_replicas_quota": 10,
+                            "container_replicas_used": 0,
+                        }
+                    }
+                raise AssertionError((method, path))
+
+            def slot_state(self, _slot_name):
+                return None, []
+
+            def create_slot(self, slot_name, _candidate):
+                self.create_calls.append(slot_name)
+
+        fake_watch = FakeWatch()
+        with (
+            patch("org_worker.load_watch_module", return_value=fake_watch),
+            patch("org_worker.install_rate_limited_request"),
+        ):
+            payload = org_worker.run_once(
+                org_label="kray",
+                db_path=self.db_path,
+                apply=True,
+                schedule_if_empty=False,
+                max_live_actions=1,
+            )
+
+        self.assertEqual(fake_watch.create_calls, ["prl-kray-roi-01"])
+        self.assertEqual(payload["action_counts"], {"create": 1, "defer_live_action_limit": 1})
+        self.assertEqual(payload["results"][1]["original_action"], "create")
+        with state_db.connect(self.db_path) as conn:
+            attempts = conn.execute(
+                """
+                SELECT slot_name, action
+                FROM attempts
+                ORDER BY id
+                """
+            ).fetchall()
+        self.assertEqual(
+            [(row["slot_name"], row["action"]) for row in attempts],
+            [("prl-kray-roi-01", "create"), ("prl-kray-roi-02", "defer_live_action_limit")],
+        )
+
     def test_org_worker_skips_live_actions_for_explicit_zero_balance(self) -> None:
         fleet_scheduler.schedule_once(db_path=self.db_path, price=0.64, fee=0.01, dry_run=False)
         balance_file = pathlib.Path(self.tmpdir.name) / "balances.json"

@@ -133,8 +133,12 @@ def compute_risk_mode(conn, sample: dict[str, Any], config) -> dict[str, Any]:
     current = sample.get("selected_price_usd")
     fee = config.risk.effective_fee_rate()
 
+    base_decision = config.risk.base_decision_price
+    if current is not None:
+        base_decision = min(float(current), float(config.risk.base_decision_price))
+
     mode = "base_fill"
-    decision = config.risk.base_decision_price
+    decision = base_decision
     reason = "base decision price"
     trailing_min_15m = win15["min"]
     trailing_min_30m = win30["min"]
@@ -150,7 +154,7 @@ def compute_risk_mode(conn, sample: dict[str, Any], config) -> dict[str, Any]:
 
     if trailing_min_15m is not None and trailing_min_15m < config.risk.risk_off_trailing_min_15m:
         mode = "risk_off"
-        decision = config.risk.base_decision_price
+        decision = base_decision
         reason = "trailing_min_15m below risk-off trigger"
     elif (
         current is not None

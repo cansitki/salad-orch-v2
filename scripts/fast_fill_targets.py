@@ -241,7 +241,10 @@ def _fast_apply_one(
             )
             patched = True
 
-        if start_after:
+        should_start_after = start_after and not (
+            existing_info["exists"] and existing_info["active_or_pending"]
+        )
+        if should_start_after:
             action = f"{action}+start"
             watch.request("POST", f"/organizations/{watch.ORG}/projects/{watch.PROJECT}/containers/{slot_name}/start")
             started = True

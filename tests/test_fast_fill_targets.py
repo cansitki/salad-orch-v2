@@ -6,6 +6,8 @@ import tempfile
 import unittest
 from datetime import UTC, datetime, timedelta
 
+import requests
+
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -132,6 +134,57 @@ class FastFillTargetSelectionTest(unittest.TestCase):
         self.assertIn("recent-stop", cooldowns)
         self.assertNotIn("old-stop", cooldowns)
         self.assertGreater(cooldowns["recent-stop"]["remaining_seconds"], 0)
+
+    def test_touch_active_patch_does_not_start_already_active_container(self) -> None:
+        class Watch:
+            ORG = "kray"
+            PROJECT = "default"
+
+            class Candidate:
+                def __init__(self, label, priority, gpu_keys, memory):
+                    self.label = label
+                    self.priority = priority
+                    self.gpu_keys = gpu_keys
+                    self.memory = memory
+
+            def __init__(self):
+                self.requests = []
+
+            def container_payload(self, slot_name, _candidate):
+                return {"name": slot_name, "container": {"resources": {"gpu_classes": ["gpu-rtx-3070"]}}}
+
+            def request(self, method, path, payload=None, **kwargs):
+                self.requests.append((method, path, kwargs))
+                if method == "POST" and path.endswith("/containers"):
+                    response = requests.Response()
+                    response.status_code = 400
+                    response._content = b'{"title":"container already exists"}'
+                    raise requests.HTTPError(response=response)
+                return {"ok": True}
+
+        row = {
+            **target("active", container("running", running_count=1)),
+            "profile_key": "3070:batch:4096",
+            "label": "RTX 3070 batch",
+            "priority": "batch",
+            "gpu_key": "3070",
+            "memory_mb": 4096,
+        }
+        watch = Watch()
+
+        result = fast_fill_targets._fast_apply_one(
+            watch,
+            row,
+            start_after=True,
+            patch_existing=True,
+            touch_active=True,
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["action"], "patch")
+        self.assertTrue(result["patched"])
+        self.assertFalse(result["started"])
+        self.assertFalse(any(method == "POST" and path.endswith("/start") for method, path, _ in watch.requests))
 
 
 if __name__ == "__main__":

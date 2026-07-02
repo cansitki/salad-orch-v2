@@ -3696,6 +3696,67 @@ class StateAndSchedulerTest(unittest.TestCase):
         self.assertEqual(len(targets), 1)
         self.assertEqual(targets[0]["profile_key"], "lowest-break-even:batch:2048")
 
+    def test_scheduler_can_probe_negative_profiles_below_break_even_ceiling(self) -> None:
+        config = config_loader.FleetConfig(
+            organizations=(
+                config_loader.OrgConfig(
+                    label="kray",
+                    slug="kray",
+                    api_key_env="SALAD_API_KEY_TEST",
+                    slot_prefix="prl-kray-roi",
+                    slots=2,
+                ),
+            ),
+            risk=config_loader.RiskConfig(fill_min_profit_day=0.0),
+        )
+        scores = [
+            {
+                "profile_key": "lowest-break-even:batch:2048",
+                "gpu_key": "lowest-break-even",
+                "priority": "batch",
+                "memory_mb": 2048,
+                "expected_profit_day": -0.03,
+                "break_even_price_usd": 0.49,
+                "score": -1000.0,
+                "risk_tier": "unstable_recent_spikes",
+                "eligible": False,
+                "reason": {"priority_allowed": True},
+            },
+            {
+                "profile_key": "too-expensive:batch:2048",
+                "gpu_key": "too-expensive",
+                "priority": "batch",
+                "memory_mb": 2048,
+                "expected_profit_day": -0.04,
+                "break_even_price_usd": 0.70,
+                "score": 100.0,
+                "risk_tier": "safe_base",
+                "eligible": False,
+                "reason": {"priority_allowed": True},
+            },
+        ]
+
+        with patch.dict(
+            "os.environ",
+            {
+                "PRL_SCHEDULER_ALLOW_BREAK_EVEN_PROBES": "1",
+                "PRL_SCHEDULER_PROBE_MAX_BREAK_EVEN_USD": "0.58",
+                "PRL_SCHEDULER_PROBE_MIN_PROFIT_USD_DAY": "-0.20",
+                "PRL_SCHEDULER_PROBE_ALLOW_UNSTABLE_PROFILES": "1",
+                "PRL_SCHEDULER_RANK_BY_BREAK_EVEN": "1",
+            },
+            clear=False,
+        ):
+            targets = fleet_scheduler.build_targets(
+                config,
+                scores,
+                mode="base_fill",
+                decision_price_usd=0.48,
+                width=2,
+            )
+
+        self.assertEqual([target["profile_key"] for target in targets], ["lowest-break-even:batch:2048"] * 2)
+
     def test_scheduler_prefers_best_reported_available_profile_before_diversifying(self) -> None:
         config = config_loader.FleetConfig(
             organizations=(

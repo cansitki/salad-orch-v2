@@ -9,7 +9,7 @@ from typing import Any
 import profile_scorer
 import state_db
 from config_loader import FleetConfig, load_config
-from fleet_common import env_bool, env_int, json_dumps, utc_now
+from fleet_common import env_bool, env_float, env_int, json_dumps, utc_now
 
 
 def _scheduler_mode(config: FleetConfig, db_mode: str | None) -> str:
@@ -23,6 +23,28 @@ def _scheduler_mode(config: FleetConfig, db_mode: str | None) -> str:
 def _profile_allowed_by_scheduler(row: dict[str, Any]) -> bool:
     if row.get("eligible"):
         return True
+    if env_bool("PRL_SCHEDULER_ALLOW_BREAK_EVEN_PROBES", False):
+        max_break_even = env_float("PRL_SCHEDULER_PROBE_MAX_BREAK_EVEN_USD", 0.0)
+        if max_break_even > 0:
+            reason = row.get("reason") if isinstance(row.get("reason"), dict) else {}
+            if reason.get("priority_allowed") is False:
+                return False
+            risk_tier = str(row.get("risk_tier") or "")
+            if risk_tier == "blocked_priority":
+                return False
+            if risk_tier == "unstable_recent_spikes" and not env_bool(
+                "PRL_SCHEDULER_PROBE_ALLOW_UNSTABLE_PROFILES",
+                False,
+            ):
+                return False
+            try:
+                break_even = float(row.get("break_even_price_usd") or 999999)
+                expected_profit_day = float(row.get("expected_profit_day") or 0.0)
+            except (TypeError, ValueError):
+                return False
+            min_profit_day = env_float("PRL_SCHEDULER_PROBE_MIN_PROFIT_USD_DAY", -999999.0)
+            if break_even <= max_break_even and expected_profit_day >= min_profit_day:
+                return True
     if not env_bool("PRL_SCHEDULER_ALLOW_UNSTABLE_PROFILES", False):
         return False
     if str(row.get("risk_tier") or "") != "unstable_recent_spikes":
@@ -68,7 +90,12 @@ def _top_eligible_profiles(scores: list[dict[str, Any]], *, width: int) -> list[
 
 
 def _hard_profit_floor(min_profit_day: float) -> float:
-    return min_profit_day if min_profit_day <= 0.0 else 0.0
+    floor = min_profit_day if min_profit_day <= 0.0 else 0.0
+    if env_bool("PRL_SCHEDULER_ALLOW_BREAK_EVEN_PROBES", False):
+        max_break_even = env_float("PRL_SCHEDULER_PROBE_MAX_BREAK_EVEN_USD", 0.0)
+        if max_break_even > 0:
+            floor = min(floor, env_float("PRL_SCHEDULER_PROBE_MIN_PROFIT_USD_DAY", -999999.0))
+    return floor
 
 
 def _age_seconds(value: Any) -> float | None:

@@ -106,6 +106,7 @@ The runnable code lives in `scripts/`.
 | `scripts/start_supervisor.sh` | Starts the nonstop supervisor. |
 | `scripts/modal_pearl_miner.py` | Runs the PearlFortune miner on a Modal GPU for short benchmark/profit tests. |
 | `scripts/run_modal_pearl_gpu_matrix.sh` | Launches Modal Pearl tests across multiple GPU types. |
+| `scripts/run_kray_top7_scheduler_loop.sh` | KRay-only 200-slot top7 scheduler loop: live price, 1% fee, no negative break-even probes, rank by lowest break-even. |
 | `scripts/state_db.py` | SQLite state DB, schema, heartbeats, events, targets, scores. |
 | `scripts/config_loader.py` | Multi-org config loader. Defaults to 4 orgs * 10 slots, supports JSON org config. |
 | `scripts/price_oracle.py` | Samples PearlFortune/SafeTrade price and writes trailing risk mode. |
@@ -217,6 +218,17 @@ The current public 28-organization layout is committed at
 export SALAD_FLEET_CONFIG_PATH=config/fleet.current.json
 python3 scripts/config_loader.py --validate
 ```
+
+For the current KRay-only 200-slot live run, use the strict top7 scheduler loop
+instead of the older break-even probe loop:
+
+```bash
+tmux new-session -d -s salad-orch-v2-scheduler \
+  -c "$PWD" "scripts/run_kray_top7_scheduler_loop.sh"
+```
+
+That loop uses only non-negative targets at the live price and does not allow
+negative break-even probes.
 
 This file contains only organization labels and API key environment variable
 names. Keep the actual API key values in the local shell or `.env`.

@@ -1520,6 +1520,50 @@ class StateAndSchedulerTest(unittest.TestCase):
         self.assertEqual(plan["action"], "patch")
         self.assertIn("stale_pending_profile_mismatch", plan["reason"])
 
+    def test_org_worker_can_cooldown_stale_pending_mismatch_without_patching(self) -> None:
+        class Watch:
+            def slot_state(self, _slot_name):
+                return (
+                    {
+                        "priority": "batch",
+                        "container": {"resources": {"gpu_classes": ["gpu-rtx-3070"], "memory": 4096}},
+                        "current_state": {"instance_status_counts": {"allocating_count": 1}},
+                    },
+                    [{"id": "pending-1", "ready": False, "started": False}],
+                )
+
+            GPU = {"3070": "gpu-rtx-3070"}
+
+        with patch.dict(os.environ, {"PRL_PENDING_MISMATCH_COOLDOWN_ONLY": "1"}, clear=False):
+            plan = org_worker.planned_action(
+                Watch(),
+                "prl-kray-roi-01",
+                {
+                    "profile_key": "4090:batch:2048",
+                    "observed_status_since_utc": (datetime.now(UTC) - timedelta(minutes=5)).isoformat(
+                        timespec="seconds"
+                    ),
+                },
+                protect_pending=False,
+                pending_retarget_after_seconds=45,
+            )
+
+        self.assertEqual(plan["action"], "cooldown_pending")
+        self.assertIn("stale_pending_profile_mismatch_cooldown_only", plan["reason"])
+        self.assertEqual(plan["pending_instance_ids"], ["pending-1"])
+
+    def test_cooldown_profile_for_pending_mismatch_cooldown_uses_current_profile(self) -> None:
+        profile = org_worker.cooldown_profile_key_for_result(
+            {"profile_key": "4090:batch:2048"},
+            {
+                "action": "cooldown_pending",
+                "reason": "stale_pending_profile_mismatch_cooldown_only:3070:batch:4096:age_300.0",
+                "current_profile_key": "3070:batch:4096",
+            },
+        )
+
+        self.assertEqual(profile, "3070:batch:4096")
+
     def test_org_worker_uses_longer_default_for_pending_status_than_running_no_hash(self) -> None:
         class PendingWatch:
             def slot_state(self, _slot_name):

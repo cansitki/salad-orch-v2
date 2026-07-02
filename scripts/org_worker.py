@@ -229,6 +229,11 @@ def observed_profile_key_for_result(target: dict[str, Any], result: dict[str, An
 
 def cooldown_profile_key_for_result(target: dict[str, Any], result: dict[str, Any]) -> str | None:
     action = str(result.get("action") or "")
+    if action == "cooldown_pending" and str(result.get("reason") or "").startswith(
+        "stale_pending_profile_mismatch_cooldown_only:"
+    ):
+        current = result.get("current_profile_key")
+        return str(current) if current else None
     if action in {"cooldown_pending", "cooldown_failed_patch", "restart_failed_patch_pending"}:
         return str(target["profile_key"])
     if action in {"patch", "reallocate_pending_after_patch", "restart_empty_pending_after_patch"} and str(
@@ -681,6 +686,9 @@ def planned_action(
                     f"pending_profile_mismatch_wait:{current or 'unknown'}:"
                     f"age_{age_text}_lt_{pending_status_retarget_after_seconds}"
                 )
+            elif env_bool("PRL_PENDING_MISMATCH_COOLDOWN_ONLY", False):
+                action = "cooldown_pending"
+                reason = f"stale_pending_profile_mismatch_cooldown_only:{current or 'unknown'}:age_{pending_age:.1f}"
             else:
                 action = "patch"
                 reason = f"stale_pending_profile_mismatch:{current or 'unknown'}:age_{pending_age:.1f}"

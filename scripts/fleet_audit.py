@@ -93,6 +93,80 @@ def latest_slot_profit_by_key(conn, enabled_org_labels: set[str] | None = None) 
     }
 
 
+def profile_hourly_usd_by_org(conn) -> dict[tuple[str, str], dict[str, Any]]:
+    static_rows = conn.execute(
+        """
+        SELECT profile_key, static_hourly_usd
+        FROM gpu_profiles
+        """
+    ).fetchall()
+    static_prices = {str(row["profile_key"]): float(row["static_hourly_usd"] or 0.0) for row in static_rows}
+    prices: dict[tuple[str, str], dict[str, Any]] = {}
+    for row in conn.execute(
+        """
+        SELECT org_label, profile_key, hourly_usd, source, sampled_at_utc
+        FROM profile_prices
+        """
+    ).fetchall():
+        prices[(str(row["org_label"]), str(row["profile_key"]))] = {
+            "hourly_usd": float(row["hourly_usd"] or 0.0),
+            "source": str(row["source"] or "profile_prices"),
+            "sampled_at_utc": row["sampled_at_utc"],
+        }
+    for org_row in conn.execute("SELECT label FROM organizations WHERE enabled = 1").fetchall():
+        org_label = str(org_row["label"])
+        for profile_key, hourly in static_prices.items():
+            prices.setdefault(
+                (org_label, profile_key),
+                {"hourly_usd": hourly, "source": "static_profile", "sampled_at_utc": None},
+            )
+    return prices
+
+
+def static_hourly_from_profile_key(profile_key: str) -> float | None:
+    parts = str(profile_key or "").split(":")
+    if len(parts) < 2:
+        return None
+    gpu_id = salad_prl_profit_snapshot.GPU_IDS.get(parts[0])
+    if not gpu_id:
+        return None
+    value = salad_prl_profit_snapshot.STATIC_PRICES_HOURLY.get(gpu_id, {}).get(parts[1])
+    return float(value) if value is not None else None
+
+
+def active_slot_cost_by_key(conn, enabled_org_labels: set[str] | None = None) -> dict[tuple[str, str], dict[str, Any]]:
+    profile_prices = profile_hourly_usd_by_org(conn)
+    rows = conn.execute(
+        """
+        SELECT org_label, slot_name, observed_status, observed_profile_key, desired_profile_key
+        FROM slots
+        WHERE COALESCE(observed_status, '') IN ('running', 'deploying', 'creating', 'allocating')
+        """
+    ).fetchall()
+    costs: dict[tuple[str, str], dict[str, Any]] = {}
+    for row in rows:
+        org_label = str(row["org_label"])
+        if enabled_org_labels is not None and org_label not in enabled_org_labels:
+            continue
+        profile_key = str(row["observed_profile_key"] or row["desired_profile_key"] or "")
+        price = profile_prices.get((org_label, profile_key), {})
+        hourly = float(price.get("hourly_usd") or 0.0)
+        source = price.get("source") or "missing_profile"
+        if hourly <= 0 and profile_key:
+            fallback_hourly = static_hourly_from_profile_key(profile_key)
+            if fallback_hourly is not None:
+                hourly = fallback_hourly
+                source = "static_profile_key"
+        costs[(org_label, str(row["slot_name"]))] = {
+            "profile_key": profile_key,
+            "active_hourly_usd": hourly,
+            "active_cost_day": hourly * 24.0,
+            "active_cost_source": source,
+            "active_cost_sampled_at_utc": price.get("sampled_at_utc"),
+        }
+    return costs
+
+
 def org_runtime_summary(conn, enabled_org_labels: set[str] | None = None) -> dict[str, dict[str, Any]]:
     summary: dict[str, dict[str, Any]] = {}
     status_rows = conn.execute(
@@ -163,6 +237,32 @@ def org_runtime_summary(conn, enabled_org_labels: set[str] | None = None) -> dic
         item["cost_day"] = float(profit.get("cost_day") or 0)
         item["profit_day"] = float(profit.get("profit_day") or 0)
         item["billable_slots"] = int(profit.get("billable_slots") or 0)
+        item["active_cost_day"] = 0.0
+    for (org, _slot), active_cost in active_slot_cost_by_key(conn, enabled_org_labels).items():
+        item = summary.setdefault(
+            org,
+            {
+                "active_slots": 0,
+                "running_slots": 0,
+                "creating_slots": 0,
+                "allocating_slots": 0,
+                "status_counts": {},
+                "live_hashing_gpus": 0,
+                "live_th": 0.0,
+                "cost_day": 0.0,
+                "profit_day": 0.0,
+                "billable_slots": 0,
+            },
+        )
+        item["active_cost_day"] = float(item.get("active_cost_day") or 0.0) + float(
+            active_cost.get("active_cost_day") or 0.0
+        )
+    for item in summary.values():
+        item["active_profit_day"] = (
+            float(item.get("profit_day") or 0.0)
+            + float(item.get("cost_day") or 0.0)
+            - float(item.get("active_cost_day") or 0.0)
+        )
     return summary
 
 
@@ -172,6 +272,7 @@ def record_slot_active_snapshots(
     enabled_org_labels: set[str] | None = None,
 ) -> int:
     profits = latest_slot_profit_by_key(conn, enabled_org_labels)
+    active_costs = active_slot_cost_by_key(conn, enabled_org_labels)
     rows = conn.execute(
         """
         SELECT s.org_label,
@@ -206,16 +307,25 @@ def record_slot_active_snapshots(
     for row in rows:
         key = (str(row["org_label"]), str(row["slot_name"]))
         profit = profits.get(key, {})
+        active_cost = active_costs.get(key, {})
+        active_profit_day = None
+        if profit or active_cost:
+            active_profit_day = (
+                float(profit.get("profit_day") or 0.0)
+                + float(profit.get("cost_day") or 0.0)
+                - float(active_cost.get("active_cost_day") or 0.0)
+            )
         conn.execute(
             """
             INSERT INTO fleet_slot_active_snapshots(
               snapshot_id, org_label, slot_name, slot_index, observed_status,
               desired_profile_key, observed_profile_key, target_profile_key,
               target_mode, target_reason, protected, live_hashrate_th, billable,
-              cost_day, profit_day, updated_at_utc, observed_profile_since_utc,
+              cost_day, active_cost_day, profit_day, active_profit_day,
+              updated_at_utc, observed_profile_since_utc,
               observed_status_since_utc, payload_json
             )
-            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 snapshot_id,
@@ -232,7 +342,9 @@ def record_slot_active_snapshots(
                 float(row["live_hashrate_th"] or 0),
                 1 if profit else 0,
                 profit.get("cost_day"),
+                active_cost.get("active_cost_day"),
                 profit.get("profit_day"),
+                active_profit_day,
                 row["updated_at_utc"],
                 row["observed_profile_since_utc"],
                 row["observed_status_since_utc"],
@@ -242,6 +354,10 @@ def record_slot_active_snapshots(
                             "profit_profile_key": profit.get("profile_key"),
                             "profit_th": profit.get("th"),
                             "profit_revenue_day": profit.get("revenue_day"),
+                            "active_cost_profile_key": active_cost.get("profile_key"),
+                            "active_hourly_usd": active_cost.get("active_hourly_usd"),
+                            "active_cost_source": active_cost.get("active_cost_source"),
+                            "active_cost_sampled_at_utc": active_cost.get("active_cost_sampled_at_utc"),
                             "target_decision_price_usd": row["target_decision_price_usd"],
                             "target_expected_profit_day": row["target_expected_profit_day"],
                             "target_protected": row["target_protected"],
@@ -324,16 +440,23 @@ def record_active_snapshot(
         state_db.sync_config(conn, config)
         reconcile_idle_unknown_slots(conn, enabled_org_labels=enabled_org_labels, report=report)
         org_summary = org_runtime_summary(conn, enabled_org_labels)
+        active_cost_day = sum(float(item.get("active_cost_day") or 0.0) for item in org_summary.values())
         profit_064 = report.get("profit_at_0_64") or {}
         profit_live = report.get("profit_at_live") or {}
+        cost_day = float(profit_064.get("cost_day") or 0.0)
+        profit_day_064 = float(profit_064.get("profit_day") or 0.0)
+        market_profit_day = float(profit_live.get("market_profit_day") or 0.0)
+        active_profit_day_064 = profit_day_064 + cost_day - active_cost_day
+        active_market_profit_day = market_profit_day + cost_day - active_cost_day
         cursor = conn.execute(
             """
             INSERT INTO fleet_active_snapshots(
               at_utc, assigned_targets, target_slots, live_hashing_gpus, live_th,
-              cost_day, profit_day_064, market_profit_day, status_counts_json,
+              cost_day, active_cost_day, profit_day_064, active_profit_day_064,
+              market_profit_day, active_market_profit_day, status_counts_json,
               org_summary_json, payload_json
             )
-            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 utc_now(),
@@ -342,8 +465,11 @@ def record_active_snapshot(
                 int(report.get("live_hashing_gpus") or 0),
                 float(report.get("live_th") or 0),
                 profit_064.get("cost_day"),
+                active_cost_day,
                 profit_064.get("profit_day"),
+                active_profit_day_064,
                 profit_live.get("market_profit_day"),
+                active_market_profit_day,
                 compact_json(report.get("status_counts") or {}),
                 compact_json(safe_public_payload(org_summary)),
                 compact_json(
@@ -365,10 +491,11 @@ def record_active_snapshot(
                 """
                 INSERT INTO fleet_org_active_snapshots(
                   snapshot_id, org_label, active_slots, running_slots, creating_slots,
-                  allocating_slots, live_hashing_gpus, live_th, cost_day, profit_day,
+                  allocating_slots, live_hashing_gpus, live_th, cost_day, active_cost_day,
+                  profit_day, active_profit_day,
                   payload_json
                 )
-                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     snapshot_id,
@@ -380,7 +507,9 @@ def record_active_snapshot(
                     int(item.get("live_hashing_gpus") or 0),
                     float(item.get("live_th") or 0),
                     float(item.get("cost_day") or 0),
+                    float(item.get("active_cost_day") or 0),
                     float(item.get("profit_day") or 0),
+                    float(item.get("active_profit_day") or 0),
                     compact_json(safe_public_payload(item)),
                 ),
             )
@@ -395,6 +524,9 @@ def record_active_snapshot(
                 "target_slots": report.get("target_slots"),
                 "live_hashing_gpus": report.get("live_hashing_gpus"),
                 "cost_day": profit_064.get("cost_day"),
+                "active_cost_day": active_cost_day,
+                "active_profit_day_064": active_profit_day_064,
+                "active_market_profit_day": active_market_profit_day,
                 "slot_snapshots": slot_snapshot_count,
             },
         )
@@ -413,8 +545,11 @@ def record_active_snapshot(
         "live_hashing_gpus": report.get("live_hashing_gpus"),
         "live_th": report.get("live_th"),
         "cost_day": profit_064.get("cost_day"),
+        "active_cost_day": active_cost_day,
         "profit_day_064": profit_064.get("profit_day"),
+        "active_profit_day_064": active_profit_day_064,
         "market_profit_day": profit_live.get("market_profit_day"),
+        "active_market_profit_day": active_market_profit_day,
         "org_summary": org_summary,
         "slot_snapshots": slot_snapshot_count,
     }
@@ -510,7 +645,7 @@ def load_balance_values(
 def latest_active_cost_day(conn, org_label: str) -> float:
     row = conn.execute(
         """
-        SELECT cost_day
+        SELECT COALESCE(active_cost_day, cost_day) AS cost_day
         FROM fleet_org_active_snapshots
         WHERE org_label = ?
         ORDER BY snapshot_id DESC
@@ -537,7 +672,7 @@ def previous_balance_audit(conn, org_label: str) -> Any | None:
 def average_cost_day_since(conn, org_label: str, since_utc: str, fallback_cost_day: float) -> float:
     row = conn.execute(
         """
-        SELECT AVG(os.cost_day) AS avg_cost_day
+        SELECT AVG(COALESCE(os.active_cost_day, os.cost_day)) AS avg_cost_day
         FROM fleet_org_active_snapshots os
         JOIN fleet_active_snapshots fs ON fs.id = os.snapshot_id
         WHERE os.org_label = ?
@@ -758,7 +893,9 @@ def main() -> None:
                 f"fleet_audit snapshot={active['snapshot_id']} "
                 f"targets={active['assigned_targets']}/{active['target_slots']} "
                 f"live_hashing={active['live_hashing_gpus']} "
-                f"cost_day={float(active.get('cost_day') or 0):.3f}",
+                f"cost_day={float(active.get('cost_day') or 0):.3f} "
+                f"active_cost_day={float(active.get('active_cost_day') or 0):.3f} "
+                f"active_market_profit_day={float(active.get('active_market_profit_day') or 0):.3f}",
                 flush=True,
             )
             if payload.get("balance_audits") is not None:

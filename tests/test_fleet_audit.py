@@ -257,7 +257,8 @@ class FleetAuditTest(unittest.TestCase):
             fleet_count = conn.execute("SELECT COUNT(*) FROM fleet_active_snapshots").fetchone()[0]
             kray = conn.execute(
                 """
-                SELECT active_slots, running_slots, live_hashing_gpus, live_th, cost_day, profit_day
+                SELECT active_slots, running_slots, live_hashing_gpus, live_th,
+                       cost_day, active_cost_day, profit_day, active_profit_day
                 FROM fleet_org_active_snapshots
                 WHERE snapshot_id = ? AND org_label = 'kray'
                 """,
@@ -265,7 +266,8 @@ class FleetAuditTest(unittest.TestCase):
             ).fetchone()
             kray_slot = conn.execute(
                 """
-                SELECT observed_status, observed_profile_key, live_hashrate_th, billable, cost_day, profit_day
+                SELECT observed_status, observed_profile_key, live_hashrate_th,
+                       billable, cost_day, active_cost_day, profit_day, active_profit_day
                 FROM fleet_slot_active_snapshots
                 WHERE snapshot_id = ? AND org_label = 'kray' AND slot_name = 'prl-kray-roi-01'
                 """,
@@ -280,13 +282,20 @@ class FleetAuditTest(unittest.TestCase):
         self.assertEqual(kray["live_hashing_gpus"], 1)
         self.assertEqual(kray["live_th"], 100.0)
         self.assertEqual(kray["cost_day"], 1.2)
+        self.assertEqual(kray["active_cost_day"], 3.84)
         self.assertEqual(kray["profit_day"], 0.4)
+        self.assertAlmostEqual(kray["active_profit_day"], -2.24)
         self.assertEqual(kray_slot["observed_status"], "running")
         self.assertEqual(kray_slot["observed_profile_key"], "4090:batch:2048")
         self.assertEqual(kray_slot["live_hashrate_th"], 100.0)
         self.assertEqual(kray_slot["billable"], 1)
         self.assertEqual(kray_slot["cost_day"], 1.2)
+        self.assertEqual(kray_slot["active_cost_day"], 3.84)
         self.assertEqual(kray_slot["profit_day"], 0.4)
+        self.assertAlmostEqual(kray_slot["active_profit_day"], -2.24)
+        self.assertEqual(payload["active_cost_day"], 3.84)
+        self.assertAlmostEqual(payload["active_profit_day_064"], -2.24)
+        self.assertAlmostEqual(payload["active_market_profit_day"], -2.14)
         self.assertIsNotNone(heartbeat)
 
     def test_record_active_snapshot_ignores_stale_profit_for_stopped_slot(self) -> None:

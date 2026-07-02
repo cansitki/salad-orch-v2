@@ -297,8 +297,11 @@ CREATE TABLE IF NOT EXISTS fleet_active_snapshots (
   live_hashing_gpus INTEGER NOT NULL,
   live_th REAL NOT NULL,
   cost_day REAL,
+  active_cost_day REAL,
   profit_day_064 REAL,
+  active_profit_day_064 REAL,
   market_profit_day REAL,
+  active_market_profit_day REAL,
   status_counts_json TEXT NOT NULL DEFAULT '{}',
   org_summary_json TEXT NOT NULL DEFAULT '{}',
   payload_json TEXT NOT NULL DEFAULT '{}'
@@ -315,7 +318,9 @@ CREATE TABLE IF NOT EXISTS fleet_org_active_snapshots (
   live_hashing_gpus INTEGER NOT NULL,
   live_th REAL NOT NULL,
   cost_day REAL,
+  active_cost_day REAL,
   profit_day REAL,
+  active_profit_day REAL,
   payload_json TEXT NOT NULL DEFAULT '{}',
   PRIMARY KEY (snapshot_id, org_label)
 );
@@ -336,7 +341,9 @@ CREATE TABLE IF NOT EXISTS fleet_slot_active_snapshots (
   live_hashrate_th REAL NOT NULL DEFAULT 0,
   billable INTEGER NOT NULL DEFAULT 0,
   cost_day REAL,
+  active_cost_day REAL,
   profit_day REAL,
+  active_profit_day REAL,
   updated_at_utc TEXT,
   observed_profile_since_utc TEXT,
   observed_status_since_utc TEXT,
@@ -393,6 +400,13 @@ def init_db(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA)
     _ensure_column(conn, "slots", "observed_profile_since_utc", "TEXT")
     _ensure_column(conn, "slots", "observed_status_since_utc", "TEXT")
+    _ensure_column(conn, "fleet_active_snapshots", "active_cost_day", "REAL")
+    _ensure_column(conn, "fleet_active_snapshots", "active_profit_day_064", "REAL")
+    _ensure_column(conn, "fleet_active_snapshots", "active_market_profit_day", "REAL")
+    _ensure_column(conn, "fleet_org_active_snapshots", "active_cost_day", "REAL")
+    _ensure_column(conn, "fleet_org_active_snapshots", "active_profit_day", "REAL")
+    _ensure_column(conn, "fleet_slot_active_snapshots", "active_cost_day", "REAL")
+    _ensure_column(conn, "fleet_slot_active_snapshots", "active_profit_day", "REAL")
     conn.execute(
         "INSERT OR IGNORE INTO schema_migrations(version, applied_at_utc) VALUES(?, ?)",
         (1, utc_now()),

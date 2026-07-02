@@ -40,7 +40,15 @@ def _profile_allowed_by_scheduler(row: dict[str, Any]) -> bool:
 
 def _eligible_profiles(scores: list[dict[str, Any]]) -> list[dict[str, Any]]:
     eligible = [row for row in scores if _profile_allowed_by_scheduler(row)]
-    if env_int("PRL_SCHEDULER_RANK_BY_PROFIT", 0):
+    if env_int("PRL_SCHEDULER_RANK_BY_BREAK_EVEN", 0):
+        eligible.sort(
+            key=lambda item: (
+                float(item.get("break_even_price_usd") or 999999),
+                -float(item["expected_profit_day"]),
+                -float(item["score"]),
+            )
+        )
+    elif env_int("PRL_SCHEDULER_RANK_BY_PROFIT", 0):
         eligible.sort(
             key=lambda item: (
                 float(item["expected_profit_day"]),

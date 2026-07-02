@@ -3646,6 +3646,56 @@ class StateAndSchedulerTest(unittest.TestCase):
         self.assertEqual(len(targets), 1)
         self.assertEqual(targets[0]["profile_key"], "least-loss:batch:2048")
 
+    def test_scheduler_can_rank_by_break_even_when_explicitly_enabled(self) -> None:
+        config = config_loader.FleetConfig(
+            organizations=(
+                config_loader.OrgConfig(
+                    label="kray",
+                    slug="kray",
+                    api_key_env="SALAD_API_KEY_TEST",
+                    slot_prefix="prl-kray-roi",
+                    slots=1,
+                ),
+            ),
+            risk=config_loader.RiskConfig(fill_min_profit_day=-999.0),
+        )
+        scores = [
+            {
+                "profile_key": "least-loss:batch:2048",
+                "gpu_key": "least-loss",
+                "priority": "batch",
+                "memory_mb": 2048,
+                "expected_profit_day": -0.05,
+                "break_even_price_usd": 0.70,
+                "score": 100.0,
+                "risk_tier": "safe_base",
+                "eligible": True,
+            },
+            {
+                "profile_key": "lowest-break-even:batch:2048",
+                "gpu_key": "lowest-break-even",
+                "priority": "batch",
+                "memory_mb": 2048,
+                "expected_profit_day": -0.25,
+                "break_even_price_usd": 0.56,
+                "score": 10.0,
+                "risk_tier": "safe_base",
+                "eligible": True,
+            },
+        ]
+
+        with patch.dict("os.environ", {"PRL_SCHEDULER_RANK_BY_BREAK_EVEN": "1"}, clear=False):
+            targets = fleet_scheduler.build_targets(
+                config,
+                scores,
+                mode="base_fill",
+                decision_price_usd=0.48,
+                width=2,
+            )
+
+        self.assertEqual(len(targets), 1)
+        self.assertEqual(targets[0]["profile_key"], "lowest-break-even:batch:2048")
+
     def test_scheduler_prefers_best_reported_available_profile_before_diversifying(self) -> None:
         config = config_loader.FleetConfig(
             organizations=(

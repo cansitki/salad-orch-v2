@@ -361,6 +361,12 @@ def _active_without_hash_target(target: dict[str, Any]) -> bool:
     return live_worker_count <= 0 and live_worker_th <= 0.0
 
 
+def _profile_mismatch_target(target: dict[str, Any]) -> bool:
+    observed_profile = str(target.get("slot_observed_profile_key") or "")
+    target_profile = str(target.get("profile_key") or "")
+    return bool(observed_profile and target_profile and observed_profile != target_profile)
+
+
 def _target_expected_profit_day(target: dict[str, Any]) -> float:
     try:
         return float(target.get("expected_profit_day") or 0.0)
@@ -387,19 +393,27 @@ def _target_is_actionable(
     target: dict[str, Any],
     *,
     touch_active: bool,
+    touch_mismatches_only: bool = False,
     guard_stop_cooldowns: dict[str, dict[str, Any]] | None = None,
 ) -> bool:
     guard_stop_cooldowns = guard_stop_cooldowns or {}
     if str(target["slot_name"]) in guard_stop_cooldowns:
         return False
     existing_info = _status_info(target.get("_existing_container"))
-    return not (existing_info["exists"] and existing_info["active_or_pending"] and not touch_active)
+    if not (existing_info["exists"] and existing_info["active_or_pending"]):
+        return True
+    if not touch_active:
+        return False
+    if touch_mismatches_only and not _profile_mismatch_target(target):
+        return False
+    return True
 
 
 def _split_actionable_targets(
     targets: list[dict[str, Any]],
     *,
     touch_active: bool,
+    touch_mismatches_only: bool = False,
     actionable_limit: int,
     guard_stop_cooldowns: dict[str, dict[str, Any]] | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
@@ -411,7 +425,11 @@ def _split_actionable_targets(
         if cooldown is not None:
             skipped.append(_skip_guard_stop_cooldown_result(target, cooldown))
             continue
-        if not _target_is_actionable(target, touch_active=touch_active):
+        if not _target_is_actionable(
+            target,
+            touch_active=touch_active,
+            touch_mismatches_only=touch_mismatches_only,
+        ):
             skipped.append(_skip_active_result(target))
             continue
         if actionable_limit > 0 and len(actionable) >= actionable_limit:
@@ -540,6 +558,7 @@ def fast_fill_org(
     start_after: bool,
     patch_existing: bool,
     touch_active: bool,
+    touch_mismatches_only: bool,
     skip_live_hashing: bool,
     limit: int,
     actionable_limit: int,
@@ -606,6 +625,7 @@ def fast_fill_org(
     actionable_targets, skipped_results = _split_actionable_targets(
         targets,
         touch_active=touch_active,
+        touch_mismatches_only=touch_mismatches_only,
         actionable_limit=actionable_limit,
         guard_stop_cooldowns=guard_stop_cooldowns,
     )
@@ -669,6 +689,7 @@ def main() -> None:
     parser.add_argument("--no-start", action="store_true")
     parser.add_argument("--patch-existing", action="store_true")
     parser.add_argument("--touch-active", action="store_true")
+    parser.add_argument("--touch-mismatches-only", action="store_true")
     parser.add_argument("--include-live-hashing", action="store_true")
     parser.add_argument("--limit", type=int, default=0)
     parser.add_argument("--actionable-limit", type=int, default=0)
@@ -685,6 +706,7 @@ def main() -> None:
         start_after=not args.no_start,
         patch_existing=args.patch_existing,
         touch_active=args.touch_active,
+        touch_mismatches_only=args.touch_mismatches_only,
         skip_live_hashing=not args.include_live_hashing,
         limit=args.limit,
         actionable_limit=args.actionable_limit,

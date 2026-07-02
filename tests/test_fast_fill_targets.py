@@ -25,10 +25,18 @@ def container(status: str, **counts: int) -> dict:
     }
 
 
-def target(slot: str, existing: dict | None = None, *, workers: int = 0, th: float = 0.0) -> dict:
+def target(
+    slot: str,
+    existing: dict | None = None,
+    *,
+    workers: int = 0,
+    th: float = 0.0,
+    observed_profile: str | None = None,
+) -> dict:
     return {
         "slot_name": slot,
         "profile_key": "3060ti:batch:2048",
+        "slot_observed_profile_key": observed_profile,
         "live_worker_count": workers,
         "live_worker_th": th,
         "_existing_container": existing,
@@ -53,6 +61,32 @@ class FastFillTargetSelectionTest(unittest.TestCase):
         self.assertEqual([item["action"] for item in skipped], ["skip_active_container", "defer_actionable_limit"])
         self.assertEqual(skipped[0]["slot_name"], "active")
         self.assertEqual(skipped[1]["slot_name"], "missing-2")
+
+    def test_touch_mismatches_only_skips_matching_active_targets(self) -> None:
+        targets = [
+            target(
+                "matching-active",
+                container("running", running_count=1),
+                observed_profile="3060ti:batch:2048",
+            ),
+            target(
+                "mismatch-active",
+                container("running", running_count=1),
+                observed_profile="3070:batch:4096",
+            ),
+            target("missing"),
+        ]
+
+        actionable, skipped = fast_fill_targets._split_actionable_targets(
+            targets,
+            touch_active=True,
+            touch_mismatches_only=True,
+            actionable_limit=0,
+        )
+
+        self.assertEqual([item["slot_name"] for item in actionable], ["mismatch-active", "missing"])
+        self.assertEqual([item["slot_name"] for item in skipped], ["matching-active"])
+        self.assertEqual(skipped[0]["action"], "skip_active_container")
 
     def test_active_without_hash_detects_pending_or_running_slots_only(self) -> None:
         rows = [

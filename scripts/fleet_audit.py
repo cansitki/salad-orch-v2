@@ -73,10 +73,16 @@ def latest_slot_profit_by_key(conn, enabled_org_labels: set[str] | None = None) 
         return {}
     rows = conn.execute(
         """
-        SELECT id, org_label, slot_name, profile_key, th, cost_day, revenue_day, profit_day
-        FROM profit_snapshots
-        WHERE scope = 'slot' AND at_utc = ?
-        ORDER BY org_label, slot_name, id
+        SELECT p.id, p.org_label, p.slot_name, p.profile_key, p.th,
+               p.cost_day, p.revenue_day, p.profit_day
+        FROM profit_snapshots p
+        JOIN slots s
+          ON s.org_label = p.org_label
+         AND s.slot_name = p.slot_name
+        WHERE p.scope = 'slot'
+          AND p.at_utc = ?
+          AND COALESCE(s.observed_status, '') IN ('running', 'deploying', 'creating', 'allocating')
+        ORDER BY p.org_label, p.slot_name, p.id
         """,
         (latest["at_utc"],),
     ).fetchall()

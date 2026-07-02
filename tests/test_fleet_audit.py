@@ -289,6 +289,75 @@ class FleetAuditTest(unittest.TestCase):
         self.assertEqual(kray_slot["profit_day"], 0.4)
         self.assertIsNotNone(heartbeat)
 
+    def test_record_active_snapshot_ignores_stale_profit_for_stopped_slot(self) -> None:
+        with state_db.connect(self.db_path) as conn:
+            state_db.update_slot_observation(
+                conn,
+                {
+                    "org_label": "kray",
+                    "slot_name": "prl-kray-roi-01",
+                    "observed_profile_key": "4090:batch:2048",
+                    "observed_status": "stopped",
+                    "live_hashrate_th": 0.0,
+                    "updated_at_utc": "2026-06-24T10:05:00+00:00",
+                },
+            )
+            state_db.record_profit_snapshot(
+                conn,
+                {
+                    "at_utc": "2026-06-24T10:00:00+00:00",
+                    "scope": "slot",
+                    "org_label": "kray",
+                    "slot_name": "prl-kray-roi-01",
+                    "profile_key": "4090:batch:2048",
+                    "decision_price_usd": 0.64,
+                    "th": 100.0,
+                    "cost_day": 1.2,
+                    "revenue_day": 1.6,
+                    "profit_day": 0.4,
+                    "payload": {},
+                },
+            )
+            conn.commit()
+
+        report = {
+            "assigned_targets": 0,
+            "target_slots": 40,
+            "live_hashing_gpus": 0,
+            "live_th": 0.0,
+            "status_counts": {"stopped": 40},
+            "profit_at_0_64": {"cost_day": 0.0, "profit_day": 0.0},
+            "profit_at_live": {"market_profit_day": 0.0},
+        }
+        with patch.object(fleet_audit.reporter, "build_report", return_value=report):
+            payload = fleet_audit.record_active_snapshot(self.db_path)
+
+        with state_db.connect(self.db_path) as conn:
+            kray = conn.execute(
+                """
+                SELECT active_slots, cost_day, profit_day
+                FROM fleet_org_active_snapshots
+                WHERE snapshot_id = ? AND org_label = 'kray'
+                """,
+                (payload["snapshot_id"],),
+            ).fetchone()
+            kray_slot = conn.execute(
+                """
+                SELECT observed_status, billable, cost_day, profit_day
+                FROM fleet_slot_active_snapshots
+                WHERE snapshot_id = ? AND org_label = 'kray' AND slot_name = 'prl-kray-roi-01'
+                """,
+                (payload["snapshot_id"],),
+            ).fetchone()
+
+        self.assertEqual(kray["active_slots"], 0)
+        self.assertEqual(kray["cost_day"], 0.0)
+        self.assertEqual(kray["profit_day"], 0.0)
+        self.assertEqual(kray_slot["observed_status"], "stopped")
+        self.assertEqual(kray_slot["billable"], 0)
+        self.assertIsNone(kray_slot["cost_day"])
+        self.assertIsNone(kray_slot["profit_day"])
+
     def test_record_active_snapshot_respects_enabled_org_filter(self) -> None:
         with state_db.connect(self.db_path) as conn:
             state_db.update_slot_observation(

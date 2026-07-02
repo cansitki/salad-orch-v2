@@ -168,7 +168,19 @@ def target_rows(conn, org_label: str) -> list[dict[str, Any]]:
         LEFT JOIN active_guard ag ON ag.org_label = t.org_label AND ag.slot_name = t.slot_name
         LEFT JOIN recent_nohash_patch rnp ON rnp.org_label = t.org_label AND rnp.slot_name = t.slot_name
         WHERE t.org_label = ?
-        ORDER BY t.slot_name
+        ORDER BY
+          CASE
+            WHEN s.observed_status IS NULL OR s.observed_status IN ('missing', 'stopped', '') THEN 0
+            WHEN COALESCE(lw.live_worker_th, 0) <= 0
+              AND s.observed_status IN ('allocating', 'creating', 'deploying') THEN 1
+            WHEN COALESCE(lw.live_worker_th, 0) <= 0
+              AND s.observed_status = 'running' THEN 2
+            WHEN COALESCE(lw.live_worker_th, 0) > 0 THEN 4
+            ELSE 3
+          END,
+          datetime(COALESCE(s.observed_status_since_utc, s.observed_profile_since_utc, t.assigned_at_utc)),
+          s.slot_index,
+          t.slot_name
         """,
         (nohash_patch_since, org_label),
     ).fetchall()

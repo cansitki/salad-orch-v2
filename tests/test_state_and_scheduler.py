@@ -545,6 +545,92 @@ class StateAndSchedulerTest(unittest.TestCase):
             [("prl-kray-roi-01", "create"), ("prl-kray-roi-02", "defer_live_action_limit")],
         )
 
+    def test_org_worker_prioritizes_stale_nohash_before_live_hashing(self) -> None:
+        org = config_loader.OrgConfig(
+            label="kray",
+            slug="kray",
+            api_key_env="SALAD_API_KEY_2",
+            slot_prefix="prl-kray-roi",
+            slots=3,
+        )
+        config = config_loader.FleetConfig(organizations=(org,))
+        with state_db.connect(self.db_path) as conn:
+            state_db.init_db(conn)
+            state_db.sync_config(conn, config)
+            state_db.upsert_gpu_profiles(conn, profit_model.load_profiles())
+            for slot_name in ("prl-kray-roi-01", "prl-kray-roi-02", "prl-kray-roi-03"):
+                state_db.set_slot_target(
+                    conn,
+                    {
+                        "org_label": "kray",
+                        "slot_name": slot_name,
+                        "profile_key": "4070ti:batch:2048",
+                        "mode": "base_fill",
+                        "decision_price_usd": 0.64,
+                        "expected_profit_day": 1.0,
+                        "protected": False,
+                        "reason": "test",
+                        "assigned_at_utc": "2026-06-24T12:00:00+00:00",
+                    },
+                )
+            state_db.update_slot_observation(
+                conn,
+                {
+                    "org_label": "kray",
+                    "slot_name": "prl-kray-roi-01",
+                    "observed_profile_key": "4070ti:batch:2048",
+                    "observed_status": "running",
+                    "live_hashrate_th": 120.0,
+                    "protected": True,
+                    "updated_at_utc": "2026-06-24T12:00:00+00:00",
+                    "reset_observed_age": True,
+                },
+            )
+            state_db.update_slot_observation(
+                conn,
+                {
+                    "org_label": "kray",
+                    "slot_name": "prl-kray-roi-02",
+                    "observed_profile_key": "4070ti:batch:2048",
+                    "observed_status": "allocating",
+                    "live_hashrate_th": 0.0,
+                    "updated_at_utc": "2026-06-24T10:00:00+00:00",
+                    "reset_observed_age": True,
+                },
+            )
+            state_db.update_slot_observation(
+                conn,
+                {
+                    "org_label": "kray",
+                    "slot_name": "prl-kray-roi-03",
+                    "observed_profile_key": "4070ti:batch:2048",
+                    "observed_status": "allocating",
+                    "live_hashrate_th": 0.0,
+                    "updated_at_utc": "2026-06-24T11:00:00+00:00",
+                    "reset_observed_age": True,
+                },
+            )
+            state_db.sync_worker_rows(
+                conn,
+                [
+                    {
+                        "worker_name": "worker-01",
+                        "org_label": "kray",
+                        "slot_name": "prl-kray-roi-01",
+                        "gpu_key": "4070ti",
+                        "reported_hashrate_th": 120.0,
+                        "stale": False,
+                        "last_stats_at": "2026-06-24T12:00:00+00:00",
+                    }
+                ],
+            )
+            rows = org_worker.target_rows(conn, "kray")
+
+        self.assertEqual(
+            [row["slot_name"] for row in rows],
+            ["prl-kray-roi-02", "prl-kray-roi-03", "prl-kray-roi-01"],
+        )
+
     def test_org_worker_skips_live_actions_for_explicit_zero_balance(self) -> None:
         fleet_scheduler.schedule_once(db_path=self.db_path, price=0.64, fee=0.01, dry_run=False)
         balance_file = pathlib.Path(self.tmpdir.name) / "balances.json"

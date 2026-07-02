@@ -114,6 +114,12 @@ def configured_accounts() -> list[tuple[str, str, str, list[str]]]:
         org.label: (org.slug, org.api_key_env, org.slot_names())
         for org in load_config().enabled_orgs()
     }
+    explicit_config = any(
+        os.environ.get(key)
+        for key in ("SALAD_FLEET_CONFIG_PATH", "PRL_FLEET_CONFIG_PATH", "SALAD_FLEET_CONFIG_JSON")
+    )
+    if explicit_config and fleet_orgs:
+        fleet_orgs = [org for org in fleet_orgs if org in config_accounts]
     if not fleet_orgs:
         accounts = [
             (label, slug, key_env, slots)
@@ -127,12 +133,14 @@ def configured_accounts() -> list[tuple[str, str, str, list[str]]]:
     defaults_by_label = {label: (slug, key_env, slots) for label, slug, key_env, slots in ACCOUNTS}
     accounts: list[tuple[str, str, str, list[str]]] = []
     for org in fleet_orgs:
-        default_slug, default_org_key_env, default_slots = defaults_by_label.get(
+        if explicit_config:
+            selected_account = config_accounts.get(org) or defaults_by_label.get(org)
+        else:
+            selected_account = defaults_by_label.get(org) or config_accounts.get(org)
+        default_slug, default_org_key_env, default_slots = selected_account or (
             org,
-            config_accounts.get(
-                org,
-                (org, default_key_env, [f"prl-{org}-roi-{index:02d}" for index in range(1, 11)]),
-            ),
+            default_key_env,
+            [f"prl-{org}-roi-{index:02d}" for index in range(1, 11)],
         )
         key_env = os.environ.get(f"PRL_WATCH_API_KEY_ENV_{org.upper()}", default_org_key_env)
         prefix = os.environ.get(f"PRL_WATCH_SLOT_PREFIX_{org.upper()}")
@@ -571,7 +579,7 @@ def named_slot_for_snapshot_worker(row: dict[str, Any], slot_orgs: dict[str, str
     if explicit in slot_orgs:
         return explicit
     worker_name = str(row.get("worker") or "")
-    for slot_name in slot_orgs:
+    for slot_name in sorted(slot_orgs, key=len, reverse=True):
         if slot_name in worker_name:
             return slot_name
     return None

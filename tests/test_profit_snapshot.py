@@ -13,7 +13,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 import salad_prl_profit_snapshot
 import state_db
-from config_loader import load_config
+from config_loader import FleetConfig, OrgConfig, load_config
 
 
 class ProfitSnapshotTest(unittest.TestCase):
@@ -42,6 +42,33 @@ class ProfitSnapshotTest(unittest.TestCase):
         kray2_slots = accounts[1][3]
         self.assertIn("prl-kray2-roi-05b", kray2_slots)
         self.assertNotIn("prl-kray2-roi-05", kray2_slots)
+
+    def test_configured_accounts_explicit_config_wins_over_inherited_fleet_orgs(self) -> None:
+        config = FleetConfig(
+            organizations=(
+                OrgConfig(
+                    label="kray",
+                    slug="kray",
+                    api_key_env="SALAD_API_KEY_2",
+                    slot_prefix="prl-kray-roi",
+                    slots=200,
+                ),
+            )
+        )
+
+        with patch.dict(
+            "os.environ",
+            {
+                "SALAD_FLEET_CONFIG_PATH": "config/fleet.kray-only-200.json",
+                "PRL_FLEET_ORGS": "kray,kry1,kray2,old-org",
+            },
+            clear=True,
+        ), patch.object(salad_prl_profit_snapshot, "load_config", return_value=config):
+            accounts = salad_prl_profit_snapshot.configured_accounts()
+
+        self.assertEqual([row[0] for row in accounts], ["kray"])
+        self.assertEqual(len(accounts[0][3]), 200)
+        self.assertEqual(accounts[0][3][-1], "prl-kray-roi-200")
 
     def test_configured_accounts_uses_extra_org_key_env_for_unknown_fleet_org(self) -> None:
         extra = [
@@ -92,6 +119,67 @@ class ProfitSnapshotTest(unittest.TestCase):
         )
 
         self.assertEqual(named_slot, "prl-kray-roi-119")
+
+    def test_named_slot_for_snapshot_worker_prefers_longest_slot_match(self) -> None:
+        slot_orgs = {
+            "prl-kray-roi-19": "kray",
+            "prl-kray-roi-190": "kray",
+        }
+
+        named_slot = salad_prl_profit_snapshot.named_slot_for_snapshot_worker(
+            {"worker": "kray-prl-kray-roi-190-pearlfortune-instance"},
+            slot_orgs,
+        )
+
+        self.assertEqual(named_slot, "prl-kray-roi-190")
+
+    def test_build_snapshot_maps_active_named_slot_when_instance_id_differs(self) -> None:
+        group = {
+            "priority": "batch",
+            "current_state": {
+                "status": "running",
+                "start_time": "2026-07-02T12:00:00+00:00",
+                "instance_status_counts": {"running_count": 1},
+            },
+            "container": {"resources": {"gpu_classes": [salad_prl_profit_snapshot.GPU_IDS["4070ti"]]}},
+        }
+        workers = [
+            {
+                "worker": "kray-prl-kray-roi-136",
+                "named_slot": None,
+                "slot": None,
+                "gpu": "NVIDIA RTX 4070 Ti",
+                "gpu_id": salad_prl_profit_snapshot.GPU_IDS["4070ti"],
+                "gpu_token": "4070ti",
+                "th": 150.0,
+                "stale": False,
+                "last_stats_at": "2026-07-02T12:01:00+00:00",
+            }
+        ]
+
+        def fake_salad_json(path: str, _api_key: str) -> dict:
+            if path.endswith("/instances"):
+                return {"items": [{"id": "different-instance"}]}
+            return group
+
+        with patch.dict("os.environ", {"SALAD_API_KEY_2": "test-key", "PRL_WALLET": "test-wallet"}, clear=True), patch.object(
+            salad_prl_profit_snapshot,
+            "configured_accounts",
+            return_value=[("kray", "kray", "SALAD_API_KEY_2", ["prl-kray-roi-136"])],
+        ), patch.object(salad_prl_profit_snapshot, "price_catalog", return_value={}), patch.object(
+            salad_prl_profit_snapshot,
+            "salad_json",
+            side_effect=fake_salad_json,
+        ), patch.object(salad_prl_profit_snapshot, "pool_prl_per_th_day", return_value=(0.04, 24, 0.01)), patch.object(
+            salad_prl_profit_snapshot,
+            "market_prl_price_usd",
+            return_value=0.47,
+        ), patch.object(salad_prl_profit_snapshot, "parse_workers", return_value=workers):
+            snapshot = salad_prl_profit_snapshot.build_snapshot(0.55)
+
+        self.assertEqual(len(snapshot["slots"]), 1)
+        self.assertEqual(snapshot["slots"][0]["slot"], "prl-kray-roi-136")
+        self.assertEqual(snapshot["unmapped_live_workers"], [])
 
     def test_pool_prl_per_th_day_applies_reward_calibration(self) -> None:
         payloads = {

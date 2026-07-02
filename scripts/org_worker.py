@@ -1085,7 +1085,8 @@ def run_once(
     with state_db.connect(db_path) as conn:
         state_db.init_db(conn)
         state_db.sync_config(conn, config)
-        if schedule_if_empty and not target_rows(conn, org_label):
+        existing_target_rows = target_rows(conn, org_label)
+        if schedule_if_empty and len(existing_target_rows) < len(org.slot_names()):
             conn.commit()
             fleet_scheduler.schedule_once(db_path=db_path, dry_run=False)
         risk = state_db.latest_risk_mode(conn)

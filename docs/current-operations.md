@@ -11,8 +11,8 @@ Keep the current `kray` fleet full of profitable GPUs first, then optimize quali
 The current policy is:
 
 1. Operate only the `kray` organization for the live run. Use
-   `config/fleet.kray-only-150.json` and `PRL_ENABLED_ORGS=kray`.
-2. Fill up to the current `kray` target of 150 slots with the best currently
+   `config/fleet.kray-only-200.json` and `PRL_ENABLED_ORGS=kray`.
+2. Fill up to the current `kray` target of 200 slots with the best currently
    available GPU profiles, ranked by live expected profit.
 3. Do not stop a newly running no-hash slot immediately. Wait the no-hash grace window.
 4. Rotate or stop billable no-hash slots after grace.
@@ -27,9 +27,9 @@ Fill mode uses:
 
 | Setting | Current value |
 | --- | --- |
-| Fleet config | `config/fleet.kray-only-150.json` |
+| Fleet config | `config/fleet.kray-only-200.json` |
 | Enabled org filter | `PRL_ENABLED_ORGS=kray` |
-| Target slots | `150` |
+| Target slots | `200` |
 | Decision PRL price | latest `price_history.selected_price_usd` |
 | Minimum replacement profit | `-0.10` USD/day during scarce-GPU fill |
 | Allowed priorities | current top live-ranked profiles, usually `batch` |
@@ -54,16 +54,17 @@ The current live org label is:
 
 | Label | Target slots | API key variable |
 | --- | ---: | --- |
-| `kray` | 150 | `SALAD_API_KEY_2` |
+| `kray` | 200 | `SALAD_API_KEY_2` |
 
 The old multi-org layout remains in `config/fleet.current.json` for reference,
 but it is not the current operating scope. Current live automation must use
-`config/fleet.kray-only-150.json`.
+`config/fleet.kray-only-200.json`. The previous
+`config/fleet.kray-only-150.json` file remains available as a rollback config.
 
 Slot names follow:
 
 ```text
-prl-kray-roi-01 ... prl-kray-roi-150
+prl-kray-roi-01 ... prl-kray-roi-200
 ```
 
 ## Script Map
@@ -98,8 +99,8 @@ salad-pearl-monitor
 ```
 
 The scheduler, safe-fill, and guard sessions must all include
-`SALAD_FLEET_CONFIG_PATH=config/fleet.kray-only-150.json`,
-`PRL_FLEET_CONFIG_PATH=config/fleet.kray-only-150.json`, and
+`SALAD_FLEET_CONFIG_PATH=config/fleet.kray-only-200.json`,
+`PRL_FLEET_CONFIG_PATH=config/fleet.kray-only-200.json`, and
 `PRL_ENABLED_ORGS=kray`.
 
 ## Start Commands
@@ -108,7 +109,7 @@ Create a private `.env` from `.env.example`, fill only local secrets, then run
 the kray-only v2 scheduler stack:
 
 ```bash
-SALAD_FLEET_CONFIG_PATH=config/fleet.kray-only-150.json PRL_FLEET_CONFIG_PATH=config/fleet.kray-only-150.json PRL_ENABLED_ORGS=kray python3 scripts/supervisor.py --ensure --runtime-monitor-apply
+SALAD_FLEET_CONFIG_PATH=config/fleet.kray-only-200.json PRL_FLEET_CONFIG_PATH=config/fleet.kray-only-200.json PRL_ENABLED_ORGS=kray python3 scripts/supervisor.py --ensure --runtime-monitor-apply
 ```
 
 The live `salad-orch-v2-*` tmux sessions are currently managed directly because
@@ -154,7 +155,7 @@ tail -f state/logs/prl_nohash_guard.log
 Check active GPUs and hourly balance-vs-cost audits:
 
 ```bash
-SALAD_FLEET_CONFIG_PATH=config/fleet.kray-only-150.json PRL_FLEET_CONFIG_PATH=config/fleet.kray-only-150.json PRL_ENABLED_ORGS=kray python3 scripts/fleet_audit.py --loop --interval 300 --balance-interval 3600 --balance-file state/salad_balances.json
+SALAD_FLEET_CONFIG_PATH=config/fleet.kray-only-200.json PRL_FLEET_CONFIG_PATH=config/fleet.kray-only-200.json PRL_ENABLED_ORGS=kray python3 scripts/fleet_audit.py --loop --interval 300 --balance-interval 3600 --balance-file state/salad_balances.json
 python3 scripts/portal_balances.py --loop --interval 900 --balance-file state/salad_balances.json --cookie-jar state/portal_cookies.txt
 SALAD_PORTAL_BALANCE_EMAILS="account1@example.com,account2@example.com" python3 scripts/portal_multi_balances.py --loop --interval 900 --balance-file state/salad_balances.json
 python3 scripts/spike_report.py --heartbeat --loop --interval 300
@@ -193,8 +194,8 @@ zsh -lc '"'"'
 set -a; . ./.env; set +a
 while true; do
   PRICE=$(sqlite3 state/fleet_scheduler.db "select selected_price_usd from price_history where selected_price_usd is not null order by sampled_at_utc desc, id desc limit 1")
-  SALAD_FLEET_CONFIG_PATH=config/fleet.kray-only-150.json \
-  PRL_FLEET_CONFIG_PATH=config/fleet.kray-only-150.json \
+  SALAD_FLEET_CONFIG_PATH=config/fleet.kray-only-200.json \
+  PRL_FLEET_CONFIG_PATH=config/fleet.kray-only-200.json \
   PRL_ENABLED_ORGS=kray \
   PRL_FILL_MIN_PROFIT_USD_DAY=0.00 \
   PRL_OPTIMIZE_MIN_PROFIT_USD_DAY=0.00 \
@@ -262,8 +263,8 @@ while true; do
   PRL_SCHEDULER_RANK_BY_PROFIT=1 \
   PRL_FILL_MIN_PROFIT_USD_DAY=0.00 \
   PRL_OPTIMIZE_MIN_PROFIT_USD_DAY=0.00 \
-  SALAD_FLEET_CONFIG_PATH=config/fleet.kray-only-150.json \
-  PRL_FLEET_CONFIG_PATH=config/fleet.kray-only-150.json \
+  SALAD_FLEET_CONFIG_PATH=config/fleet.kray-only-200.json \
+  PRL_FLEET_CONFIG_PATH=config/fleet.kray-only-200.json \
   PRL_ENABLED_ORGS=kray \
   python3 scripts/fleet_scheduler.py --once --mode base_fill --price "$PRICE" --fee 0.01 --width 2 --db state/fleet_scheduler.db
   sleep 120
@@ -288,8 +289,8 @@ zsh -lc '"'"'
 set -a; . ./.env; set +a
 while true; do
   PRICE=$(sqlite3 state/fleet_scheduler.db "select selected_price_usd from price_history where selected_price_usd is not null order by sampled_at_utc desc, id desc limit 1")
-  SALAD_FLEET_CONFIG_PATH=config/fleet.kray-only-150.json \
-  PRL_FLEET_CONFIG_PATH=config/fleet.kray-only-150.json \
+  SALAD_FLEET_CONFIG_PATH=config/fleet.kray-only-200.json \
+  PRL_FLEET_CONFIG_PATH=config/fleet.kray-only-200.json \
   PRL_ENABLED_ORGS=kray \
   PRL_FAST_FILL_GUARD_STOP_COOLDOWN_SECONDS=900 \
   python3 scripts/fast_fill_targets.py \

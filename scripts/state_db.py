@@ -3,8 +3,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import pathlib
 import sqlite3
+import sys
 from dataclasses import asdict
 from datetime import UTC, datetime
 from typing import Any
@@ -602,7 +604,16 @@ def sync_config(conn: sqlite3.Connection, config: FleetConfig) -> None:
         "config_synced",
         source="state_db",
         message="fleet configuration synced",
-        payload={"orgs": len(config.organizations), "target_slots": config.target_slot_count()},
+        payload={
+            "orgs": len(config.organizations),
+            "target_slots": config.target_slot_count(),
+            "pid": os.getpid(),
+            "cwd": os.getcwd(),
+            "argv": sys.argv[:8],
+            "salad_fleet_config_path": os.environ.get("SALAD_FLEET_CONFIG_PATH"),
+            "prl_fleet_config_path": os.environ.get("PRL_FLEET_CONFIG_PATH"),
+            "enabled_orgs": os.environ.get("PRL_ENABLED_ORGS"),
+        },
     )
 
 

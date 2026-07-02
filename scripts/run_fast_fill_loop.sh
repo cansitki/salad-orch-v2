@@ -19,7 +19,7 @@ if [[ ! -x "$PYTHON" ]]; then
 fi
 
 ORG=${PRL_FAST_FILL_ORG:-kray}
-CONFIG_PATH=${SALAD_FLEET_CONFIG_PATH:-config/fleet.kray-only-150.json}
+CONFIG_PATH=${SALAD_FLEET_CONFIG_PATH:-config/fleet.kray-only-200.json}
 DB_PATH=${PRL_FLEET_DB_PATH:-state/fleet_scheduler.db}
 INTERVAL_SECONDS=${PRL_FAST_FILL_INTERVAL_SECONDS:-90}
 WORKERS=${PRL_FAST_FILL_WORKERS:-4}

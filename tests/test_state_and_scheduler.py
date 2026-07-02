@@ -388,6 +388,81 @@ class StateAndSchedulerTest(unittest.TestCase):
             [("prl-kray-roi-02", "dry_run_create")],
         )
 
+    def test_org_worker_reschedules_when_targets_are_underfilled(self) -> None:
+        org = config_loader.OrgConfig(
+            label="kray",
+            slug="kray",
+            api_key_env="SALAD_API_KEY_2",
+            slot_prefix="prl-kray-roi",
+            slots=3,
+        )
+        config = config_loader.FleetConfig(organizations=(org,))
+        with state_db.connect(self.db_path) as conn:
+            state_db.init_db(conn)
+            state_db.sync_config(conn, config)
+            state_db.upsert_gpu_profiles(conn, profit_model.load_profiles())
+            for slot_name in ("prl-kray-roi-01", "prl-kray-roi-02"):
+                state_db.set_slot_target(
+                    conn,
+                    {
+                        "org_label": "kray",
+                        "slot_name": slot_name,
+                        "profile_key": "4090:batch:2048",
+                        "mode": "base_fill",
+                        "decision_price_usd": 0.64,
+                        "expected_profit_day": 1.0,
+                        "protected": False,
+                        "reason": "test",
+                        "assigned_at_utc": "2026-06-24T12:00:00+00:00",
+                    },
+                )
+            conn.commit()
+
+        def fill_missing_target(*_args, **_kwargs):
+            with state_db.connect(self.db_path) as conn:
+                state_db.set_slot_target(
+                    conn,
+                    {
+                        "org_label": "kray",
+                        "slot_name": "prl-kray-roi-03",
+                        "profile_key": "4090:batch:2048",
+                        "mode": "base_fill",
+                        "decision_price_usd": 0.64,
+                        "expected_profit_day": 1.0,
+                        "protected": False,
+                        "reason": "test_reschedule",
+                        "assigned_at_utc": "2026-06-24T12:01:00+00:00",
+                    },
+                )
+                conn.commit()
+            return {"assigned_targets": 3, "target_slots": 3}
+
+        class FakeWatch:
+            ORG = "kray"
+            PROJECT = "default"
+            GPU = {"4090": "gpu-rtx-4090"}
+
+            def slot_state(self, _slot_name):
+                return None, []
+
+        with (
+            patch("org_worker.load_config", return_value=config),
+            patch("org_worker.fleet_scheduler.schedule_once", side_effect=fill_missing_target) as schedule,
+            patch("org_worker.load_watch_module", return_value=FakeWatch()),
+            patch("org_worker.install_rate_limited_request"),
+        ):
+            payload = org_worker.run_once(
+                org_label="kray",
+                db_path=self.db_path,
+                apply=False,
+                slot_filter={"prl-kray-roi-03"},
+            )
+
+        self.assertTrue(schedule.called)
+        self.assertEqual(payload["targets"], 1)
+        self.assertEqual(payload["action_counts"], {"create": 1})
+        self.assertEqual(payload["results"][0]["slot_name"], "prl-kray-roi-03")
+
     def test_org_worker_can_limit_live_actions_per_pass(self) -> None:
         with state_db.connect(self.db_path) as conn:
             state_db.init_db(conn)

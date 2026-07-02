@@ -258,12 +258,13 @@ def build_targets(
         allow_availability_probe: bool = False,
         require_reported_available: bool = False,
         candidate_profiles: list[dict[str, Any]] | None = None,
+        prefer_best_order: bool = False,
     ) -> tuple[int, dict[str, Any]] | None:
         candidates = candidate_profiles or profiles
         if require_reported_available:
             candidates = reported_available_candidates(org_label, candidates)
         for offset in range(len(candidates)):
-            if require_reported_available and prefer_reported_available_score_order:
+            if prefer_best_order or (require_reported_available and prefer_reported_available_score_order):
                 profile_index = offset
             else:
                 profile_index = (slot_index - 1 + org_index * 3 + offset) % len(candidates)
@@ -294,6 +295,7 @@ def build_targets(
         *,
         skip_profile_key: str | None = None,
         min_profit_day: float | None = None,
+        prefer_best_order: bool = False,
     ) -> tuple[int, dict[str, Any], bool] | None:
         selected = diversified_candidate(
             org_label,
@@ -303,6 +305,7 @@ def build_targets(
             skip_profile_key=skip_profile_key,
             min_profit_day=min_profit_day,
             require_reported_available=True,
+            prefer_best_order=prefer_best_order,
         )
         if selected is not None:
             profile_index, profile = selected
@@ -316,6 +319,7 @@ def build_targets(
             min_profit_day=min_profit_day,
             require_reported_available=True,
             candidate_profiles=profiles if fallback_within_width_only else eligible_profiles,
+            prefer_best_order=prefer_best_order,
         )
         if selected is not None:
             profile_index, profile = selected
@@ -327,6 +331,7 @@ def build_targets(
             org_index,
             skip_profile_key=skip_profile_key,
             min_profit_day=min_profit_day,
+            prefer_best_order=prefer_best_order,
         )
         if selected is not None:
             profile_index, profile = selected
@@ -339,6 +344,7 @@ def build_targets(
             skip_profile_key=skip_profile_key,
             min_profit_day=min_profit_day,
             allow_availability_probe=True,
+            prefer_best_order=prefer_best_order,
         )
         if selected is None:
             return None
@@ -421,6 +427,7 @@ def build_targets(
                 current = scores_by_key[str(observed_profile)]
                 selected = None
                 current_profit = float(current["expected_profit_day"])
+                prefer_best_replacement_order = env_bool("PRL_SCHEDULER_REPLACEMENT_BEST_ORDER", False)
                 if current_profit < 0:
                     selected = fill_candidate(
                         org.label,
@@ -428,6 +435,7 @@ def build_targets(
                         slot_index,
                         org_index,
                         skip_profile_key=str(observed_profile),
+                        prefer_best_order=prefer_best_replacement_order,
                     )
                     if selected is not None:
                         profile_index, replacement_profile, used_probe_fallback = selected
@@ -468,6 +476,7 @@ def build_targets(
                         slot_index,
                         org_index,
                         skip_profile_key=str(observed_profile),
+                        prefer_best_order=prefer_best_replacement_order,
                     )
                     if selected is not None:
                         profile_index, profile, used_probe_fallback = selected

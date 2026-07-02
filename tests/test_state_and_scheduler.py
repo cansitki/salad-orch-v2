@@ -3418,6 +3418,104 @@ class StateAndSchedulerTest(unittest.TestCase):
         self.assertEqual(targets[0]["expected_profit_day"], -0.25)
         self.assertIn("negative_observed_profile_no_better_replacement", targets[0]["reason"])
 
+    def test_scheduler_can_use_best_order_for_negative_replacements(self) -> None:
+        org = config_loader.OrgConfig(
+            label="kray",
+            slug="kray",
+            api_key_env="SALAD_API_KEY",
+            slot_prefix="prl-kray-roi",
+            slots=4,
+        )
+        config = config_loader.FleetConfig(
+            organizations=(org,),
+            risk=config_loader.RiskConfig(fill_min_profit_day=-999.0),
+        )
+        scores = [
+            {
+                "profile_key": "3070:batch:4096",
+                "gpu_key": "3070",
+                "priority": "batch",
+                "memory_mb": 4096,
+                "label": "RTX 3070",
+                "score": 100.0,
+                "eligible": True,
+                "expected_profit_day": 0.04,
+                "break_even_price_usd": 0.39,
+            },
+            {
+                "profile_key": "3060ti:batch:2048",
+                "gpu_key": "3060ti",
+                "priority": "batch",
+                "memory_mb": 2048,
+                "label": "RTX 3060 Ti",
+                "score": 90.0,
+                "eligible": True,
+                "expected_profit_day": 0.01,
+                "break_even_price_usd": 0.40,
+            },
+            {
+                "profile_key": "4080:batch:2048",
+                "gpu_key": "4080",
+                "priority": "batch",
+                "memory_mb": 2048,
+                "label": "RTX 4080",
+                "score": 80.0,
+                "eligible": True,
+                "expected_profit_day": -0.13,
+                "break_even_price_usd": 0.43,
+            },
+            {
+                "profile_key": "3080:batch:2048",
+                "gpu_key": "3080",
+                "priority": "batch",
+                "memory_mb": 2048,
+                "label": "RTX 3080",
+                "score": 70.0,
+                "eligible": True,
+                "expected_profit_day": -0.16,
+                "break_even_price_usd": 0.46,
+            },
+            {
+                "profile_key": "5070:batch:2048",
+                "gpu_key": "5070",
+                "priority": "batch",
+                "memory_mb": 2048,
+                "label": "RTX 5070",
+                "score": 60.0,
+                "eligible": True,
+                "expected_profit_day": -0.23,
+                "break_even_price_usd": 0.47,
+            },
+        ]
+
+        with patch.dict(
+            "os.environ",
+            {
+                "PRL_SCHEDULER_RANK_BY_BREAK_EVEN": "1",
+                "PRL_SCHEDULER_REPLACEMENT_BEST_ORDER": "1",
+            },
+            clear=False,
+        ):
+            targets = fleet_scheduler.build_targets(
+                config,
+                scores,
+                mode="base_fill",
+                decision_price_usd=0.41,
+                width=5,
+                slot_rows={
+                    ("kray", "prl-kray-roi-04"): {
+                        "observed_profile_key": "3080:batch:2048",
+                        "observed_status": "running",
+                        "live_hashrate_th": 100.0,
+                        "protected": True,
+                    }
+                },
+            )
+
+        row = next(target for target in targets if target["slot_name"] == "prl-kray-roi-04")
+        self.assertEqual(row["profile_key"], "3070:batch:4096")
+        self.assertIn("replace_negative_observed_profile:3080:batch:2048", row["reason"])
+
     def test_scheduler_preserves_active_guard_target(self) -> None:
         config = load_config()
         with state_db.connect(self.db_path) as conn:

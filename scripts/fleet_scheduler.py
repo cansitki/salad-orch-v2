@@ -146,11 +146,13 @@ def build_targets(
     prefer_reported_available_score_order = bool(env_int("PRL_FILL_PREFER_REPORTED_AVAILABLE_SCORE_ORDER", 1))
     prefer_reported_available_capacity_first = bool(env_int("PRL_FILL_REPORTED_AVAILABLE_CAPACITY_FIRST", 0))
     fallback_within_width_only = bool(env_int("PRL_SCHEDULER_FALLBACK_WITHIN_WIDTH_ONLY", 0))
+    replace_out_of_width_observed = bool(env_int("PRL_SCHEDULER_REPLACE_OUT_OF_WIDTH_OBSERVED", 0))
     min_profit_day = config.risk.min_profit_for_mode("optimize" if mode == "optimize" else "fill")
     hard_profit_floor = _hard_profit_floor(min_profit_day)
     assigned_by_org_profile: dict[tuple[str, str], int] = {}
     targets: list[dict[str, Any]] = []
     assigned_at = utc_now()
+    top_profile_keys = {str(profile["profile_key"]) for profile in profiles}
     rank_by_profile_key = {
         str(profile["profile_key"]): index
         for index, profile in enumerate(eligible_profiles)
@@ -403,7 +405,19 @@ def build_targets(
                 and not is_in_cooldown(org.label, slot_name, str(observed_profile))
                 and (pending_age is None or pending_age < pending_target_protect_seconds)
             )
-            if (protected or pending_observed) and observed_profile and observed_profile in scores_by_key:
+            observed_profile_key = str(observed_profile or "")
+            observed_profile_in_width = observed_profile_key in top_profile_keys
+            allow_observed_profile_protection = not (
+                replace_out_of_width_observed
+                and observed_profile_key
+                and not observed_profile_in_width
+            )
+            if (
+                allow_observed_profile_protection
+                and (protected or pending_observed)
+                and observed_profile
+                and observed_profile in scores_by_key
+            ):
                 current = scores_by_key[str(observed_profile)]
                 selected = None
                 current_profit = float(current["expected_profit_day"])

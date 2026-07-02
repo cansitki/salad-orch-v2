@@ -2794,6 +2794,67 @@ class StateAndSchedulerTest(unittest.TestCase):
         self.assertEqual(row["protected"], 1)
         self.assertIn("protected_observed_profile", row["reason"])
 
+    def test_scheduler_can_replace_protected_observed_profile_outside_width(self) -> None:
+        org = config_loader.OrgConfig(
+            label="kray",
+            slug="kray",
+            api_key_env="SALAD_API_KEY",
+            slot_prefix="prl-kray-roi",
+            slots=1,
+        )
+        config = config_loader.FleetConfig(organizations=(org,))
+        scores = [
+            {
+                "profile_key": "3070:batch:4096",
+                "gpu_key": "3070",
+                "priority": "batch",
+                "memory_mb": 4096,
+                "label": "RTX 3070",
+                "score": 10.0,
+                "eligible": True,
+                "expected_profit_day": 0.12,
+                "break_even_price_usd": 0.4,
+            },
+            {
+                "profile_key": "3080:batch:2048",
+                "gpu_key": "3080",
+                "priority": "batch",
+                "memory_mb": 2048,
+                "label": "RTX 3080",
+                "score": 5.0,
+                "eligible": True,
+                "expected_profit_day": 0.05,
+                "break_even_price_usd": 0.6,
+            },
+        ]
+        original = os.environ.get("PRL_SCHEDULER_REPLACE_OUT_OF_WIDTH_OBSERVED")
+        os.environ["PRL_SCHEDULER_REPLACE_OUT_OF_WIDTH_OBSERVED"] = "1"
+        try:
+            targets = fleet_scheduler.build_targets(
+                config,
+                scores,
+                mode="base_fill",
+                decision_price_usd=0.64,
+                width=1,
+                slot_rows={
+                    ("kray", "prl-kray-roi-01"): {
+                        "observed_profile_key": "3080:batch:2048",
+                        "observed_status": "running",
+                        "live_hashrate_th": 92.0,
+                        "protected": True,
+                    }
+                },
+            )
+        finally:
+            if original is None:
+                os.environ.pop("PRL_SCHEDULER_REPLACE_OUT_OF_WIDTH_OBSERVED", None)
+            else:
+                os.environ["PRL_SCHEDULER_REPLACE_OUT_OF_WIDTH_OBSERVED"] = original
+
+        self.assertEqual(len(targets), 1)
+        self.assertEqual(targets[0]["profile_key"], "3070:batch:4096")
+        self.assertIn("diversified_rank_1", targets[0]["reason"])
+
     def test_scheduler_preserves_fresh_profitable_pending_slot_target(self) -> None:
         config = load_config()
         original = os.environ.get("PRL_PENDING_TARGET_PROTECT_SECONDS")

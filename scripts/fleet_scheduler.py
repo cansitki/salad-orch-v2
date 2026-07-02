@@ -20,6 +20,14 @@ def _scheduler_mode(config: FleetConfig, db_mode: str | None) -> str:
     return "base_fill"
 
 
+def _fallback_decision_price(conn: Any, config: FleetConfig, risk: Any) -> float:
+    if env_bool("PRL_SCHEDULER_USE_LIVE_SELECTED_PRICE", True):
+        sample = state_db.latest_price_sample(conn)
+        if sample is not None and sample["selected_price_usd"] is not None:
+            return float(sample["selected_price_usd"])
+    return float(risk["decision_price_usd"]) if risk else config.risk.decision_price_for_mode()
+
+
 def _profile_allowed_by_scheduler(row: dict[str, Any]) -> bool:
     if row.get("eligible"):
         return True
@@ -597,7 +605,7 @@ def schedule_once(
             for row in conn.execute("SELECT * FROM slot_targets").fetchall()
         }
         db_mode = str(risk["mode"]) if risk else None
-        db_price = float(risk["decision_price_usd"]) if risk else config.risk.decision_price_for_mode()
+        db_price = _fallback_decision_price(conn, config, risk)
         selected_mode = _scheduler_mode(config, mode or db_mode)
         decision_price = price if price is not None else db_price
         selected_fee = fee if fee is not None else (float(risk["pearl_fee_rate"]) if risk else config.risk.effective_fee_rate())

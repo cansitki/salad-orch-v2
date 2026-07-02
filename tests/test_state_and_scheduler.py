@@ -3040,6 +3040,45 @@ class StateAndSchedulerTest(unittest.TestCase):
         self.assertEqual(row["profile_key"], "4090:batch:2048")
         self.assertEqual(row["assigned_at_utc"], old_assigned_at)
 
+    def test_scheduler_prefers_live_selected_price_when_price_is_omitted(self) -> None:
+        with state_db.connect(self.db_path) as conn:
+            state_db.init_db(conn)
+            state_db.set_risk_mode(
+                conn,
+                {
+                    "at_utc": "2026-07-02T07:00:00+00:00",
+                    "mode": "base_fill",
+                    "decision_price_usd": 0.55,
+                    "pearl_fee_rate": 0.01,
+                    "reason": "static base price",
+                },
+            )
+            state_db.insert_price_sample(
+                conn,
+                {
+                    "sampled_at_utc": "2026-07-02T07:01:00+00:00",
+                    "selected_price_usd": 0.41,
+                },
+            )
+            conn.commit()
+
+        with patch.dict(
+            "os.environ",
+            {
+                "PRL_SCHEDULER_ALLOW_BREAK_EVEN_PROBES": "0",
+                "PRL_SCHEDULER_ALLOW_UNSTABLE_PROFILES": "0",
+                "PRL_FILL_MIN_PROFIT_USD_DAY": "0.0",
+            },
+            clear=False,
+        ):
+            payload = fleet_scheduler.schedule_once(db_path=self.db_path, fee=0.01, dry_run=False)
+
+        self.assertEqual(payload["decision_price_usd"], 0.41)
+        self.assertEqual(payload["assigned_targets"], 0)
+        with state_db.connect(self.db_path) as conn:
+            targets = conn.execute("SELECT COUNT(*) FROM slot_targets").fetchone()[0]
+        self.assertEqual(targets, 0)
+
     def test_scheduler_refreshes_assigned_at_when_profile_changes(self) -> None:
         config = load_config()
         old_assigned_at = "2026-01-01T00:00:00+00:00"

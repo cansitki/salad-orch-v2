@@ -124,6 +124,14 @@ def guard_replacement_min_profit(config: Any) -> float:
     return config.risk.min_profit_for_mode()
 
 
+def fallback_decision_price(conn: Any, config: Any, risk: Any) -> float:
+    if env_bool("PRL_GUARD_USE_LIVE_SELECTED_PRICE", True):
+        sample = state_db.latest_price_sample(conn)
+        if sample is not None and sample["selected_price_usd"] is not None:
+            return float(sample["selected_price_usd"])
+    return float(risk["decision_price_usd"]) if risk else config.risk.decision_price_for_mode()
+
+
 def hash_range_overrides() -> dict[str, Any]:
     raw = os.environ.get("PRL_GUARD_HASH_RANGES_JSON", "").strip()
     if not raw:
@@ -955,7 +963,7 @@ def run_once(*, db_path: str | None = None, price: float | None = None, apply: b
         with state_db.connect(db_path) as conn:
             state_db.init_db(conn)
             risk = state_db.latest_risk_mode(conn)
-            decision_price = float(risk["decision_price_usd"]) if risk else config.risk.decision_price_for_mode()
+            decision_price = fallback_decision_price(conn, config, risk)
     try:
         payload = snapshot.build_snapshot(decision_price)
         analysis = analyze_snapshot(payload)

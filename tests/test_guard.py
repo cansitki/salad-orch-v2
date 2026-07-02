@@ -1445,6 +1445,42 @@ class GuardDecisionTest(unittest.TestCase):
 
         build_snapshot.assert_called_once_with(0.68)
 
+    def test_guard_prefers_live_selected_price_when_price_is_omitted(self) -> None:
+        with state_db.connect(self.db_path) as conn:
+            state_db.init_db(conn)
+            state_db.set_risk_mode(
+                conn,
+                {
+                    "at_utc": "2026-06-24T12:00:00+00:00",
+                    "mode": "base_fill",
+                    "decision_price_usd": 0.55,
+                    "pearl_fee_rate": 0.01,
+                    "reason": "static base price",
+                },
+            )
+            state_db.insert_price_sample(
+                conn,
+                {
+                    "sampled_at_utc": "2026-06-24T12:01:00+00:00",
+                    "selected_price_usd": 0.41,
+                },
+            )
+            conn.commit()
+
+        fake_snapshot = {
+            "live_market_prl_price": 0.41,
+            "fresh_workers": 0,
+            "running_no_live_billable_slots": [],
+            "totals": {"th": 0, "cost_day": 0, "revenue_day": 0, "profit_day": 0},
+            "slots": [],
+        }
+
+        with patch.dict("os.environ", {"PRL_GUARD_USE_LIVE_SELECTED_PRICE": "1"}, clear=False):
+            with patch("guard.snapshot.build_snapshot", return_value=fake_snapshot) as build_snapshot:
+                guard.run_once(db_path=self.db_path, apply=False)
+
+        build_snapshot.assert_called_once_with(0.41)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -647,7 +647,14 @@ def planned_action(
                 elif allow_running_nohash_retarget:
                     recent_nohash_patches = int(target.get("recent_running_nohash_patch_count") or 0)
                     restart_after_patches = env_int("PRL_RUNNING_NOHASH_MISMATCH_RESTART_AFTER_PATCHES", 3)
-                    if restart_after_patches > 0 and recent_nohash_patches >= restart_after_patches:
+                    restart_mismatch_only = env_bool("PRL_RUNNING_NOHASH_MISMATCH_RESTART_ONLY", False)
+                    if restart_mismatch_only:
+                        action = "restart_no_hash"
+                        reason = (
+                            f"stale_running_no_hash_profile_mismatch_restart_only:"
+                            f"{current or 'unknown'}:age_{running_age:.1f}"
+                        )
+                    elif restart_after_patches > 0 and recent_nohash_patches >= restart_after_patches:
                         action = "restart_no_hash"
                         reason = (
                             f"stale_running_no_hash_profile_mismatch_restart_after_patches:"

@@ -2576,6 +2576,42 @@ class StateAndSchedulerTest(unittest.TestCase):
         self.assertEqual(plan["running_instance_ids"], ["running-1"])
         self.assertFalse(plan["protected"])
 
+    def test_org_worker_can_restart_stale_running_no_hash_mismatch_without_patching(self) -> None:
+        class Watch:
+            def slot_state(self, _slot_name):
+                return (
+                    {
+                        "priority": "low",
+                        "container": {"resources": {"gpu_classes": ["gpu-rtx-4070tis"], "memory": 2048}},
+                        "current_state": {"instance_status_counts": {"running_count": 1}},
+                    },
+                    [{"id": "running-1", "ready": True, "started": True}],
+                )
+
+            GPU = {"4070tis": "gpu-rtx-4070tis"}
+
+        with patch.dict(os.environ, {"PRL_RUNNING_NOHASH_MISMATCH_RESTART_ONLY": "1"}, clear=False):
+            plan = org_worker.planned_action(
+                Watch(),
+                "prl-kray-roi-01",
+                {
+                    "profile_key": "5090:low:2048",
+                    "observed_profile_since_utc": (datetime.now(UTC) - timedelta(minutes=5)).isoformat(
+                        timespec="seconds"
+                    ),
+                    "live_worker_count": 0,
+                    "live_worker_th": 0,
+                },
+                protect_running=True,
+                pending_retarget_after_seconds=60,
+                allow_running_nohash_retarget=True,
+            )
+
+        self.assertEqual(plan["action"], "restart_no_hash")
+        self.assertIn("stale_running_no_hash_profile_mismatch_restart_only", plan["reason"])
+        self.assertEqual(plan["running_instance_ids"], ["running-1"])
+        self.assertFalse(plan["protected"])
+
     def test_org_worker_protects_stale_running_no_hash_mismatch_by_default(self) -> None:
         class Watch:
             def slot_state(self, _slot_name):

@@ -227,8 +227,11 @@ tmux new-session -d -s salad-orch-v2-scheduler \
   -c "$PWD" "scripts/run_kray_top7_scheduler_loop.sh"
 ```
 
-That loop uses only non-negative targets at the live price and does not allow
-negative break-even probes.
+That loop uses only non-negative targets at the live price, does not allow
+negative break-even probes, and preserves recent non-hashing targets for 600
+seconds when the target is still inside the top7 set. The short preservation
+window reduces scheduler churn while Salad is still moving a stopped or pending
+slot into a real allocation.
 
 This file contains only organization labels and API key environment variable
 names. Keep the actual API key values in the local shell or `.env`.

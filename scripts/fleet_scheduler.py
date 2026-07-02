@@ -142,6 +142,10 @@ def build_targets(
     existing_targets = existing_targets or {}
     scores_by_key = {str(score["profile_key"]): score for score in scores}
     pending_target_protect_seconds = max(0, env_int("PRL_PENDING_TARGET_PROTECT_SECONDS", 120))
+    recent_nonhash_target_protect_seconds = max(
+        0,
+        env_int("PRL_RECENT_NONHASH_TARGET_PROTECT_SECONDS", 0),
+    )
     recycle_current_pending_first = bool(env_int("PRL_FILL_RECYCLE_CURRENT_PENDING_FIRST", 1))
     prefer_reported_available_score_order = bool(env_int("PRL_FILL_PREFER_REPORTED_AVAILABLE_SCORE_ORDER", 1))
     prefer_reported_available_capacity_first = bool(env_int("PRL_FILL_REPORTED_AVAILABLE_CAPACITY_FIRST", 0))
@@ -404,11 +408,12 @@ def build_targets(
             )
             previous_target = existing_targets.get((org.label, slot_name), {})
             previous_target_age = _age_seconds(previous_target.get("assigned_at_utc"))
+            previous_profile_key = str(previous_target.get("profile_key") or "")
             if (
                 pending_observed
                 and observed_profile
                 and previous_target_age is not None
-                and str(previous_target.get("profile_key") or "") == str(observed_profile)
+                and previous_profile_key == str(observed_profile)
             ):
                 pending_age = (
                     previous_target_age
@@ -422,6 +427,17 @@ def build_targets(
                 and not is_in_cooldown(org.label, slot_name, str(observed_profile))
                 and (pending_age is None or pending_age < pending_target_protect_seconds)
             )
+            nonhash_target_protect = (
+                recent_nonhash_target_protect_seconds > 0
+                and mode != "optimize"
+                and observed_status in {"", "missing", "stopped", "unknown", "creating", "allocating", "deploying"}
+                and previous_target_age is not None
+                and previous_target_age < recent_nonhash_target_protect_seconds
+                and previous_profile_key in top_profile_keys
+                and previous_profile_key in scores_by_key
+                and not is_in_cooldown(org.label, slot_name, previous_profile_key)
+                and float(scores_by_key[previous_profile_key]["expected_profit_day"]) >= hard_profit_floor
+            )
             observed_profile_key = str(observed_profile or "")
             observed_profile_in_width = observed_profile_key in top_profile_keys
             allow_observed_profile_protection = not (
@@ -429,7 +445,16 @@ def build_targets(
                 and observed_profile_key
                 and not observed_profile_in_width
             )
-            if (
+            if nonhash_target_protect:
+                profile = scores_by_key[previous_profile_key]
+                profile_index = rank_by_profile_key.get(previous_profile_key, 0)
+                protected = False
+                age_text = f"{previous_target_age:.1f}"
+                reason = (
+                    f"{mode}:preserve_recent_nonhash_target:{previous_profile_key}:"
+                    f"age_{age_text}_lt_{recent_nonhash_target_protect_seconds}"
+                )
+            elif (
                 allow_observed_profile_protection
                 and (protected or pending_observed)
                 and observed_profile

@@ -3424,6 +3424,67 @@ class StateAndSchedulerTest(unittest.TestCase):
         self.assertEqual(row["profile_key"], "4090:batch:2048")
         self.assertEqual(row["assigned_at_utc"], old_assigned_at)
 
+    def test_scheduler_preserves_recent_nonhash_target(self) -> None:
+        config = load_config()
+        assigned_at = (datetime.now(UTC) - timedelta(minutes=5)).isoformat(timespec="seconds")
+        original = os.environ.get("PRL_RECENT_NONHASH_TARGET_PROTECT_SECONDS")
+        os.environ["PRL_RECENT_NONHASH_TARGET_PROTECT_SECONDS"] = "600"
+        try:
+            targets = fleet_scheduler.build_targets(
+                config,
+                [
+                    {
+                        "profile_key": "fast:batch:2048",
+                        "gpu_key": "fast",
+                        "priority": "batch",
+                        "memory_mb": 2048,
+                        "expected_profit_day": 1.0,
+                        "score": 100.0,
+                        "eligible": True,
+                    },
+                    {
+                        "profile_key": "steady:batch:2048",
+                        "gpu_key": "steady",
+                        "priority": "batch",
+                        "memory_mb": 2048,
+                        "expected_profit_day": 0.5,
+                        "score": 50.0,
+                        "eligible": True,
+                    },
+                ],
+                mode="base_fill",
+                decision_price_usd=0.64,
+                width=2,
+                slot_rows={
+                    ("kray", "prl-kray-roi-01"): {
+                        "observed_profile_key": "old:batch:2048",
+                        "observed_status": "stopped",
+                        "live_hashrate_th": 0.0,
+                        "protected": False,
+                        "observed_status_since_utc": datetime.now(UTC).isoformat(timespec="seconds"),
+                    }
+                },
+                existing_targets={
+                    ("kray", "prl-kray-roi-01"): {
+                        "profile_key": "steady:batch:2048",
+                        "assigned_at_utc": assigned_at,
+                    }
+                },
+            )
+        finally:
+            if original is None:
+                os.environ.pop("PRL_RECENT_NONHASH_TARGET_PROTECT_SECONDS", None)
+            else:
+                os.environ["PRL_RECENT_NONHASH_TARGET_PROTECT_SECONDS"] = original
+
+        target = next(
+            target
+            for target in targets
+            if target["org_label"] == "kray" and target["slot_name"] == "prl-kray-roi-01"
+        )
+        self.assertEqual(target["profile_key"], "steady:batch:2048")
+        self.assertIn("preserve_recent_nonhash_target", target["reason"])
+
     def test_scheduler_prefers_live_selected_price_when_price_is_omitted(self) -> None:
         with state_db.connect(self.db_path) as conn:
             state_db.init_db(conn)

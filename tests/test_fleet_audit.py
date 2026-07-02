@@ -358,6 +358,47 @@ class FleetAuditTest(unittest.TestCase):
         self.assertIsNone(kray_slot["cost_day"])
         self.assertIsNone(kray_slot["profit_day"])
 
+    def test_record_active_snapshot_marks_unknown_slots_stopped_when_idle(self) -> None:
+        report = {
+            "assigned_targets": 0,
+            "target_slots": 40,
+            "live_hashing_gpus": 0,
+            "live_th": 0.0,
+            "status_counts": {"stopped": 40},
+            "profit_at_0_64": {"cost_day": 0.0, "profit_day": 0.0},
+            "profit_at_live": {"market_profit_day": 0.0},
+        }
+        with patch.object(fleet_audit.reporter, "build_report", return_value=report):
+            payload = fleet_audit.record_active_snapshot(self.db_path)
+
+        with state_db.connect(self.db_path) as conn:
+            slot_statuses = {
+                row["observed_status"]: row["count"]
+                for row in conn.execute(
+                    """
+                    SELECT observed_status, COUNT(*) AS count
+                    FROM slots
+                    WHERE org_label = 'kray'
+                    GROUP BY observed_status
+                    """
+                ).fetchall()
+            }
+            snapshot_statuses = {
+                row["observed_status"]: row["count"]
+                for row in conn.execute(
+                    """
+                    SELECT observed_status, COUNT(*) AS count
+                    FROM fleet_slot_active_snapshots
+                    WHERE snapshot_id = ? AND org_label = 'kray'
+                    GROUP BY observed_status
+                    """,
+                    (payload["snapshot_id"],),
+                ).fetchall()
+            }
+
+        self.assertEqual(slot_statuses, {"stopped": 10})
+        self.assertEqual(snapshot_statuses, {"stopped": 10})
+
     def test_record_active_snapshot_respects_enabled_org_filter(self) -> None:
         with state_db.connect(self.db_path) as conn:
             state_db.update_slot_observation(

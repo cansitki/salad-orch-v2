@@ -264,6 +264,46 @@ def refresh_profit_snapshot(db_path: str | None = None, *, price: float | None =
     return snapshot
 
 
+def reconcile_idle_unknown_slots(
+    conn,
+    *,
+    enabled_org_labels: set[str],
+    report: dict[str, Any],
+) -> int:
+    """Mark unknown slots stopped only when the whole enabled fleet is idle."""
+    if not enabled_org_labels:
+        return 0
+    profit_064 = report.get("profit_at_0_64") or {}
+    if int(report.get("assigned_targets") or 0) > 0:
+        return 0
+    if int(report.get("live_hashing_gpus") or 0) > 0:
+        return 0
+    if float(profit_064.get("cost_day") or 0) > 0:
+        return 0
+    placeholders = ",".join("?" for _ in enabled_org_labels)
+    now = utc_now()
+    cursor = conn.execute(
+        f"""
+        UPDATE slots
+        SET observed_status = 'stopped',
+            observed_status_since_utc = ?,
+            live_hashrate_th = 0,
+            protected = 0,
+            updated_at_utc = ?
+        WHERE org_label IN ({placeholders})
+          AND COALESCE(observed_status, '') = ''
+          AND NOT EXISTS (
+            SELECT 1
+            FROM slot_targets t
+            WHERE t.org_label = slots.org_label
+              AND t.slot_name = slots.slot_name
+          )
+        """,
+        (now, now, *sorted(enabled_org_labels)),
+    )
+    return int(cursor.rowcount or 0)
+
+
 def record_active_snapshot(
     db_path: str | None = None,
     *,
@@ -282,6 +322,7 @@ def record_active_snapshot(
     with state_db.connect(db_path) as conn:
         state_db.init_db(conn)
         state_db.sync_config(conn, config)
+        reconcile_idle_unknown_slots(conn, enabled_org_labels=enabled_org_labels, report=report)
         org_summary = org_runtime_summary(conn, enabled_org_labels)
         profit_064 = report.get("profit_at_0_64") or {}
         profit_live = report.get("profit_at_live") or {}

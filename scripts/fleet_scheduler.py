@@ -351,6 +351,17 @@ def build_targets(
         profile_index, profile = selected
         return profile_index, profile, True
 
+    def candidate_beats_current(current: dict[str, Any], candidate: dict[str, Any]) -> bool:
+        try:
+            current_break_even = float(current.get("break_even_price_usd") or 0.0)
+            candidate_break_even = float(candidate.get("break_even_price_usd") or 0.0)
+        except (TypeError, ValueError):
+            current_break_even = 0.0
+            candidate_break_even = 0.0
+        if current_break_even > 0.0 and candidate_break_even > 0.0:
+            return candidate_break_even < current_break_even
+        return float(candidate["expected_profit_day"]) > float(current["expected_profit_day"])
+
     for org_index, org in enumerate(enabled_orgs):
         ordered_slots = sorted(org.slot_names(), key=lambda slot_name: slot_sort_key(org.label, slot_name))
         for slot_index, slot_name in enumerate(ordered_slots, start=1):
@@ -481,6 +492,11 @@ def build_targets(
                     if selected is not None:
                         profile_index, profile, used_probe_fallback = selected
                         selected_profit = float(profile["expected_profit_day"])
+                        selected_profile_key = str(profile["profile_key"])
+                        replace_nohash_only_better = env_bool(
+                            "PRL_SCHEDULER_REPLACE_NOHASH_ONLY_BETTER",
+                            True,
+                        )
                         should_recycle_current_pending = (
                             recycle_current_pending_first
                             and pending_observed
@@ -495,6 +511,18 @@ def build_targets(
                             reason = (
                                 f"{mode}:pending_observed_profile_recycle_first:{observed_profile}:"
                                 f"replacement_profit_{selected_profit:.3f}_lte_current_{current_profit:.3f}"
+                            )
+                        elif (
+                            replace_nohash_only_better
+                            and not pending_observed
+                            and not candidate_beats_current(current, profile)
+                        ):
+                            profile = current
+                            profile_index = 0
+                            protected = False
+                            reason = (
+                                f"{mode}:nohash_observed_profile_no_better_replacement:"
+                                f"{observed_profile}:replacement_{selected_profile_key}"
                             )
                         else:
                             protected = False

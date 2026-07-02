@@ -3598,6 +3598,82 @@ class StateAndSchedulerTest(unittest.TestCase):
         self.assertEqual(row["profile_key"], "3070:batch:4096")
         self.assertIn("replace_negative_observed_profile:3080:batch:2048", row["reason"])
 
+    def test_scheduler_keeps_nohash_observed_profile_when_replacement_is_worse(self) -> None:
+        org = config_loader.OrgConfig(
+            label="kray",
+            slug="kray",
+            api_key_env="SALAD_API_KEY",
+            slot_prefix="prl-kray-roi",
+            slots=1,
+        )
+        config = config_loader.FleetConfig(
+            organizations=(org,),
+            risk=config_loader.RiskConfig(fill_min_profit_day=-999.0),
+        )
+        scores = [
+            {
+                "profile_key": "3070:batch:4096",
+                "gpu_key": "3070",
+                "priority": "batch",
+                "memory_mb": 4096,
+                "label": "RTX 3070",
+                "score": 100.0,
+                "eligible": True,
+                "expected_profit_day": 0.04,
+                "break_even_price_usd": 0.39,
+            },
+            {
+                "profile_key": "3060ti:batch:2048",
+                "gpu_key": "3060ti",
+                "priority": "batch",
+                "memory_mb": 2048,
+                "label": "RTX 3060 Ti",
+                "score": 90.0,
+                "eligible": True,
+                "expected_profit_day": 0.01,
+                "break_even_price_usd": 0.40,
+            },
+            {
+                "profile_key": "3080:batch:2048",
+                "gpu_key": "3080",
+                "priority": "batch",
+                "memory_mb": 2048,
+                "label": "RTX 3080",
+                "score": 80.0,
+                "eligible": True,
+                "expected_profit_day": -0.16,
+                "break_even_price_usd": 0.46,
+            },
+        ]
+
+        with patch.dict(
+            "os.environ",
+            {
+                "PRL_SCHEDULER_RANK_BY_BREAK_EVEN": "1",
+                "PRL_SCHEDULER_REPLACEMENT_BEST_ORDER": "1",
+            },
+            clear=False,
+        ):
+            targets = fleet_scheduler.build_targets(
+                config,
+                scores,
+                mode="base_fill",
+                decision_price_usd=0.41,
+                width=3,
+                slot_rows={
+                    ("kray", "prl-kray-roi-01"): {
+                        "observed_profile_key": "3070:batch:4096",
+                        "observed_status": "running",
+                        "live_hashrate_th": 0.0,
+                        "protected": True,
+                    }
+                },
+            )
+
+        self.assertEqual(len(targets), 1)
+        self.assertEqual(targets[0]["profile_key"], "3070:batch:4096")
+        self.assertIn("nohash_observed_profile_no_better_replacement", targets[0]["reason"])
+
     def test_scheduler_preserves_active_guard_target(self) -> None:
         config = load_config()
         with state_db.connect(self.db_path) as conn:
